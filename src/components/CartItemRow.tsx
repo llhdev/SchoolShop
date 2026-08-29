@@ -1,8 +1,8 @@
 import { Image, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { CartItem } from '../types';
-import { getProductCoverImage } from '../utils/images';
-import { colors, spacing, borderRadius, fontSizes } from '../constants/theme';
+import { getProductImage } from '../utils/images';
+import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../constants/theme';
 
 interface CartItemRowProps {
   item: CartItem;
@@ -17,7 +17,13 @@ export function CartItemRow({
   onDecrease,
   onRemove,
 }: CartItemRowProps) {
-  const imageUri = getProductCoverImage(item.product);
+  const colors = useThemeColors();
+  const styles = makeStyles(colors);
+  const imageUri = getProductImage(
+    item.product.category,
+    item.product.name,
+    item.product.images[item.selectedImageIndex]
+  );
 
   return (
     <View style={styles.container}>
@@ -46,7 +52,7 @@ export function CartItemRow({
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (colors: ColorPalette) => StyleSheet.create({
   container: {
     flexDirection: 'row',
     alignItems: 'center',

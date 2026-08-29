@@ -6,12 +6,13 @@ import { HomeScreen } from '../screens/user/HomeScreen';
 import { CartScreen } from '../screens/user/CartScreen';
 import { OrdersScreen } from '../screens/user/OrdersScreen';
 import { useApp } from '../context/AppContext';
-import { colors } from '../constants/theme';
+import { useThemeColors } from '../constants/theme';
 
 const Tab = createBottomTabNavigator<UserTabParamList>();
 
 export function UserTabNavigator() {
   const { cartCount } = useApp();
+  const colors = useThemeColors();
 
   return (
     <Tab.Navigator
@@ -19,11 +20,12 @@ export function UserTabNavigator() {
         headerShown: false,
         tabBarActiveTintColor: colors.primary,
         tabBarInactiveTintColor: colors.textSecondary,
-        tabBarLabelPosition: 'below-icon',
         tabBarStyle: Platform.OS === 'web' ? { display: 'none' } : {
           height: 50,
           paddingBottom: 4,
           paddingTop: 0,
+          backgroundColor: colors.surface,
+          borderTopColor: colors.border,
         },
         tabBarLabelStyle: {
           fontSize: 10,

@@ -1,12 +1,13 @@
-import { Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { Image, Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { SearchBar } from './SearchBar';
+import { ThemeToggle } from './ThemeToggle';
 import { useApp } from '../context/AppContext';
 import { useResponsive } from '../hooks/useResponsive';
 import { RootStackParamList } from '../types/navigation';
-import { colors, spacing, borderRadius, fontSizes } from '../constants/theme';
+import { useThemeColors, spacing, fontSizes, ColorPalette } from '../constants/theme';
 
 interface WebHeaderProps {
   searchValue?: string;
@@ -19,8 +20,10 @@ export function WebHeader({
   onSearchChange,
   showSearch = true,
 }: WebHeaderProps) {
+  const colors = useThemeColors();
+  const styles = makeStyles(colors);
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
-  const { cartCount, setRole } = useApp();
+  const { cartCount } = useApp();
   const { isDesktop } = useResponsive();
 
   if (Platform.OS !== 'web') return null;
@@ -32,8 +35,11 @@ export function WebHeader({
           style={styles.brand}
           onPress={() => navigation.navigate('UserTabs', { screen: 'Home' })}
         >
-          <Ionicons name="storefront-outline" size={28} color={colors.primary} />
-          <Text style={styles.brandText}>Student Shop</Text>
+          <Image
+            source={require('../../assets/logo.png')}
+            style={styles.logo}
+            resizeMode="contain"
+          />
         </TouchableOpacity>
 
         {showSearch && isDesktop && onSearchChange && (
@@ -68,23 +74,19 @@ export function WebHeader({
             <Text style={styles.iconLabel}>Cart</Text>
           </TouchableOpacity>
 
-          <TouchableOpacity style={styles.roleButton} onPress={() => setRole(null)}>
-            <Text style={styles.roleText}>Switch role</Text>
-          </TouchableOpacity>
+          <ThemeToggle />
         </View>
       </View>
     </View>
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (colors: ColorPalette) => StyleSheet.create({
   header: {
     width: '100%',
     backgroundColor: colors.surface,
     borderBottomWidth: 1,
     borderBottomColor: colors.border,
-    paddingTop: spacing.md,
-    paddingBottom: spacing.md,
     ...(Platform.OS === 'web'
       ? ({
           boxShadow: '0 2px 8px rgba(0,0,0,0.06)',
@@ -98,17 +100,17 @@ const styles = StyleSheet.create({
     maxWidth: 1200,
     width: '100%',
     alignSelf: 'center',
-    paddingHorizontal: spacing.lg,
+    paddingLeft: 0,
+    paddingRight: spacing.lg,
   },
   brand: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.sm,
   },
-  brandText: {
-    fontSize: fontSizes.xl,
-    fontWeight: '800',
-    color: colors.text,
+  logo: {
+    height: 56,
+    width: 62,
   },
   search: {
     flex: 1,
@@ -149,17 +151,5 @@ const styles = StyleSheet.create({
     color: colors.surface,
     fontSize: 10,
     fontWeight: '700',
-  },
-  roleButton: {
-    borderWidth: 1,
-    borderColor: colors.primary,
-    borderRadius: borderRadius.sm,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-  },
-  roleText: {
-    color: colors.primary,
-    fontSize: fontSizes.sm,
-    fontWeight: '600',
   },
 });

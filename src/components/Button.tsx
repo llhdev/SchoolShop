@@ -1,5 +1,5 @@
 import { StyleSheet, Text, TouchableOpacity, ViewStyle } from 'react-native';
-import { colors, spacing, borderRadius, fontSizes } from '../constants/theme';
+import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../constants/theme';
 
 type ButtonVariant = 'primary' | 'secondary' | 'danger' | 'outline';
 
@@ -18,6 +18,9 @@ export function Button({
   disabled = false,
   style,
 }: ButtonProps) {
+  const colors = useThemeColors();
+  const styles = makeStyles(colors);
+
   return (
     <TouchableOpacity
       style={[
@@ -37,51 +40,52 @@ export function Button({
   );
 }
 
-const styles = StyleSheet.create({
-  button: {
-    paddingVertical: spacing.md,
-    paddingHorizontal: spacing.lg,
-    borderRadius: borderRadius.md,
-    alignItems: 'center',
-    justifyContent: 'center',
-    borderWidth: 1,
-    borderColor: 'transparent',
-  },
-  primary: {
-    backgroundColor: colors.primary,
-  },
-  secondary: {
-    backgroundColor: colors.surface,
-    borderColor: colors.border,
-  },
-  danger: {
-    backgroundColor: colors.danger,
-  },
-  outline: {
-    backgroundColor: colors.surface,
-    borderColor: colors.primary,
-  },
-  disabled: {
-    backgroundColor: colors.border,
-    borderColor: colors.border,
-  },
-  text: {
-    fontSize: fontSizes.md,
-    fontWeight: '600',
-  },
-  primaryText: {
-    color: colors.surface,
-  },
-  secondaryText: {
-    color: colors.text,
-  },
-  dangerText: {
-    color: colors.surface,
-  },
-  outlineText: {
-    color: colors.primary,
-  },
-  disabledText: {
-    color: colors.textSecondary,
-  },
-});
+const makeStyles = (colors: ColorPalette) =>
+  StyleSheet.create({
+    button: {
+      paddingVertical: spacing.md,
+      paddingHorizontal: spacing.lg,
+      borderRadius: borderRadius.md,
+      alignItems: 'center',
+      justifyContent: 'center',
+      borderWidth: 1,
+      borderColor: 'transparent',
+    },
+    primary: {
+      backgroundColor: colors.primary,
+    },
+    secondary: {
+      backgroundColor: colors.surface,
+      borderColor: colors.border,
+    },
+    danger: {
+      backgroundColor: colors.danger,
+    },
+    outline: {
+      backgroundColor: colors.surface,
+      borderColor: colors.primary,
+    },
+    disabled: {
+      backgroundColor: colors.border,
+      borderColor: colors.border,
+    },
+    text: {
+      fontSize: fontSizes.md,
+      fontWeight: '600',
+    },
+    primaryText: {
+      color: colors.surface,
+    },
+    secondaryText: {
+      color: colors.text,
+    },
+    dangerText: {
+      color: colors.surface,
+    },
+    outlineText: {
+      color: colors.primary,
+    },
+    disabledText: {
+      color: colors.textSecondary,
+    },
+  });

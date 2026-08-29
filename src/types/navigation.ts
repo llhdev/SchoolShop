@@ -15,9 +15,9 @@ export type AdminStackParamList = {
 };
 
 export type RootStackParamList = {
-  RoleSelect: undefined;
   UserTabs: NavigatorScreenParams<UserTabParamList>;
   AdminStack: NavigatorScreenParams<AdminStackParamList>;
+  AdminLogin: undefined;
   ProductDetail: { productId: string };
   Checkout: undefined;
   OrderDetail: { orderId: string };

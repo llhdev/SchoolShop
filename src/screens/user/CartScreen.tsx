@@ -10,13 +10,15 @@ import { Button } from '../../components/Button';
 import { WebHeader } from '../../components/WebHeader';
 import { useApp } from '../../context/AppContext';
 import { RootStackParamList } from '../../types/navigation';
-import { colors, spacing, fontSizes } from '../../constants/theme';
+import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../../constants/theme';
 
 const MAX_WIDTH = 900;
 
 export function CartScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const { cart, cartTotal, cartCount, updateCartQuantity, removeFromCart } = useApp();
+  const colors = useThemeColors();
+  const styles = makeStyles(colors);
 
   const isWeb = Platform.OS === 'web';
 
@@ -51,18 +53,28 @@ export function CartScreen() {
 
         <FlatList
           data={cart}
-          keyExtractor={(item) => item.product.id}
+          keyExtractor={(item) => `${item.product.id}-${item.selectedImageIndex}`}
           contentContainerStyle={styles.list}
           renderItem={({ item }) => (
             <CartItemRow
               item={item}
               onIncrease={() =>
-                updateCartQuantity(item.product.id, item.quantity + 1)
+                updateCartQuantity(
+                  item.product.id,
+                  item.selectedImageIndex,
+                  item.quantity + 1
+                )
               }
               onDecrease={() =>
-                updateCartQuantity(item.product.id, item.quantity - 1)
+                updateCartQuantity(
+                  item.product.id,
+                  item.selectedImageIndex,
+                  item.quantity - 1
+                )
               }
-              onRemove={() => removeFromCart(item.product.id)}
+              onRemove={() =>
+                removeFromCart(item.product.id, item.selectedImageIndex)
+              }
             />
           )}
         />
@@ -90,88 +102,89 @@ export function CartScreen() {
   );
 }
 
-const styles = StyleSheet.create({
-  container: {
-    flex: 1,
-    maxWidth: MAX_WIDTH,
-    width: '100%',
-    alignSelf: 'center',
-    paddingHorizontal: spacing.lg,
-    paddingTop: spacing.md,
-  },
-  titleRow: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: spacing.lg,
-  },
-  title: {
-    fontSize: fontSizes.xxl,
-    fontWeight: '700',
-    color: colors.text,
-  },
-  homeLink: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.xs,
-  },
-  homeLinkText: {
-    fontSize: fontSizes.md,
-    color: colors.primary,
-    fontWeight: '600',
-  },
-  list: {
-    paddingBottom: Platform.OS === 'web' ? 24 : 200,
-  },
-  footer: {
-    ...Platform.select({
-      default: {
-        position: 'absolute',
-        bottom: 0,
-        left: 0,
-        right: 0,
-      },
-      web: {
-        position: 'relative',
-      },
-    }),
-    backgroundColor: colors.surface,
-    borderTopWidth: 1,
-    borderTopColor: colors.border,
-    paddingHorizontal: 16,
-    paddingVertical: 16,
-  },
-  footerInner: {
-    maxWidth: MAX_WIDTH,
-    width: '100%',
-    alignSelf: 'center',
-    gap: 8,
-  },
-  row: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  label: {
-    fontSize: fontSizes.md,
-    color: colors.textSecondary,
-  },
-  value: {
-    fontSize: fontSizes.md,
-    color: colors.text,
-    fontWeight: '500',
-  },
-  totalLabel: {
-    fontSize: fontSizes.lg,
-    fontWeight: '700',
-    color: colors.text,
-  },
-  totalValue: {
-    fontSize: fontSizes.xl,
-    fontWeight: '700',
-    color: colors.primary,
-  },
-  checkoutButton: {
-    marginTop: 8,
-  },
-});
+const makeStyles = (colors: ColorPalette) =>
+  StyleSheet.create({
+    container: {
+      flex: 1,
+      maxWidth: MAX_WIDTH,
+      width: '100%',
+      alignSelf: 'center',
+      paddingHorizontal: spacing.lg,
+      paddingTop: spacing.md,
+    },
+    titleRow: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+      marginBottom: spacing.lg,
+    },
+    title: {
+      fontSize: fontSizes.xxl,
+      fontWeight: '700',
+      color: colors.text,
+    },
+    homeLink: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: spacing.xs,
+    },
+    homeLinkText: {
+      fontSize: fontSizes.md,
+      color: colors.primary,
+      fontWeight: '600',
+    },
+    list: {
+      paddingBottom: Platform.OS === 'web' ? 24 : 200,
+    },
+    footer: {
+      ...Platform.select({
+        default: {
+          position: 'absolute',
+          bottom: 0,
+          left: 0,
+          right: 0,
+        },
+        web: {
+          position: 'relative',
+        },
+      }),
+      backgroundColor: colors.surface,
+      borderTopWidth: 1,
+      borderTopColor: colors.border,
+      paddingHorizontal: 16,
+      paddingVertical: 16,
+    },
+    footerInner: {
+      maxWidth: MAX_WIDTH,
+      width: '100%',
+      alignSelf: 'center',
+      gap: 8,
+    },
+    row: {
+      flexDirection: 'row',
+      justifyContent: 'space-between',
+      alignItems: 'center',
+    },
+    label: {
+      fontSize: fontSizes.md,
+      color: colors.textSecondary,
+    },
+    value: {
+      fontSize: fontSizes.md,
+      color: colors.text,
+      fontWeight: '500',
+    },
+    totalLabel: {
+      fontSize: fontSizes.lg,
+      fontWeight: '700',
+      color: colors.text,
+    },
+    totalValue: {
+      fontSize: fontSizes.xl,
+      fontWeight: '700',
+      color: colors.primary,
+    },
+    checkoutButton: {
+      marginTop: 8,
+    },
+  });

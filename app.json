@@ -1,6 +1,6 @@
 {
   "expo": {
-    "name": "OnlineShop",
+    "name": "Gold Fashion",
     "slug": "OnlineShop",
     "version": "1.0.0",
     "orientation": "portrait",
@@ -15,11 +15,11 @@
       "supportsTablet": true
     },
     "android": {
+      "package": "com.libeamlak.onlineshop",
       "adaptiveIcon": {
-        "backgroundColor": "#E6F4FE",
+        "backgroundColor": "#f5ca59",
         "foregroundImage": "./assets/android-icon-foreground.png",
-        "backgroundImage": "./assets/android-icon-background.png",
-        "monochromeImage": "./assets/android-icon-monochrome.png"
+        "backgroundImage": "./assets/android-icon-background.png"
       },
       "predictiveBackGestureEnabled": false
     },
@@ -27,7 +27,14 @@
       "favicon": "./assets/favicon.png"
     },
     "plugins": [
-      "expo-asset"
-    ]
+      "expo-asset",
+      "expo-font"
+    ],
+    "extra": {
+      "eas": {
+        "projectId": "a2a18c75-3bb0-4dfe-a9ca-44ef89b30464"
+      }
+    },
+    "owner": "libeamlak"
   }
 }

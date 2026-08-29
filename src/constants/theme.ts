@@ -1,3 +1,5 @@
+import { useApp } from '../context/AppContext';
+
 export const colors = {
   background: '#F8F9FA',
   surface: '#FFFFFF',
@@ -8,10 +10,34 @@ export const colors = {
   price: '#E53935',
   border: '#DEE2E6',
   danger: '#DC3545',
+  dangerLight: '#FFF5F5',
   success: '#28A745',
   warning: '#FFC107',
   shadow: '#000000',
 };
+
+export const darkColors = {
+  background: '#0F0F0F',
+  surface: '#1C1C1E',
+  text: '#F2F2F7',
+  textSecondary: '#8E8E93',
+  primary: '#0A84FF',
+  primaryDark: '#409CFF',
+  price: '#FF453A',
+  border: '#38383A',
+  danger: '#FF453A',
+  dangerLight: '#3A1A1A',
+  success: '#32D74B',
+  warning: '#FFCC00',
+  shadow: '#000000',
+};
+
+export type ColorPalette = typeof colors;
+
+export function useThemeColors(): ColorPalette {
+  const { theme } = useApp();
+  return theme === 'dark' ? darkColors : colors;
+}
 
 export const spacing = {
   xs: 4,

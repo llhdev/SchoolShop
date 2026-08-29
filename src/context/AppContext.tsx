@@ -4,31 +4,53 @@ import {
   useContext,
   useEffect,
   useReducer,
+  useState,
 } from 'react';
-import { AppAction, AppState, CartItem, Order, Product, Role } from '../types';
+import { AppAction, AppState, CartItem, Order, Product, Role, Theme } from '../types';
+import { loadTheme, saveTheme } from '../utils/storage';
+import { supabase } from '../lib/supabase';
 import {
-  loadCategories,
-  loadOrders,
-  loadProducts,
-  saveCategories,
-  saveOrders,
-  saveProducts,
-} from '../utils/storage';
-import { seedProducts } from '../data/seedProducts';
-import { DEFAULT_CATEGORIES } from '../constants/categories';
+  createProduct,
+  deleteProduct as deleteProductFromSupabase,
+  fetchProducts,
+  loadProductsFromCache,
+  saveProductsToCache,
+  subscribeToProducts,
+  updateProduct,
+} from '../services/products';
+import {
+  createOrder,
+  fetchOrders,
+  loadOrdersFromCache,
+  saveOrdersToCache,
+  subscribeToOrders,
+} from '../services/orders';
+import {
+  createCategory,
+  deleteCategory,
+  fetchCategories,
+  loadCategoriesFromCache,
+  saveCategoriesToCache,
+  subscribeToCategories,
+} from '../services/categories';
+import { deleteProductImages } from '../services/images';
 
 const initialState: AppState = {
-  role: null,
+  role: 'user',
+  theme: 'light',
   products: [],
   cart: [],
   orders: [],
-  categories: DEFAULT_CATEGORIES,
+  categories: [],
 };
 
 function reducer(state: AppState, action: AppAction): AppState {
   switch (action.type) {
     case 'SET_ROLE':
       return { ...state, role: action.payload };
+
+    case 'SET_THEME':
+      return { ...state, theme: action.payload };
 
     case 'SET_PRODUCTS':
       return { ...state, products: action.payload };
@@ -50,14 +72,18 @@ function reducer(state: AppState, action: AppAction): AppState {
       };
 
     case 'ADD_TO_CART': {
+      const { product, selectedImageIndex } = action.payload;
       const existing = state.cart.find(
-        (item) => item.product.id === action.payload.id
+        (item) =>
+          item.product.id === product.id &&
+          item.selectedImageIndex === selectedImageIndex
       );
       if (existing) {
         return {
           ...state,
           cart: state.cart.map((item) =>
-            item.product.id === action.payload.id
+            item.product.id === product.id &&
+            item.selectedImageIndex === selectedImageIndex
               ? { ...item, quantity: item.quantity + 1 }
               : item
           ),
@@ -65,30 +91,45 @@ function reducer(state: AppState, action: AppAction): AppState {
       }
       return {
         ...state,
-        cart: [...state.cart, { product: action.payload, quantity: 1 }],
+        cart: [
+          ...state.cart,
+          { product, quantity: 1, selectedImageIndex },
+        ],
       };
     }
 
     case 'REMOVE_FROM_CART':
       return {
         ...state,
-        cart: state.cart.filter((item) => item.product.id !== action.payload),
+        cart: state.cart.filter(
+          (item) =>
+            !(
+              item.product.id === action.payload.productId &&
+              item.selectedImageIndex === action.payload.selectedImageIndex
+            )
+        ),
       };
 
     case 'UPDATE_CART_QUANTITY': {
-      if (action.payload.quantity <= 0) {
+      const { productId, selectedImageIndex, quantity } = action.payload;
+      if (quantity <= 0) {
         return {
           ...state,
           cart: state.cart.filter(
-            (item) => item.product.id !== action.payload.productId
+            (item) =>
+              !(
+                item.product.id === productId &&
+                item.selectedImageIndex === selectedImageIndex
+              )
           ),
         };
       }
       return {
         ...state,
         cart: state.cart.map((item) =>
-          item.product.id === action.payload.productId
-            ? { ...item, quantity: action.payload.quantity }
+          item.product.id === productId &&
+          item.selectedImageIndex === selectedImageIndex
+            ? { ...item, quantity }
             : item
         ),
       };
@@ -102,6 +143,12 @@ function reducer(state: AppState, action: AppAction): AppState {
 
     case 'ADD_ORDER':
       return { ...state, orders: [action.payload, ...state.orders] };
+
+    case 'DELETE_ORDER':
+      return {
+        ...state,
+        orders: state.orders.filter((o) => o.id !== action.payload),
+      };
 
     case 'SET_CATEGORIES':
       return { ...state, categories: action.payload };
@@ -137,17 +184,23 @@ function migrateLegacyProducts(products: Product[]): Product[] {
 
 interface AppContextValue extends AppState {
   setRole: (role: Role) => void;
-  addProduct: (product: Product) => void;
-  updateProduct: (product: Product) => void;
-  deleteProduct: (id: string) => void;
-  addToCart: (product: Product) => void;
-  removeFromCart: (productId: string) => void;
-  updateCartQuantity: (productId: string, quantity: number) => void;
+  signOutAdmin: () => Promise<void>;
+  toggleTheme: () => void;
+  addProduct: (product: Product) => Promise<void>;
+  updateProduct: (product: Product) => Promise<void>;
+  deleteProduct: (id: string) => Promise<void>;
+  addToCart: (product: Product, selectedImageIndex?: number) => void;
+  removeFromCart: (productId: string, selectedImageIndex: number) => void;
+  updateCartQuantity: (
+    productId: string,
+    selectedImageIndex: number,
+    quantity: number
+  ) => void;
   clearCart: () => void;
-  addOrder: (order: Order) => void;
+  addOrder: (order: Order) => Promise<void>;
   setCategories: (categories: string[]) => void;
-  addCategory: (category: string) => void;
-  removeCategory: (category: string) => void;
+  addCategory: (category: string) => Promise<void>;
+  removeCategory: (category: string) => Promise<void>;
   cartTotal: number;
   cartCount: number;
 }
@@ -156,49 +209,104 @@ const AppContext = createContext<AppContextValue | undefined>(undefined);
 
 export function AppProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(reducer, initialState);
+  const [isHydrated, setIsHydrated] = useState(false);
 
   useEffect(() => {
     async function hydrate() {
-      const storedProducts = await loadProducts();
-      const storedOrders = await loadOrders();
-      const storedCategories = await loadCategories();
-
-      const migratedProducts = migrateLegacyProducts(storedProducts ?? seedProducts);
-      dispatch({
-        type: 'SET_PRODUCTS',
-        payload: migratedProducts,
-      });
-      if (storedProducts === null || JSON.stringify(storedProducts) !== JSON.stringify(migratedProducts)) {
-        await saveProducts(migratedProducts);
+      const storedTheme = await loadTheme();
+      if (storedTheme) {
+        dispatch({ type: 'SET_THEME', payload: storedTheme });
       }
 
-      dispatch({
-        type: 'SET_ORDERS',
-        payload: storedOrders ?? [],
-      });
+      const [cachedProducts, cachedOrders, cachedCategories] = await Promise.all([
+        loadProductsFromCache(),
+        loadOrdersFromCache(),
+        loadCategoriesFromCache(),
+      ]);
 
-      dispatch({
-        type: 'SET_CATEGORIES',
-        payload: storedCategories ?? DEFAULT_CATEGORIES,
-      });
-      if (storedCategories === null) {
-        await saveCategories(DEFAULT_CATEGORIES);
+      const migratedProducts = migrateLegacyProducts(cachedProducts);
+
+      dispatch({ type: 'SET_PRODUCTS', payload: migratedProducts });
+      dispatch({ type: 'SET_ORDERS', payload: cachedOrders });
+      dispatch({ type: 'SET_CATEGORIES', payload: cachedCategories });
+
+      setIsHydrated(true);
+
+      // Check for an existing admin session.
+      try {
+        const {
+          data: { session },
+        } = await supabase.auth.getSession();
+        if (session?.user) {
+          const { data: profile } = await supabase
+            .from('profiles')
+            .select('role')
+            .eq('id', session.user.id)
+            .single();
+          if (profile?.role === 'admin') {
+            dispatch({ type: 'SET_ROLE', payload: 'admin' });
+          }
+        }
+      } catch (error) {
+        console.error('Failed to restore admin session:', error);
+      }
+
+      // Background sync from Supabase.
+      try {
+        const [remoteProducts, remoteOrders, remoteCategories] = await Promise.all([
+          fetchProducts(),
+          fetchOrders(),
+          fetchCategories(),
+        ]);
+
+        if (remoteProducts.length > 0) {
+          dispatch({ type: 'SET_PRODUCTS', payload: remoteProducts });
+          await saveProductsToCache(remoteProducts);
+        }
+
+        dispatch({ type: 'SET_ORDERS', payload: remoteOrders });
+        await saveOrdersToCache(remoteOrders);
+
+        if (remoteCategories.length > 0) {
+          dispatch({ type: 'SET_CATEGORIES', payload: remoteCategories });
+          await saveCategoriesToCache(remoteCategories);
+        }
+      } catch (error) {
+        console.error('Failed to sync with Supabase:', error);
       }
     }
     hydrate();
   }, []);
 
   useEffect(() => {
-    saveProducts(state.products);
-  }, [state.products]);
+    if (!isHydrated) return;
+
+    const unsubscribeProducts = subscribeToProducts(async (products) => {
+      dispatch({ type: 'SET_PRODUCTS', payload: products });
+      await saveProductsToCache(products);
+    });
+
+    const unsubscribeOrders = subscribeToOrders(async (orders) => {
+      dispatch({ type: 'SET_ORDERS', payload: orders });
+      await saveOrdersToCache(orders);
+    });
+
+    const unsubscribeCategories = subscribeToCategories(async (categories) => {
+      dispatch({ type: 'SET_CATEGORIES', payload: categories });
+      await saveCategoriesToCache(categories);
+    });
+
+    return () => {
+      unsubscribeProducts();
+      unsubscribeOrders();
+      unsubscribeCategories();
+    };
+  }, [isHydrated]);
 
   useEffect(() => {
-    saveOrders(state.orders);
-  }, [state.orders]);
-
-  useEffect(() => {
-    saveCategories(state.categories);
-  }, [state.categories]);
+    if (!isHydrated) return;
+    saveTheme(state.theme);
+  }, [state.theme, isHydrated]);
 
   const cartTotal = state.cart.reduce(
     (sum, item) => sum + item.product.price * item.quantity,
@@ -209,21 +317,118 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const value: AppContextValue = {
     ...state,
     setRole: (role) => dispatch({ type: 'SET_ROLE', payload: role }),
-    addProduct: (product) => dispatch({ type: 'ADD_PRODUCT', payload: product }),
-    updateProduct: (product) => dispatch({ type: 'UPDATE_PRODUCT', payload: product }),
-    deleteProduct: (id) => dispatch({ type: 'DELETE_PRODUCT', payload: id }),
-    addToCart: (product) => dispatch({ type: 'ADD_TO_CART', payload: product }),
-    removeFromCart: (productId) =>
-      dispatch({ type: 'REMOVE_FROM_CART', payload: productId }),
-    updateCartQuantity: (productId, quantity) =>
-      dispatch({ type: 'UPDATE_CART_QUANTITY', payload: { productId, quantity } }),
+    signOutAdmin: async () => {
+      try {
+        await supabase.auth.signOut();
+      } catch (error) {
+        console.error('Failed to sign out admin:', error);
+      }
+      dispatch({ type: 'SET_ROLE', payload: 'user' });
+    },
+    toggleTheme: () =>
+      dispatch({ type: 'SET_THEME', payload: state.theme === 'dark' ? 'light' : 'dark' }),
+    addProduct: async (product) => {
+      const previous = state.products;
+      const optimistic = [product, ...previous];
+      dispatch({ type: 'ADD_PRODUCT', payload: product });
+      await saveProductsToCache(optimistic);
+      try {
+        await createProduct(product);
+      } catch {
+        dispatch({ type: 'SET_PRODUCTS', payload: previous });
+        await saveProductsToCache(previous);
+        throw new Error('Failed to add product');
+      }
+    },
+    updateProduct: async (product) => {
+      const previous = state.products;
+      const optimistic = previous.map((p) => (p.id === product.id ? product : p));
+      dispatch({ type: 'UPDATE_PRODUCT', payload: product });
+      await saveProductsToCache(optimistic);
+      try {
+        await updateProduct(product);
+      } catch {
+        dispatch({ type: 'SET_PRODUCTS', payload: previous });
+        await saveProductsToCache(previous);
+        throw new Error('Failed to update product');
+      }
+    },
+    deleteProduct: async (id) => {
+      const product = state.products.find((p) => p.id === id);
+      const previous = state.products;
+      const optimistic = previous.filter((p) => p.id !== id);
+      dispatch({ type: 'DELETE_PRODUCT', payload: id });
+      await saveProductsToCache(optimistic);
+      try {
+        if (product) {
+          // Best-effort cleanup of storage objects; do not block product deletion.
+          await deleteProductImages(product.images).catch(() => {});
+        }
+        await deleteProductFromSupabase(id);
+      } catch {
+        dispatch({ type: 'SET_PRODUCTS', payload: previous });
+        await saveProductsToCache(previous);
+        throw new Error('Failed to delete product');
+      }
+    },
+    addToCart: (product, selectedImageIndex = product.coverImageIndex ?? 0) =>
+      dispatch({
+        type: 'ADD_TO_CART',
+        payload: { product, selectedImageIndex },
+      }),
+    removeFromCart: (productId, selectedImageIndex) =>
+      dispatch({
+        type: 'REMOVE_FROM_CART',
+        payload: { productId, selectedImageIndex },
+      }),
+    updateCartQuantity: (productId, selectedImageIndex, quantity) =>
+      dispatch({
+        type: 'UPDATE_CART_QUANTITY',
+        payload: { productId, selectedImageIndex, quantity },
+      }),
     clearCart: () => dispatch({ type: 'CLEAR_CART' }),
-    addOrder: (order) => dispatch({ type: 'ADD_ORDER', payload: order }),
+    addOrder: async (order) => {
+      const previous = state.orders;
+      const optimistic = [order, ...previous];
+      dispatch({ type: 'ADD_ORDER', payload: order });
+      await saveOrdersToCache(optimistic);
+      try {
+        await createOrder(order);
+      } catch {
+        dispatch({ type: 'DELETE_ORDER', payload: order.id });
+        await saveOrdersToCache(previous);
+        throw new Error('Failed to place order');
+      }
+    },
     setCategories: (categories) =>
       dispatch({ type: 'SET_CATEGORIES', payload: categories }),
-    addCategory: (category) => dispatch({ type: 'ADD_CATEGORY', payload: category }),
-    removeCategory: (category) =>
-      dispatch({ type: 'REMOVE_CATEGORY', payload: category }),
+    addCategory: async (category) => {
+      if (state.categories.includes(category)) return;
+      const previous = state.categories;
+      const optimistic = [...previous, category];
+      dispatch({ type: 'ADD_CATEGORY', payload: category });
+      await saveCategoriesToCache(optimistic);
+      try {
+        await createCategory(category);
+      } catch {
+        dispatch({ type: 'SET_CATEGORIES', payload: previous });
+        await saveCategoriesToCache(previous);
+        throw new Error('Failed to add category');
+      }
+    },
+    removeCategory: async (category) => {
+      const previous = state.categories;
+      const optimistic = previous.filter((c) => c !== category);
+      dispatch({ type: 'REMOVE_CATEGORY', payload: category });
+      await saveCategoriesToCache(optimistic);
+      try {
+        await deleteCategory(category);
+      } catch {
+        dispatch({ type: 'SET_CATEGORIES', payload: previous });
+        await saveCategoriesToCache(previous);
+        throw new Error('Failed to remove category');
+      }
+    },
     cartTotal,
     cartCount,
   };

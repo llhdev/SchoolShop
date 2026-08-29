@@ -1,6 +1,6 @@
 import { StyleSheet, Text, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { colors, spacing, fontSizes } from '../constants/theme';
+import { useThemeColors, spacing, fontSizes, ColorPalette } from '../constants/theme';
 
 interface EmptyStateProps {
   message: string;
@@ -8,6 +8,9 @@ interface EmptyStateProps {
 }
 
 export function EmptyState({ message, icon = 'basket-outline' }: EmptyStateProps) {
+  const colors = useThemeColors();
+  const styles = makeStyles(colors);
+
   return (
     <View style={styles.container}>
       <Ionicons name={icon} size={64} color={colors.border} />
@@ -16,7 +19,7 @@ export function EmptyState({ message, icon = 'basket-outline' }: EmptyStateProps
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (colors: ColorPalette) => StyleSheet.create({
   container: {
     flex: 1,
     justifyContent: 'center',

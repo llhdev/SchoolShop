@@ -2,12 +2,12 @@ import { NavigationContainer } from '@react-navigation/native';
 import { createNativeStackNavigator } from '@react-navigation/native-stack';
 import { RootStackParamList } from '../types/navigation';
 import { useApp } from '../context/AppContext';
-import { RoleSelectScreen } from '../screens/RoleSelectScreen';
 import { UserTabNavigator } from './UserTabNavigator';
 import { AdminStackNavigator } from './AdminStackNavigator';
 import { ProductDetailScreen } from '../screens/user/ProductDetailScreen';
 import { CheckoutScreen } from '../screens/user/CheckoutScreen';
 import { OrderDetailScreen } from '../screens/user/OrderDetailScreen';
+import { AdminLoginScreen } from '../screens/AdminLoginScreen';
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
@@ -17,9 +17,7 @@ export function AppNavigator() {
   return (
     <NavigationContainer>
       <Stack.Navigator screenOptions={{ headerShown: false }}>
-        {role === null ? (
-          <Stack.Screen name="RoleSelect" component={RoleSelectScreen} />
-        ) : role === 'admin' ? (
+        {role === 'admin' ? (
           <>
             <Stack.Screen name="AdminStack" component={AdminStackNavigator} />
             <Stack.Screen
@@ -50,6 +48,11 @@ export function AppNavigator() {
               name="OrderDetail"
               component={OrderDetailScreen}
               options={{ headerShown: true, title: 'Order Details' }}
+            />
+            <Stack.Screen
+              name="AdminLogin"
+              component={AdminLoginScreen}
+              options={{ headerShown: true, title: 'Admin Login' }}
             />
           </>
         )}

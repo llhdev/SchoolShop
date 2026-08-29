@@ -5,12 +5,27 @@ import { AdminDashboardScreen } from '../screens/admin/AdminDashboardScreen';
 import { AddEditItemScreen } from '../screens/admin/AddEditItemScreen';
 import { AdminOrdersScreen } from '../screens/admin/AdminOrdersScreen';
 import { AdminUserOrdersScreen } from '../screens/admin/AdminUserOrdersScreen';
+import { useThemeColors, fontSizes } from '../constants/theme';
 
 const Stack = createNativeStackNavigator<AdminStackParamList>();
 
 export function AdminStackNavigator() {
+  const colors = useThemeColors();
+
   return (
-    <Stack.Navigator screenOptions={{ headerShown: Platform.OS !== 'web' }}>
+    <Stack.Navigator
+      screenOptions={{
+        headerShown: Platform.OS !== 'web',
+        headerShadowVisible: false,
+        headerStyle: { backgroundColor: colors.surface },
+        headerTintColor: colors.text,
+        headerTitleStyle: {
+          color: colors.text,
+          fontSize: fontSizes.lg,
+          fontWeight: '700',
+        },
+      }}
+    >
       <Stack.Screen
         name="AdminDashboard"
         component={AdminDashboardScreen}

@@ -6,12 +6,15 @@ This file is written for AI coding agents working on the **OnlineShop** project.
 
 ## Project overview
 
-OnlineShop (also referred to as "Student Shop" in the UI) is a cross-platform mobile app built with **Expo SDK 54** and **React Native**. It is a student shopping MVP that lets users browse school supplies, add items to a cart, check out, and view order history. It also provides an admin mode where products and categories can be created, edited, and deleted, and where orders can be reviewed by customer phone number.
+OnlineShop (also referred to as "Gold Fashion" in the UI) is a cross-platform mobile app built with **Expo SDK 54** and **React Native**. It is a student shopping MVP that lets users browse school supplies, add items to a cart, check out, and view order history. It also provides an admin mode where products and categories can be created, edited, and deleted, and where orders can be reviewed by customer phone number.
 
 Key facts:
 
-- Single-user, local-only data. Products, orders, and categories are persisted on the device with `@react-native-async-storage/async-storage`.
-- No real backend or payment gateway. Online payment is simulated.
+- **Supabase** is the source of truth for products, orders, and categories. AsyncStorage is used as a local cache for instant UI rendering.
+- Reads are cache-first: the app shows cached data immediately and refreshes from Supabase in the background.
+- Writes are optimistic: the UI updates immediately, then syncs to Supabase. Realtime subscriptions keep clients in sync.
+- No real authentication in this phase. Row Level Security policies allow public read/write for the MVP.
+- No real payment gateway. Online payment is simulated.
 - Supports **iOS**, **Android**, and **web** targets through Expo.
 - Entry point: `index.ts` registers `App.tsx` as the root component.
 - Web target has dedicated responsive headers (`WebHeader`, `AdminHeader`) and a footer on the home screen; native targets use the standard bottom tab navigator and screen headers.
@@ -29,7 +32,9 @@ Key facts:
 | Language | TypeScript | `~5.9.2`, strict mode enabled |
 | Navigation | React Navigation v7 | `@react-navigation/native` + native-stack + bottom-tabs |
 | State | React Context + `useReducer` | Global state in `src/context/AppContext.tsx` |
-| Persistence | AsyncStorage | `@react-native-async-storage/async-storage@2.2.0` |
+| Backend / Database | Supabase | `@supabase/supabase-js` — Postgres + Realtime |
+| Local cache | AsyncStorage | `@react-native-async-storage/async-storage@2.2.0` |
+| File storage | Supabase Storage | `product-images` bucket for admin uploads |
 | Styling | React Native `StyleSheet` | Design tokens in `src/constants/theme.ts` |
 | Icons | `@expo/vector-icons` | Ionicons glyph set |
 | Image handling | `expo-image-picker`, `expo-image-manipulator` | Admin product images; multi-image gallery support |
@@ -50,6 +55,9 @@ Always consult the exact versioned docs before writing code: <https://docs.expo.
 ├── tsconfig.json                   # Extends expo/tsconfig.base, strict: true
 ├── start-app.bat                   # Windows quick-start helper
 ├── assets/                         # App icons, splash, favicon
+├── supabase/
+│   └── migrations/
+│       └── 001_initial_schema.sql  # Supabase tables, RLS, storage bucket
 └── src/
     ├── components/                 # Reusable UI components
     │   ├── AdminHeader.tsx         # Web-only admin navigation header
@@ -60,7 +68,7 @@ Always consult the exact versioned docs before writing code: <https://docs.expo.
     │   ├── ProductCard.tsx         # Product grid card
     │   ├── Screen.tsx              # Safe-area wrapper with optional scroll/padding
     │   ├── SearchBar.tsx           # Text input with search/clear icons
-    │   └── WebHeader.tsx           # Web-only student shop header
+    │   └── WebHeader.tsx           # Web-only Gold Fashion header
     ├── constants/
     │   ├── categories.ts           # Default category list, colors, and color helper
     │   └── theme.ts                # Colors, spacing, font sizes, border radius, breakpoints
@@ -70,12 +78,13 @@ Always consult the exact versioned docs before writing code: <https://docs.expo.
     │   └── seedProducts.ts         # Default product catalog
     ├── hooks/
     │   └── useResponsive.ts        # useWindowDimensions-based breakpoint helper
+    ├── lib/
+    │   └── supabase.ts             # Supabase client initialization
     ├── navigation/
     │   ├── AppNavigator.tsx        # Root native-stack navigator; role-based routing
     │   ├── AdminStackNavigator.tsx # Admin screens stack
     │   └── UserTabNavigator.tsx    # Student bottom-tabs (Home, Cart, Orders)
     ├── screens/
-    │   ├── RoleSelectScreen.tsx    # Landing role chooser
     │   ├── admin/
     │   │   ├── AdminDashboardScreen.tsx  # Product/category management and stats
     │   │   ├── AdminOrdersScreen.tsx     # Orders grouped by customer phone number
@@ -88,12 +97,18 @@ Always consult the exact versioned docs before writing code: <https://docs.expo.
     │       ├── CheckoutScreen.tsx        # Delivery info, Ethiopian phone validation, payment
     │       ├── OrdersScreen.tsx          # User order history
     │       └── OrderDetailScreen.tsx     # Single order details
+    ├── services/
+    │   ├── cache.ts                # AsyncStorage cache helpers
+    │   ├── categories.ts           # Category CRUD + realtime
+    │   ├── images.ts               # Supabase Storage upload/delete
+    │   ├── orders.ts               # Order CRUD + realtime
+    │   └── products.ts             # Product CRUD + realtime
     ├── types/
     │   ├── index.ts                # Domain types (Product, Order, CartItem, etc.)
     │   └── navigation.ts           # React Navigation param lists
     └── utils/
         ├── images.ts               # Placeholder image generation + cover/gallery helpers
-        ├── storage.ts              # AsyncStorage read/write for products, orders, categories
+        ├── storage.ts              # AsyncStorage read/write for theme only
         └── validation.ts           # Ethiopian phone number validation
 ```
 
@@ -133,33 +148,35 @@ Windows quick start: double-click `start-app.bat`, which opens a terminal, runs 
 All shared state lives in `src/context/AppContext.tsx`:
 
 - A single `useReducer` manages `role`, `products`, `cart`, `orders`, and `categories`.
-- On first mount, products, orders, and categories are hydrated from `AsyncStorage`.
-  - If no products exist, `seedProducts` are loaded and saved.
-  - If no categories exist, `DEFAULT_CATEGORIES` are loaded and saved.
-  - Legacy products that stored a single `image` string are migrated to the current `images` / `coverImageIndex` shape before being saved back.
-- Every change to `products`, `orders`, or `categories` is persisted via `useEffect`.
+- On first mount the app loads products, orders, and categories from the AsyncStorage cache immediately so the UI renders without waiting on the network.
+- A background sync then fetches fresh data from Supabase and replaces the local cache and state.
+- Mutations are optimistic: the reducer updates local state first, the cache is updated, and then the change is sent to Supabase. If the call fails, the local change is rolled back.
+- Supabase Realtime subscriptions listen for product, order, and category changes and refresh the local state + cache automatically.
 - Derived values (`cartTotal`, `cartCount`) are computed at render time.
 
 Actions:
 
 - `SET_ROLE`, `SET_PRODUCTS`, `ADD_PRODUCT`, `UPDATE_PRODUCT`, `DELETE_PRODUCT`
 - `ADD_TO_CART`, `REMOVE_FROM_CART`, `UPDATE_CART_QUANTITY`, `CLEAR_CART`
-- `SET_ORDERS`, `ADD_ORDER`
+- `SET_ORDERS`, `ADD_ORDER`, `DELETE_ORDER`
 - `SET_CATEGORIES`, `ADD_CATEGORY`, `REMOVE_CATEGORY`
 
 ### Navigation
 
 `AppNavigator.tsx` switches the root navigator based on `role`:
 
-- `role === null` → `RoleSelectScreen`
+- `role === 'user'` → `UserTabs` plus `ProductDetail`, `Checkout`, `OrderDetail`, and a hidden `AdminLogin` route
 - `role === 'admin'` → `AdminStack` plus shared `ProductDetail` and `OrderDetail`
-- `role === 'user'` → `UserTabs` plus `ProductDetail`, `Checkout`, and `OrderDetail`
+
+The app starts as a shopper by default.
+
+Admins reach `AdminLogin` by typing the secret keyword (`ADMIN_KEYWORD` in `src/constants/admin.ts`) into the home-screen search bar, then entering the password configured in `EXPO_PUBLIC_ADMIN_PASSWORD`.
 
 Param lists are defined in `src/types/navigation.ts`.
 
 ### Data model
 
-- `Product`: `id`, `name`, `description`, `price`, `category`, `images` (string array), `coverImageIndex`, `stock`, `createdAt`
+- `Product`: `id`, `name`, `description`, `price`, `category`, `images` (string array), `coverImageIndex`, `createdAt`
 - `CartItem`: `{ product, quantity }`
 - `Order`: `id`, `items`, `total`, `paymentMethod`, `status`, `location`, `phoneNumber`, `createdAt`
 - `Category`: arbitrary string; defaults are `School Uniform`, `Stationery`, `Books`, `Sports`, `Electronics`, `Accessories`
@@ -170,8 +187,10 @@ Param lists are defined in `src/types/navigation.ts`.
 
 - Placeholder images are generated with `placehold.co`, colored by category.
 - Products support multiple images. `coverImageIndex` selects which image is shown in cards and lists.
-- Admin image uploads allow multiple selections, are resized to a max width of 800px, and are saved as JPEG (base64 on web, file URI on native).
+- Admin image uploads allow multiple selections and are resized to a max width of 800px.
+- Resized images are uploaded to the Supabase Storage `product-images` bucket; the product record stores the public URL.
 - `utils/images.ts` provides `getProductCoverImage` and `getProductGalleryImages` for cover and gallery rendering.
+- `services/images.ts` handles upload, deletion, and URL parsing.
 
 ### Checkout behavior
 
@@ -182,9 +201,26 @@ Param lists are defined in `src/types/navigation.ts`.
 
 ### Persistence keys
 
-- `@onlineshop_products`
-- `@onlineshop_orders`
-- `@onlineshop_categories`
+AsyncStorage is only used for the local cache and theme:
+
+- `@onlineshop_products` (cache)
+- `@onlineshop_orders` (cache)
+- `@onlineshop_categories` (cache)
+- `@onlineshop_theme`
+
+---
+
+## Supabase setup
+
+1. Create a project at https://supabase.com.
+2. Copy the **Project URL** and **anon public API key**.
+3. Create a `.env` file in the project root from `.env.example`:
+   ```
+   EXPO_PUBLIC_SUPABASE_URL=https://<your-project>.supabase.co
+   EXPO_PUBLIC_SUPABASE_ANON_KEY=<your-anon-public-key>
+   ```
+4. Run the migration in `supabase/migrations/001_initial_schema.sql` from the Supabase SQL Editor.
+5. Start the app. It begins with empty products, orders, and categories so you can add your own.
 
 ---
 
@@ -219,11 +255,12 @@ There is no ESLint or Prettier configuration present. If you add one, keep rules
 
 ## Security considerations
 
-- **No real authentication.** Role selection (`user` vs `admin`) is purely client-side state and can be switched at any time.
+- **Admin authentication.** Admin access requires signing in through Supabase Auth with the email/password configured in `EXPO_PUBLIC_ADMIN_EMAIL` and `EXPO_PUBLIC_ADMIN_PASSWORD`. Supabase RLS policies enforce that only authenticated admins can create, update, or delete products, categories, and product images. Shoppers remain unauthenticated.
 - **No real payment processing.** Card details entered on the checkout screen are validated only by length and are never transmitted or stored securely.
-- **Local storage only.** AsyncStorage data is stored unencrypted on the device. Do not store real payment data, passwords, or PII in this app.
+- **Public reads, authenticated writes.** Products and categories are readable by everyone so shoppers can browse. Orders can be placed without auth, but order history is only visible to admins in this MVP. Lock this down further with shopper authentication if you need per-user order history.
+- **Local cache.** AsyncStorage data is stored unencrypted on the device. Do not store real payment data, passwords, or PII in this app.
 - **Placeholder images** are loaded from an external service (`placehold.co`) over HTTPS. If network access is restricted, those images will not render.
-- Admin product images are picked from the device media library and stored as local file URIs or base64 strings. These may not be portable across app reinstalls or devices.
+- Admin product images are uploaded to Supabase Storage. Storage objects are not automatically deleted when a product is removed (deletion is best-effort).
 
 ---
 
@@ -232,3 +269,5 @@ There is no ESLint or Prettier configuration present. If you add one, keep rules
 - Expo SDK 54 docs: <https://docs.expo.dev/versions/v54.0.0/>
 - React Navigation v7: <https://reactnavigation.org/docs/getting-started/>
 - AsyncStorage: <https://react-native-async-storage.github.io/async-storage/>
+- Supabase JavaScript client: <https://supabase.com/docs/reference/javascript/>
+- Supabase Realtime: <https://supabase.com/docs/guides/realtime>

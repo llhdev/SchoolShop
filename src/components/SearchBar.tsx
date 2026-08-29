@@ -1,6 +1,7 @@
 import { StyleSheet, TextInput, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { colors, spacing, borderRadius, fontSizes } from '../constants/theme';
+import { useResponsive } from '../hooks/useResponsive';
+import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../constants/theme';
 
 interface SearchBarProps {
   value: string;
@@ -13,11 +14,19 @@ export function SearchBar({
   onChangeText,
   placeholder = 'Search items...',
 }: SearchBarProps) {
+  const colors = useThemeColors();
+  const styles = makeStyles(colors);
+  const { isPhone } = useResponsive();
+
   return (
-    <View style={styles.container}>
-      <Ionicons name="search-outline" size={18} color={colors.textSecondary} />
+    <View style={[styles.container, isPhone && styles.containerCompact]}>
+      <Ionicons
+        name="search-outline"
+        size={isPhone ? 14 : 18}
+        color={colors.textSecondary}
+      />
       <TextInput
-        style={styles.input}
+        style={[styles.input, isPhone && styles.inputCompact]}
         value={value}
         onChangeText={onChangeText}
         placeholder={placeholder}
@@ -26,7 +35,7 @@ export function SearchBar({
       {value.length > 0 && (
         <Ionicons
           name="close-circle"
-          size={18}
+          size={isPhone ? 14 : 18}
           color={colors.textSecondary}
           onPress={() => onChangeText('')}
         />
@@ -35,21 +44,29 @@ export function SearchBar({
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (colors: ColorPalette) => StyleSheet.create({
   container: {
     flexDirection: 'row',
     alignItems: 'center',
     backgroundColor: colors.surface,
-    borderRadius: borderRadius.md,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.xs,
+    borderRadius: borderRadius.sm,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 2,
     borderWidth: 1,
     borderColor: colors.border,
-    gap: spacing.sm,
+    gap: spacing.xs,
+  },
+  containerCompact: {
+    paddingHorizontal: spacing.xs,
+    paddingVertical: 1,
+    gap: 2,
   },
   input: {
     flex: 1,
     fontSize: fontSizes.sm,
     color: colors.text,
+  },
+  inputCompact: {
+    fontSize: fontSizes.xs,
   },
 });

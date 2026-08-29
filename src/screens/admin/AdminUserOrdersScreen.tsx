@@ -8,7 +8,7 @@ import { AdminHeader } from '../../components/AdminHeader';
 import { useApp } from '../../context/AppContext';
 import { getProductCoverImage } from '../../utils/images';
 import { RootStackParamList } from '../../types/navigation';
-import { colors, spacing, borderRadius, fontSizes } from '../../constants/theme';
+import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../../constants/theme';
 
 const MAX_WIDTH = 1000;
 
@@ -17,6 +17,8 @@ export function AdminUserOrdersScreen() {
   const route = useRoute();
   const { phoneNumber } = route.params as { phoneNumber: string };
   const { orders } = useApp();
+  const colors = useThemeColors();
+  const styles = makeStyles(colors);
 
   const userOrders = orders
     .filter((order) => order.phoneNumber === phoneNumber)
@@ -95,7 +97,7 @@ export function AdminUserOrdersScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (colors: ColorPalette) => StyleSheet.create({
   container: {
     flex: 1,
     maxWidth: MAX_WIDTH,

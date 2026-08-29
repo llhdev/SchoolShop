@@ -87,7 +87,7 @@ npx tsc --noEmit
     │   ├── ProductCard.tsx         # Product grid card
     │   ├── Screen.tsx              # Safe-area wrapper with optional scroll/padding
     │   ├── SearchBar.tsx           # Text input with search/clear icons
-    │   └── WebHeader.tsx           # Web-only student shop header
+    │   └── WebHeader.tsx           # Web-only Gold Fashion header
     ├── constants/
     │   ├── categories.ts           # Default category list and colors
     │   └── theme.ts                # Colors, spacing, font sizes, border radius

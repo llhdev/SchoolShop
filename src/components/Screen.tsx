@@ -1,7 +1,7 @@
 import { ReactNode } from 'react';
 import { ScrollView, StyleSheet, View, ViewStyle } from 'react-native';
 import { SafeAreaView, Edge } from 'react-native-safe-area-context';
-import { colors, spacing } from '../constants/theme';
+import { useThemeColors, spacing, ColorPalette } from '../constants/theme';
 
 interface ScreenProps {
   children: ReactNode;
@@ -20,6 +20,9 @@ export function Screen({
   noPadding = false,
   edges = ['top', 'left', 'right', 'bottom'],
 }: ScreenProps) {
+  const colors = useThemeColors();
+  const styles = makeStyles(colors);
+
   const content = (
     <View
       style={[
@@ -36,7 +39,11 @@ export function Screen({
   return (
     <SafeAreaView style={styles.safeArea} edges={edges}>
       {scroll ? (
-        <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
+        <ScrollView
+          style={styles.scroll}
+          contentContainerStyle={styles.scrollContent}
+          contentInsetAdjustmentBehavior="never"
+        >
           {content}
         </ScrollView>
       ) : (
@@ -46,28 +53,29 @@ export function Screen({
   );
 }
 
-const styles = StyleSheet.create({
-  safeArea: {
-    flex: 1,
-    backgroundColor: colors.background,
-  },
-  scroll: {
-    flex: 1,
-  },
-  scrollContent: {
-    flexGrow: 1,
-  },
-  container: {
-    flex: 1,
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.md,
-  },
-  noPadding: {
-    paddingHorizontal: 0,
-    paddingVertical: 0,
-  },
-  centered: {
-    alignItems: 'center',
-    justifyContent: 'center',
-  },
-});
+const makeStyles = (colors: ColorPalette) =>
+  StyleSheet.create({
+    safeArea: {
+      flex: 1,
+      backgroundColor: colors.background,
+    },
+    scroll: {
+      flex: 1,
+    },
+    scrollContent: {
+      flexGrow: 1,
+    },
+    container: {
+      flex: 1,
+      paddingHorizontal: spacing.lg,
+      paddingVertical: spacing.md,
+    },
+    noPadding: {
+      paddingHorizontal: 0,
+      paddingVertical: 0,
+    },
+    centered: {
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+  });

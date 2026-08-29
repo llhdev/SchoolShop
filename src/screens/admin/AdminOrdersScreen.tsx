@@ -8,7 +8,7 @@ import { AdminHeader } from '../../components/AdminHeader';
 import { useApp } from '../../context/AppContext';
 import { AdminStackParamList } from '../../types/navigation';
 import { Order } from '../../types';
-import { colors, spacing, borderRadius, fontSizes } from '../../constants/theme';
+import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../../constants/theme';
 
 const MAX_WIDTH = 1000;
 
@@ -23,6 +23,8 @@ interface UserOrderGroup {
 export function AdminOrdersScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<AdminStackParamList>>();
   const { orders } = useApp();
+  const colors = useThemeColors();
+  const styles = makeStyles(colors);
 
   const grouped = orders.reduce<Record<string, UserOrderGroup>>((acc, order) => {
     const phoneNumber = order.phoneNumber?.trim() || 'No phone number';
@@ -102,7 +104,7 @@ export function AdminOrdersScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (colors: ColorPalette) => StyleSheet.create({
   container: {
     flex: 1,
     maxWidth: MAX_WIDTH,

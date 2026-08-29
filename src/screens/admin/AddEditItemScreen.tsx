@@ -1,4 +1,4 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { Platform } from 'react-native';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -23,8 +23,9 @@ import { useApp } from '../../context/AppContext';
 import { useResponsive } from '../../hooks/useResponsive';
 import { AdminStackParamList } from '../../types/navigation';
 import { getProductCoverImage, resizeImage } from '../../utils/images';
+import { deleteProductImage, uploadProductImages } from '../../services/images';
 import { Category, Product } from '../../types';
-import { colors, spacing, borderRadius, fontSizes } from '../../constants/theme';
+import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../../constants/theme';
 
 const MAX_WIDTH = 800;
 
@@ -34,23 +35,32 @@ export function AddEditItemScreen() {
   const { productId } = (route.params as { productId?: string }) ?? {};
   const { products, categories, addProduct, updateProduct } = useApp();
   const { isDesktop } = useResponsive();
+  const colors = useThemeColors();
+  const styles = makeStyles(colors);
 
   const existing = productId ? products.find((p) => p.id === productId) : undefined;
 
   const [name, setName] = useState(existing?.name ?? '');
-  const [description, setDescription] = useState(existing?.description ?? '');
   const [price, setPrice] = useState(existing?.price.toString() ?? '');
-  const [category, setCategory] = useState<Category>(existing?.category ?? categories[0]);
-  const [stock, setStock] = useState(existing?.stock.toString() ?? '');
+  const [category, setCategory] = useState<Category>(existing?.category ?? categories[0] ?? '');
   const [images, setImages] = useState<string[]>(existing?.images ?? []);
   const [coverImageIndex, setCoverImageIndex] = useState(existing?.coverImageIndex ?? 0);
 
+  useEffect(() => {
+    if (categories.length === 0 && !existing) {
+      Alert.alert(
+        'No categories',
+        'Please add a category in the admin dashboard before creating a product.',
+        [{ text: 'OK', onPress: () => navigation.navigate('AdminDashboard') }]
+      );
+    }
+  }, [categories.length, existing, navigation]);
+
   const isValid =
     name.trim() &&
-    description.trim() &&
     !isNaN(Number(price)) &&
     Number(price) > 0 &&
-    !isNaN(Number(stock));
+    category.trim().length > 0;
 
   async function pickImages() {
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
@@ -70,11 +80,13 @@ export function AddEditItemScreen() {
       const resized = await Promise.all(
         result.assets.map((asset) => resizeImage(asset.uri, 800))
       );
-      setImages((prev) => [...prev, ...resized]);
+      const uploaded = await uploadProductImages(resized);
+      setImages((prev) => [...prev, ...uploaded]);
     }
   }
 
   function removeImage(index: number) {
+    const removed = images[index];
     setImages((prev) => {
       const next = prev.filter((_, i) => i !== index);
       setCoverImageIndex((current) => {
@@ -83,43 +95,46 @@ export function AddEditItemScreen() {
       });
       return next;
     });
+    // Best-effort cleanup of the storage object.
+    deleteProductImage(removed).catch(() => {});
   }
 
-  function handleSave() {
+  async function handleSave() {
     if (!isValid) return;
 
     const productData: Product = {
       id: existing?.id ?? Date.now().toString(),
       name: name.trim(),
-      description: description.trim(),
+      description: existing?.description ?? '',
       price: Number(price),
       category,
       images,
       coverImageIndex: images.length > 0 ? coverImageIndex : 0,
-      stock: Number(stock),
       createdAt: existing?.createdAt ?? new Date().toISOString(),
     };
 
-    if (existing) {
-      updateProduct(productData);
+    try {
+      if (existing) {
+        await updateProduct(productData);
+        Alert.alert('Item Updated', `${productData.name} has been updated.`);
+      } else {
+        await addProduct(productData);
+        Alert.alert('Item Added', `${productData.name} has been added.`);
+      }
       navigation.navigate('AdminDashboard');
-      Alert.alert('Item Updated', `${productData.name} has been updated.`);
-    } else {
-      addProduct(productData);
-      navigation.navigate('AdminDashboard');
-      Alert.alert('Item Added', `${productData.name} has been added.`);
+    } catch {
+      Alert.alert('Error', 'Failed to save item. Please check your connection and try again.');
     }
   }
 
   const previewProduct: Product = {
     id: existing?.id ?? 'preview',
     name: name.trim() || 'Product',
-    description: description.trim(),
+    description: existing?.description ?? '',
     price: Number(price) || 0,
     category,
     images,
     coverImageIndex,
-    stock: Number(stock) || 0,
     createdAt: existing?.createdAt ?? new Date().toISOString(),
   };
   const coverUri = getProductCoverImage(previewProduct);
@@ -216,6 +231,9 @@ export function AddEditItemScreen() {
                 <Picker
                   selectedValue={category}
                   onValueChange={(itemValue) => setCategory(itemValue as Category)}
+                  style={{ color: colors.text }}
+                  itemStyle={{ color: colors.text }}
+                  dropdownIconColor={colors.text}
                 >
                   {categories.map((cat) => (
                     <Picker.Item key={cat} label={cat} value={cat} />
@@ -223,19 +241,6 @@ export function AddEditItemScreen() {
                 </Picker>
               </View>
             </View>
-          </View>
-
-          <View style={styles.field}>
-            <Text style={styles.label}>Description</Text>
-            <TextInput
-              style={[styles.input, styles.textArea]}
-              value={description}
-              onChangeText={setDescription}
-              placeholder="Item description"
-              multiline
-              numberOfLines={4}
-              textAlignVertical="top"
-            />
           </View>
 
           <View style={[styles.row, isDesktop && styles.rowDesktop]}>
@@ -247,16 +252,6 @@ export function AddEditItemScreen() {
                 onChangeText={setPrice}
                 placeholder="0.00"
                 keyboardType="decimal-pad"
-              />
-            </View>
-            <View style={[styles.field, styles.flex]}>
-              <Text style={styles.label}>Stock</Text>
-              <TextInput
-                style={styles.input}
-                value={stock}
-                onChangeText={setStock}
-                placeholder="0"
-                keyboardType="number-pad"
               />
             </View>
           </View>
@@ -274,7 +269,7 @@ export function AddEditItemScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (colors: ColorPalette) => StyleSheet.create({
   scroll: {
     flex: 1,
   },
@@ -403,10 +398,6 @@ const styles = StyleSheet.create({
     paddingVertical: spacing.md,
     fontSize: fontSizes.md,
     color: colors.text,
-  },
-  textArea: {
-    minHeight: 100,
-    paddingTop: spacing.md,
   },
   row: {
     gap: spacing.md,

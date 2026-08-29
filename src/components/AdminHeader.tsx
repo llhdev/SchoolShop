@@ -3,8 +3,9 @@ import { Ionicons } from '@expo/vector-icons';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { useApp } from '../context/AppContext';
+import { ThemeToggle } from './ThemeToggle';
 import { AdminStackParamList } from '../types/navigation';
-import { colors, spacing, borderRadius, fontSizes } from '../constants/theme';
+import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../constants/theme';
 
 type AdminNav = NativeStackNavigationProp<AdminStackParamList>;
 
@@ -16,6 +17,8 @@ interface NavLinkProps {
 }
 
 function NavLink({ name, label, current, onPress }: NavLinkProps) {
+  const colors = useThemeColors();
+  const styles = makeStyles(colors);
   const active = current === name;
   return (
     <TouchableOpacity onPress={onPress} style={styles.navLink}>
@@ -28,9 +31,11 @@ function NavLink({ name, label, current, onPress }: NavLinkProps) {
 }
 
 export function AdminHeader() {
+  const colors = useThemeColors();
+  const styles = makeStyles(colors);
   const navigation = useNavigation<AdminNav>();
   const route = useRoute();
-  const { setRole } = useApp();
+  const { signOutAdmin } = useApp();
   const current = route.name;
 
   if (Platform.OS !== 'web') return null;
@@ -40,7 +45,7 @@ export function AdminHeader() {
       <View style={styles.inner}>
         <View style={styles.brandRow}>
           <Ionicons name="settings-outline" size={24} color={colors.primary} />
-          <Text style={styles.brandText}>Admin</Text>
+          <Text style={styles.brandText}>Admin Dashboard</Text>
         </View>
 
         <View style={styles.nav}>
@@ -64,15 +69,17 @@ export function AdminHeader() {
           />
         </View>
 
-        <TouchableOpacity style={styles.roleButton} onPress={() => setRole(null)}>
-          <Text style={styles.roleText}>Switch role</Text>
+        <ThemeToggle />
+
+        <TouchableOpacity style={styles.exitButton} onPress={signOutAdmin}>
+          <Text style={styles.exitText}>Exit admin</Text>
         </TouchableOpacity>
       </View>
     </View>
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (colors: ColorPalette) => StyleSheet.create({
   header: {
     width: '100%',
     backgroundColor: colors.surface,
@@ -130,15 +137,15 @@ const styles = StyleSheet.create({
     backgroundColor: colors.primary,
     borderRadius: 1,
   },
-  roleButton: {
+  exitButton: {
     borderWidth: 1,
-    borderColor: colors.primary,
+    borderColor: colors.danger,
     borderRadius: borderRadius.sm,
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.sm,
   },
-  roleText: {
-    color: colors.primary,
+  exitText: {
+    color: colors.danger,
     fontSize: fontSizes.sm,
     fontWeight: '600',
   },

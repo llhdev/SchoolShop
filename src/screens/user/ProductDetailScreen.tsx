@@ -22,7 +22,7 @@ import { useApp } from '../../context/AppContext';
 import { useResponsive } from '../../hooks/useResponsive';
 import { getProductGalleryImages } from '../../utils/images';
 import { RootStackParamList } from '../../types/navigation';
-import { colors, spacing, borderRadius, fontSizes } from '../../constants/theme';
+import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../../constants/theme';
 
 const PHONE_IMAGE_HEIGHT_RATIO = 0.65;
 const MAX_WIDTH = 1200;
@@ -34,6 +34,8 @@ export function ProductDetailScreen() {
   const { products, addToCart } = useApp();
   const { isDesktop } = useResponsive();
   const { width: windowWidth } = useWindowDimensions();
+  const colors = useThemeColors();
+  const styles = makeStyles(colors);
   const [activeIndex, setActiveIndex] = useState(0);
 
   const product = products.find((p) => p.id === productId);
@@ -47,7 +49,6 @@ export function ProductDetailScreen() {
   }
 
   const galleryImages = useMemo(() => getProductGalleryImages(product), [product]);
-  const outOfStock = product.stock <= 0;
   const isWebDesktop = Platform.OS === 'web' && isDesktop;
 
   const phoneImageHeight = windowWidth * PHONE_IMAGE_HEIGHT_RATIO;
@@ -68,39 +69,34 @@ export function ProductDetailScreen() {
 
       <View style={styles.metaRow}>
         <Text style={styles.category}>{product.category}</Text>
-        {outOfStock && (
-          <View style={styles.outOfStockBadge}>
-            <Text style={styles.outOfStockText}>Out of stock</Text>
-          </View>
-        )}
       </View>
 
       <View style={styles.divider} />
 
-      <Text style={styles.sectionTitle}>Description</Text>
-      <Text style={styles.description}>{product.description}</Text>
+      {galleryImages.length > 1 && (
+        <Text style={styles.variantLabel}>
+          Variant {activeIndex + 1} of {galleryImages.length}
+        </Text>
+      )}
 
       <View style={styles.actions}>
         <Button
           title="Add to Cart"
           onPress={() => {
-            addToCart(product);
+            addToCart(product, activeIndex);
             navigation.goBack();
           }}
-          disabled={outOfStock}
-          style={styles.actionButton}
-        />
-        <Button
-          title="Buy Now"
-          variant="secondary"
-          onPress={() => {
-            addToCart(product);
-            navigation.navigate('Checkout');
-          }}
-          disabled={outOfStock}
           style={styles.actionButton}
         />
       </View>
+
+      {product.description.length > 0 && (
+        <>
+          <View style={styles.divider} />
+          <Text style={styles.sectionTitle}>Description</Text>
+          <Text style={styles.description}>{product.description}</Text>
+        </>
+      )}
     </View>
   );
 
@@ -189,7 +185,7 @@ export function ProductDetailScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (colors: ColorPalette) => StyleSheet.create({
   desktopScroll: {
     flexGrow: 1,
     backgroundColor: colors.surface,
@@ -224,16 +220,23 @@ const styles = StyleSheet.create({
     flexWrap: 'wrap',
   },
   thumbnailButton: {
-    width: 72,
-    height: 72,
-    borderRadius: borderRadius.sm,
+    width: 80,
+    height: 80,
+    borderRadius: borderRadius.md,
     overflow: 'hidden',
     borderWidth: 2,
     borderColor: colors.border,
     backgroundColor: colors.surface,
+    ...Platform.select({
+      web: {
+        cursor: 'pointer',
+        transition: 'border-color 0.15s ease',
+      } as any,
+    }),
   },
   thumbnailButtonActive: {
     borderColor: colors.primary,
+    borderWidth: 3,
   },
   thumbnailImage: {
     width: '100%',
@@ -278,7 +281,7 @@ const styles = StyleSheet.create({
     flex: 1,
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.lg,
-    justifyContent: 'center',
+    justifyContent: 'flex-start',
   },
   headerRow: {
     flexDirection: 'row',
@@ -311,16 +314,11 @@ const styles = StyleSheet.create({
     letterSpacing: 1,
     fontWeight: '600',
   },
-  outOfStockBadge: {
-    backgroundColor: colors.danger + '1A',
-    paddingHorizontal: spacing.sm,
-    paddingVertical: spacing.xs,
-    borderRadius: borderRadius.sm,
-  },
-  outOfStockText: {
-    fontSize: fontSizes.xs,
-    color: colors.danger,
+  variantLabel: {
+    fontSize: fontSizes.sm,
+    color: colors.textSecondary,
     fontWeight: '600',
+    marginBottom: spacing.md,
   },
   divider: {
     height: 1,

@@ -10,7 +10,6 @@ export const seedProducts: Product[] = [
     category: 'School Uniform',
     images: [generatePlaceholderImage('School Uniform', 'Shirt')],
     coverImageIndex: 0,
-    stock: 50,
     createdAt: new Date().toISOString(),
   },
   {
@@ -21,7 +20,6 @@ export const seedProducts: Product[] = [
     category: 'School Uniform',
     images: [generatePlaceholderImage('School Uniform', 'Trousers')],
     coverImageIndex: 0,
-    stock: 40,
     createdAt: new Date().toISOString(),
   },
   {
@@ -32,7 +30,6 @@ export const seedProducts: Product[] = [
     category: 'Stationery',
     images: [generatePlaceholderImage('Stationery', 'Notebooks')],
     coverImageIndex: 0,
-    stock: 100,
     createdAt: new Date().toISOString(),
   },
   {
@@ -43,7 +40,6 @@ export const seedProducts: Product[] = [
     category: 'Stationery',
     images: [generatePlaceholderImage('Stationery', 'Pens')],
     coverImageIndex: 0,
-    stock: 200,
     createdAt: new Date().toISOString(),
   },
   {
@@ -54,7 +50,6 @@ export const seedProducts: Product[] = [
     category: 'Books',
     images: [generatePlaceholderImage('Books', 'Math Book')],
     coverImageIndex: 0,
-    stock: 30,
     createdAt: new Date().toISOString(),
   },
   {
@@ -65,7 +60,6 @@ export const seedProducts: Product[] = [
     category: 'Sports',
     images: [generatePlaceholderImage('Sports', 'Football')],
     coverImageIndex: 0,
-    stock: 25,
     createdAt: new Date().toISOString(),
   },
   {
@@ -76,7 +70,6 @@ export const seedProducts: Product[] = [
     category: 'Electronics',
     images: [generatePlaceholderImage('Electronics', 'Calculator')],
     coverImageIndex: 0,
-    stock: 60,
     createdAt: new Date().toISOString(),
   },
   {
@@ -87,7 +80,6 @@ export const seedProducts: Product[] = [
     category: 'Accessories',
     images: [generatePlaceholderImage('Accessories', 'Backpack')],
     coverImageIndex: 0,
-    stock: 35,
     createdAt: new Date().toISOString(),
   },
 ];

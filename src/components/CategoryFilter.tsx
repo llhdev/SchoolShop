@@ -10,27 +10,24 @@ import {
   View,
 } from 'react-native';
 import { useApp } from '../context/AppContext';
+import { useResponsive } from '../hooks/useResponsive';
 import { Category } from '../types';
-import { colors, spacing, borderRadius, fontSizes } from '../constants/theme';
+import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../constants/theme';
 
 interface CategoryFilterProps {
   selected: Category | null;
   onSelect: (category: Category | null) => void;
-  showNewArrivals?: boolean;
-  newArrivalsSelected?: boolean;
-  onNewArrivalsToggle?: () => void;
 }
-
-const VISIBLE_COUNT = 3;
 
 export function CategoryFilter({
   selected,
   onSelect,
-  showNewArrivals = false,
-  newArrivalsSelected = false,
-  onNewArrivalsToggle,
 }: CategoryFilterProps) {
+  const colors = useThemeColors();
+  const styles = makeStyles(colors);
   const { categories } = useApp();
+  const { isPhone } = useResponsive();
+  const VISIBLE_COUNT = isPhone ? 5 : 3;
   const [dropdownVisible, setDropdownVisible] = useState(false);
   const [moreLayout, setMoreLayout] = useState<{
     x: number;
@@ -53,39 +50,44 @@ export function CategoryFilter({
       <ScrollView
         horizontal
         showsHorizontalScrollIndicator={false}
-        contentContainerStyle={styles.container}
+        contentContainerStyle={[
+          styles.container,
+          isPhone && styles.containerCompact,
+        ]}
       >
         <TouchableOpacity
-          style={[styles.chip, selected === null && styles.activeChip]}
+          style={[
+            styles.chip,
+            isPhone && styles.chipCompact,
+            selected === null && styles.activeChip,
+          ]}
           onPress={() => onSelect(null)}
         >
-          <Text style={[styles.text, selected === null && styles.activeText]}>
+          <Text
+            style={[
+              styles.text,
+              isPhone && styles.textCompact,
+              selected === null && styles.activeText,
+            ]}
+          >
             All
           </Text>
         </TouchableOpacity>
 
-        {showNewArrivals && (
-          <TouchableOpacity
-            style={[styles.chip, newArrivalsSelected && styles.activeChip]}
-            onPress={onNewArrivalsToggle}
-          >
-            <Text
-              style={[styles.text, newArrivalsSelected && styles.activeText]}
-            >
-              New Arrivals
-            </Text>
-          </TouchableOpacity>
-        )}
-
         {visibleCategories.map((category) => (
           <TouchableOpacity
             key={category}
-            style={[styles.chip, selected === category && styles.activeChip]}
+            style={[
+              styles.chip,
+              isPhone && styles.chipCompact,
+              selected === category && styles.activeChip,
+            ]}
             onPress={() => onSelect(category)}
           >
             <Text
               style={[
                 styles.text,
+                isPhone && styles.textCompact,
                 selected === category && styles.activeText,
               ]}
             >
@@ -97,7 +99,7 @@ export function CategoryFilter({
         {hiddenCategories.length > 0 && (
           <View ref={moreButtonRef} collapsable={false}>
             <TouchableOpacity
-              style={[styles.chip, styles.moreChip]}
+              style={[styles.chip, isPhone && styles.chipCompact, styles.moreChip]}
               onPress={() => {
                 moreButtonRef.current?.measure((x, y, width, height, pageX, pageY) => {
                   setMoreLayout({ x: pageX, y: pageY, width, height });
@@ -105,7 +107,15 @@ export function CategoryFilter({
                 });
               }}
             >
-              <Text style={[styles.text, styles.moreText]}>More ▼</Text>
+              <Text
+                style={[
+                  styles.text,
+                  isPhone && styles.textCompact,
+                  styles.moreText,
+                ]}
+              >
+                More ▼
+              </Text>
             </TouchableOpacity>
           </View>
         )}
@@ -159,15 +169,19 @@ export function CategoryFilter({
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (colors: ColorPalette) => StyleSheet.create({
   wrapper: {
     marginTop: spacing.sm,
     marginBottom: spacing.md,
   },
   container: {
-    paddingHorizontal: spacing.lg,
+    paddingHorizontal: 0,
     gap: spacing.sm,
     alignItems: 'center',
+  },
+  containerCompact: {
+    paddingHorizontal: 0,
+    gap: 2,
   },
   chip: {
     paddingHorizontal: spacing.md,
@@ -179,6 +193,11 @@ const styles = StyleSheet.create({
     height: 34,
     justifyContent: 'center',
   },
+  chipCompact: {
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 2,
+    height: 24,
+  },
   activeChip: {
     backgroundColor: colors.primary,
     borderColor: colors.primary,
@@ -189,6 +208,9 @@ const styles = StyleSheet.create({
   text: {
     fontSize: fontSizes.sm,
     color: colors.text,
+  },
+  textCompact: {
+    fontSize: fontSizes.xs,
   },
   activeText: {
     color: colors.surface,

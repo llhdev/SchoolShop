@@ -9,13 +9,15 @@ import { WebHeader } from '../../components/WebHeader';
 import { useApp } from '../../context/AppContext';
 import { getProductCoverImage } from '../../utils/images';
 import { RootStackParamList } from '../../types/navigation';
-import { colors, spacing, borderRadius, fontSizes } from '../../constants/theme';
+import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../../constants/theme';
 
 const MAX_WIDTH = 900;
 
 export function OrdersScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const { orders } = useApp();
+  const colors = useThemeColors();
+  const styles = makeStyles(colors);
 
   const isWeb = Platform.OS === 'web';
 
@@ -97,7 +99,7 @@ export function OrdersScreen() {
   );
 }
 
-const styles = StyleSheet.create({
+const makeStyles = (colors: ColorPalette) => StyleSheet.create({
   container: {
     flex: 1,
     maxWidth: MAX_WIDTH,
