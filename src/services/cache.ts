@@ -1,9 +1,9 @@
 import AsyncStorage from '@react-native-async-storage/async-storage';
 
 export const CACHE_KEYS = {
-  products: '@onlineshop_products',
-  orders: '@onlineshop_orders',
-  categories: '@onlineshop_categories',
+  products: '@schoolshop_products',
+  orders: '@schoolshop_orders',
+  categories: '@schoolshop_categories',
 } as const;
 
 export async function getCached<T>(key: string): Promise<T | null> {
