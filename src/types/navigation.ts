@@ -13,6 +13,7 @@ export type AdminStackParamList = {
   AdminOrders: undefined;
   AdminUserOrders: { phoneNumber: string };
   TenantManagement: undefined;
+  TenantDetail: { tenantId: string };
 };
 
 export type RootStackParamList = {

@@ -5,6 +5,7 @@ export interface Tenant {
   id: string;
   username: string | null;
   email: string | null;
+  shopName: string | null;
   role: 'admin';
   createdAt: string;
 }
@@ -13,6 +14,7 @@ interface DbProfile {
   id: string;
   username: string | null;
   email: string | null;
+  shop_name: string | null;
   role: 'admin';
   created_at: string;
 }
@@ -22,6 +24,7 @@ function toTenant(db: DbProfile): Tenant {
     id: db.id,
     username: db.username,
     email: db.email,
+    shopName: db.shop_name,
     role: db.role,
     createdAt: db.created_at,
   };
@@ -52,12 +55,27 @@ function createSignupClient() {
 export async function fetchTenants(): Promise<Tenant[]> {
   const { data, error } = await supabase
     .from('profiles')
-    .select('id, username, email, role, created_at')
+    .select('id, username, email, shop_name, role, created_at')
     .eq('role', 'admin')
     .order('created_at', { ascending: false });
 
   if (error) throw error;
   return (data ?? []).map(toTenant);
+}
+
+export async function fetchTenantById(id: string): Promise<Tenant | null> {
+  const { data, error } = await supabase
+    .from('profiles')
+    .select('id, username, email, shop_name, role, created_at')
+    .eq('id', id)
+    .eq('role', 'admin')
+    .single();
+
+  if (error) {
+    if (error.code === 'PGRST116') return null;
+    throw error;
+  }
+  return data ? toTenant(data) : null;
 }
 
 export async function deleteTenant(id: string): Promise<void> {
@@ -67,14 +85,20 @@ export async function deleteTenant(id: string): Promise<void> {
 
 export async function createTenant(
   username: string,
-  password: string
+  password: string,
+  shopName: string
 ): Promise<Tenant> {
   const cleanUsername = username.trim().toLowerCase();
+  const cleanShopName = shopName.trim();
+
   if (!cleanUsername) {
     throw new Error('Username is required.');
   }
   if (password.length < 6) {
     throw new Error('Password must be at least 6 characters.');
+  }
+  if (!cleanShopName) {
+    throw new Error('Shop name is required.');
   }
 
   const email = getTenantEmail(cleanUsername);
@@ -83,6 +107,9 @@ export async function createTenant(
   const { data, error } = await signupClient.auth.signUp({
     email,
     password,
+    options: {
+      data: { shop_name: cleanShopName },
+    },
   });
 
   if (error) {
@@ -101,6 +128,7 @@ export async function createTenant(
     id: data.user.id,
     username: cleanUsername,
     email,
+    shopName: cleanShopName,
     role: 'admin',
     createdAt: new Date().toISOString(),
   };

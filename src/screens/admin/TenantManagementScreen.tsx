@@ -36,6 +36,7 @@ export function TenantManagementScreen() {
   const [isCreating, setIsCreating] = useState(false);
 
   const [username, setUsername] = useState('');
+  const [shopName, setShopName] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -61,6 +62,7 @@ export function TenantManagementScreen() {
 
   function resetForm() {
     setUsername('');
+    setShopName('');
     setPassword('');
     setConfirmPassword('');
     setShowPassword(false);
@@ -71,6 +73,10 @@ export function TenantManagementScreen() {
 
     if (!cleanUsername) {
       Alert.alert('Error', 'Please enter a username.');
+      return;
+    }
+    if (!shopName.trim()) {
+      Alert.alert('Error', 'Please enter a shop name.');
       return;
     }
     if (password.length < 6) {
@@ -84,7 +90,7 @@ export function TenantManagementScreen() {
 
     setIsCreating(true);
     try {
-      const tenant = await createTenant(cleanUsername, password);
+      const tenant = await createTenant(cleanUsername, password, shopName.trim());
       setTenants((prev) => [tenant, ...prev]);
       resetForm();
       Alert.alert('Success', `Tenant @${tenant.username} created.`);
@@ -96,10 +102,14 @@ export function TenantManagementScreen() {
     }
   }
 
-  async function handleDelete(tenant: Tenant) {
+  function handleView(tenant: Tenant) {
+    navigation.navigate('TenantDetail', { tenantId: tenant.id });
+  }
+
+  function handleDelete(tenant: Tenant) {
     Alert.alert(
       'Remove tenant?',
-      `This will revoke admin access for @${tenant.username ?? tenant.id}.`,
+      `This will revoke admin access for ${tenant.shopName ?? tenant.username ?? tenant.id}.`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -139,6 +149,19 @@ export function TenantManagementScreen() {
 
               <View style={styles.formCard}>
                 <Text style={styles.formTitle}>Add Tenant</Text>
+
+                <View style={styles.field}>
+                  <Text style={styles.label}>Shop Name</Text>
+                  <TextInput
+                    style={styles.input}
+                    value={shopName}
+                    onChangeText={setShopName}
+                    placeholder="e.g. ABC School Supplies"
+                    placeholderTextColor={colors.textSecondary}
+                    autoCapitalize="words"
+                    autoCorrect={false}
+                  />
+                </View>
 
                 <View style={styles.field}>
                   <Text style={styles.label}>Username</Text>
@@ -210,22 +233,34 @@ export function TenantManagementScreen() {
                   keyExtractor={(item) => item.id}
                   scrollEnabled={false}
                   renderItem={({ item }) => (
-                    <View style={styles.card}>
+                    <TouchableOpacity
+                      activeOpacity={0.7}
+                      style={styles.card}
+                      onPress={() => handleView(item)}
+                    >
                       <View style={styles.cardInfo}>
-                        <Text style={styles.username} numberOfLines={1}>
-                          @{item.username ?? 'unknown'}
+                        <Text style={styles.shopName} numberOfLines={1}>
+                          {item.shopName ?? 'Untitled Shop'}
                         </Text>
                         <Text style={styles.meta}>
-                          Added {new Date(item.createdAt).toLocaleDateString()}
+                          @{item.username ?? 'unknown'} · Added {new Date(item.createdAt).toLocaleDateString()}
                         </Text>
                       </View>
-                      <TouchableOpacity
-                        style={styles.deleteButton}
-                        onPress={() => handleDelete(item)}
-                      >
-                        <Ionicons name="trash-outline" size={18} color={colors.danger} />
-                      </TouchableOpacity>
-                    </View>
+                      <View style={styles.cardActions}>
+                        <TouchableOpacity
+                          style={styles.actionButton}
+                          onPress={() => handleView(item)}
+                        >
+                          <Ionicons name="eye-outline" size={18} color={colors.primary} />
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={styles.actionButton}
+                          onPress={() => handleDelete(item)}
+                        >
+                          <Ionicons name="trash-outline" size={18} color={colors.danger} />
+                        </TouchableOpacity>
+                      </View>
+                    </TouchableOpacity>
                   )}
                 />
               )}
@@ -338,11 +373,16 @@ const makeStyles = (colors: ColorPalette) =>
       borderColor: colors.border,
       padding: spacing.md,
       marginBottom: spacing.md,
+      ...(Platform.OS === 'web'
+        ? ({
+            cursor: 'pointer',
+          } as any)
+        : {}),
     },
     cardInfo: {
       flex: 1,
     },
-    username: {
+    shopName: {
       fontSize: fontSizes.md,
       fontWeight: '600',
       color: colors.text,
@@ -352,13 +392,19 @@ const makeStyles = (colors: ColorPalette) =>
       fontSize: fontSizes.sm,
       color: colors.textSecondary,
     },
-    deleteButton: {
+    cardActions: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: spacing.sm,
+      marginLeft: spacing.sm,
+    },
+    actionButton: {
       width: 36,
       height: 36,
       borderRadius: borderRadius.sm,
-      backgroundColor: colors.dangerLight,
+      backgroundColor: colors.background,
       borderWidth: 1,
-      borderColor: colors.danger,
+      borderColor: colors.border,
       justifyContent: 'center',
       alignItems: 'center',
     },

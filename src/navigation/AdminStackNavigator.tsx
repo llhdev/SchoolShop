@@ -6,6 +6,7 @@ import { AddEditItemScreen } from '../screens/admin/AddEditItemScreen';
 import { AdminOrdersScreen } from '../screens/admin/AdminOrdersScreen';
 import { AdminUserOrdersScreen } from '../screens/admin/AdminUserOrdersScreen';
 import { TenantManagementScreen } from '../screens/admin/TenantManagementScreen';
+import { TenantDetailScreen } from '../screens/admin/TenantDetailScreen';
 import { useThemeColors, fontSizes } from '../constants/theme';
 
 const Stack = createNativeStackNavigator<AdminStackParamList>();
@@ -51,6 +52,11 @@ export function AdminStackNavigator() {
         name="TenantManagement"
         component={TenantManagementScreen}
         options={{ title: 'Tenant Admins' }}
+      />
+      <Stack.Screen
+        name="TenantDetail"
+        component={TenantDetailScreen}
+        options={{ title: 'Tenant Details' }}
       />
     </Stack.Navigator>
   );

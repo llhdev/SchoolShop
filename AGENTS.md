@@ -65,7 +65,8 @@ Always consult the exact versioned docs before writing code: <https://docs.expo.
 │       ├── 002_admin_auth_rls.sql  # Profiles, auth triggers, admin RLS
 │       ├── 003_tenant_admins.sql   # Super admin / tenant admin roles and product ownership
 │       ├── 004_username_login.sql  # Username-based admin login lookup
-│       └── 005_tenant_signup_trigger.sql  # Tenant signup trigger for in-app tenant creation
+│       ├── 005_tenant_signup_trigger.sql  # Tenant signup trigger for in-app tenant creation
+│       └── 006_tenant_shop_name.sql  # Tenant shop name column and trigger update
 └── src/
     ├── components/                 # Reusable UI components
     │   ├── AdminHeader.tsx         # Web-only admin navigation header
@@ -184,7 +185,7 @@ Admins reach `AdminLogin` by typing their **username** into the home-screen sear
 
 The default super admin username is `santa2024` (set by `scripts/setup-admin.js`).
 
-Tenant admins are created in-app from the **Tenant Management** screen. The super admin enters a username and password; the app derives a tenant email (`<username>@tenant.schoolshop.app`) and calls `supabase.auth.signUp()` with a secondary, in-memory client so the super admin's session is preserved. The Postgres trigger `on_auth_user_created` then creates the profile with `role='admin'` and the chosen username.
+Tenant admins are created in-app from the **Tenant Management** screen. The super admin enters a username, password, and shop name; the app derives a tenant email (`<username>@tenant.schoolshop.app`) and calls `supabase.auth.signUp()` with a secondary, in-memory client so the super admin's session is preserved. The Postgres trigger `on_auth_user_created` then creates the profile with `role='admin'`, the chosen username, and the shop name. Existing tenants are listed by shop name and creation date; tapping a tenant opens a detail screen with full account information.
 
 Within the admin stack:
 - `super_admin` sees category management, tenant management, and all products.
@@ -198,7 +199,7 @@ Param lists are defined in `src/types/navigation.ts`.
 - `CartItem`: `{ product, quantity }`
 - `Order`: `id`, `items`, `total`, `paymentMethod`, `status`, `location`, `phoneNumber`, `createdAt`
 - `Category`: arbitrary string; defaults are `School Uniform`, `Stationery`, `Books`, `Sports`, `Electronics`, `Accessories`
-- `Profile`: `id`, `role`, `email`, `username`
+- `Profile`: `id`, `role`, `email`, `username`, `shopName`
 - `PaymentMethod`: `cash_on_delivery` | `online_payment`
 - `OrderStatus`: `pending` | `paid` | `delivered`
 
@@ -244,6 +245,7 @@ AsyncStorage is only used for the local cache and theme:
    - `supabase/migrations/003_tenant_admins.sql`
    - `supabase/migrations/004_username_login.sql`
    - `supabase/migrations/005_tenant_signup_trigger.sql`
+   - `supabase/migrations/006_tenant_shop_name.sql`
 5. Enable **Email auto-confirm** in Authentication > Providers > Email (or set `mailer_autoconfirm` to `true` via the Management API). This is required so tenant accounts created in-app are immediately active.
 6. Create the super admin by running `node scripts/setup-admin.js` (requires `SUPABASE_SERVICE_ROLE_KEY` and `EXPO_PUBLIC_ADMIN_EMAIL`/`EXPO_PUBLIC_ADMIN_PASSWORD` in `.env`).
 7. Start the app. It begins with empty products, orders, and categories so you can add your own.
