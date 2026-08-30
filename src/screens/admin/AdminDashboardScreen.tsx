@@ -56,7 +56,11 @@ const headerRightStyles = StyleSheet.create({
 
 export function AdminDashboardScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<AdminStackParamList>>();
-  const { products, categories, deleteProduct, addCategory, removeCategory } = useApp();
+  const { products, categories, deleteProduct, addCategory, removeCategory, role, currentUserId } = useApp();
+  const isSuperAdmin = role === 'super_admin';
+  const visibleProducts = isSuperAdmin
+    ? products
+    : products.filter((p) => p.ownerId === currentUserId);
   const { isDesktop } = useResponsive();
   const colors = useThemeColors();
   const styles = makeStyles(colors);
@@ -98,7 +102,7 @@ export function AdminDashboardScreen() {
   }
 
   async function handleRemoveCategory(category: string) {
-    const inUse = products.some((p) => p.category === category);
+    const inUse = visibleProducts.some((p) => p.category === category);
     if (inUse) {
       Alert.alert(
         'Cannot delete',
@@ -130,7 +134,7 @@ export function AdminDashboardScreen() {
 
         <View style={styles.headerRow}>
           <View style={[styles.statCard, isDesktop && styles.statCardDesktop]}>
-            <Text style={styles.statValue}>{products.length}</Text>
+            <Text style={styles.statValue}>{visibleProducts.length}</Text>
             <Text style={styles.statLabel}>Products</Text>
           </View>
           <View style={styles.actionButtonWrapper}>
@@ -140,43 +144,55 @@ export function AdminDashboardScreen() {
               style={styles.actionButton}
             />
           </View>
+          {isSuperAdmin && (
+            <View style={styles.actionButtonWrapper}>
+              <Button
+                title="Manage Tenants"
+                onPress={() => navigation.navigate('TenantManagement')}
+                variant="outline"
+                style={styles.actionButton}
+              />
+            </View>
+          )}
         </View>
 
         <View style={[styles.twoColumn, isDesktop && styles.twoColumnDesktop]}>
-          <View style={[styles.column, styles.categoriesColumn]}>
-            <Text style={styles.sectionTitle}>Manage Categories</Text>
-            <View style={styles.categoryInputRow}>
-              <TextInput
-                style={styles.categoryInput}
-                value={newCategory}
-                onChangeText={setNewCategory}
-                placeholder="New category name"
-                placeholderTextColor={colors.textSecondary}
-              />
-              <TouchableOpacity style={styles.categoryAddButton} onPress={handleAddCategory}>
-                <Ionicons name="add-outline" size={24} color={colors.surface} />
-              </TouchableOpacity>
+          {isSuperAdmin && (
+            <View style={[styles.column, styles.categoriesColumn]}>
+              <Text style={styles.sectionTitle}>Manage Categories</Text>
+              <View style={styles.categoryInputRow}>
+                <TextInput
+                  style={styles.categoryInput}
+                  value={newCategory}
+                  onChangeText={setNewCategory}
+                  placeholder="New category name"
+                  placeholderTextColor={colors.textSecondary}
+                />
+                <TouchableOpacity style={styles.categoryAddButton} onPress={handleAddCategory}>
+                  <Ionicons name="add-outline" size={24} color={colors.surface} />
+                </TouchableOpacity>
+              </View>
+              <View style={styles.categoryList}>
+                {categories.map((category) => (
+                  <View key={category} style={styles.categoryChip}>
+                    <Text style={styles.categoryChipText} numberOfLines={1}>
+                      {category}
+                    </Text>
+                    <TouchableOpacity
+                      style={styles.categoryDelete}
+                      onPress={() => handleRemoveCategory(category)}
+                    >
+                      <Ionicons name="close-outline" size={16} color={colors.danger} />
+                    </TouchableOpacity>
+                  </View>
+                ))}
+              </View>
             </View>
-            <View style={styles.categoryList}>
-              {categories.map((category) => (
-                <View key={category} style={styles.categoryChip}>
-                  <Text style={styles.categoryChipText} numberOfLines={1}>
-                    {category}
-                  </Text>
-                  <TouchableOpacity
-                    style={styles.categoryDelete}
-                    onPress={() => handleRemoveCategory(category)}
-                  >
-                    <Ionicons name="close-outline" size={16} color={colors.danger} />
-                  </TouchableOpacity>
-                </View>
-              ))}
-            </View>
-          </View>
+          )}
 
-          <View style={[styles.column, styles.productsColumn]}>
+          <View style={[styles.column, styles.productsColumn, !isSuperAdmin && styles.productsColumnFullWidth]}>
             <Text style={styles.sectionTitle}>Manage Items</Text>
-            {products.length === 0 ? (
+            {visibleProducts.length === 0 ? (
               <EmptyState message="No products yet. Add your first item." />
             ) : (
               <>
@@ -185,10 +201,12 @@ export function AdminDashboardScreen() {
                     <Text style={[styles.tableHeaderText, styles.colProduct]}>Product</Text>
                     <Text style={[styles.tableHeaderText, styles.colCategory]}>Category</Text>
                     <Text style={[styles.tableHeaderText, styles.colPrice]}>Price</Text>
-                    <Text style={[styles.tableHeaderText, styles.colActions]}>Actions</Text>
+                    {isSuperAdmin && (
+                      <Text style={[styles.tableHeaderText, styles.colActions]}>Actions</Text>
+                    )}
                   </View>
                 )}
-                {products.map((item) => (
+                {visibleProducts.map((item) => (
                   <View
                     key={item.id}
                     style={[styles.productRow, isDesktop && styles.productRowDesktop]}
@@ -245,14 +263,16 @@ export function AdminDashboardScreen() {
                       )}
                     </TouchableOpacity>
 
-                    <View style={[styles.productActions, isDesktop && styles.colActions]}>
-                      <TouchableOpacity
-                        style={[styles.iconButton, styles.deleteButton]}
-                        onPress={() => handleDelete(item.id)}
-                      >
-                        <Ionicons name="trash-outline" size={18} color={colors.danger} />
-                      </TouchableOpacity>
-                    </View>
+                    {(isSuperAdmin || item.ownerId === currentUserId) && (
+                      <View style={[styles.productActions, isDesktop && styles.colActions]}>
+                        <TouchableOpacity
+                          style={[styles.iconButton, styles.deleteButton]}
+                          onPress={() => handleDelete(item.id)}
+                        >
+                          <Ionicons name="trash-outline" size={18} color={colors.danger} />
+                        </TouchableOpacity>
+                      </View>
+                    )}
                   </View>
                 ))}
               </>
@@ -344,6 +364,10 @@ const makeStyles = (colors: ColorPalette) =>
     },
     productsColumn: {
       flex: 2,
+    },
+    productsColumnFullWidth: {
+      flex: 1,
+      minWidth: '100%',
     },
     sectionTitle: {
       fontSize: fontSizes.lg,

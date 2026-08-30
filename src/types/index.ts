@@ -1,6 +1,8 @@
 export type Category = string;
 
-export type Role = 'user' | 'admin';
+export type Role = 'user' | 'admin' | 'super_admin';
+
+export type AdminRole = 'admin' | 'super_admin';
 
 export type Theme = 'light' | 'dark';
 
@@ -17,6 +19,7 @@ export interface Product {
   images: string[];
   coverImageIndex: number;
   createdAt: string;
+  ownerId?: string;
 }
 
 export interface CartItem {

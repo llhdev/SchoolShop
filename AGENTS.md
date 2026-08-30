@@ -8,6 +8,8 @@ This file is written for AI coding agents working on the **OnlineShop** project.
 
 OnlineShop (also referred to as "Gold Fashion" in the UI) is a cross-platform mobile app built with **Expo SDK 54** and **React Native**. It is a student shopping MVP that lets users browse school supplies, add items to a cart, check out, and view order history. It also provides an admin mode where products and categories can be created, edited, and deleted, and where orders can be reviewed by customer phone number.
 
+The admin layer is tenant-based: a single **super admin** manages categories and tenant admins, while each **tenant admin** can only upload products and choose from the existing categories. Tenant admins cannot add or remove categories or manage other tenants.
+
 Key facts:
 
 - **Supabase** is the source of truth for products, orders, and categories. AsyncStorage is used as a local cache for instant UI rendering.
@@ -57,7 +59,9 @@ Always consult the exact versioned docs before writing code: <https://docs.expo.
 ├── assets/                         # App icons, splash, favicon
 ├── supabase/
 │   └── migrations/
-│       └── 001_initial_schema.sql  # Supabase tables, RLS, storage bucket
+│       ├── 001_initial_schema.sql  # Supabase tables, RLS, storage bucket
+│       ├── 002_admin_auth_rls.sql  # Profiles, auth triggers, admin RLS
+│       └── 003_tenant_admins.sql   # Super admin / tenant admin roles and product ownership
 └── src/
     ├── components/                 # Reusable UI components
     │   ├── AdminHeader.tsx         # Web-only admin navigation header
@@ -89,7 +93,8 @@ Always consult the exact versioned docs before writing code: <https://docs.expo.
     │   │   ├── AdminDashboardScreen.tsx  # Product/category management and stats
     │   │   ├── AdminOrdersScreen.tsx     # Orders grouped by customer phone number
     │   │   ├── AdminUserOrdersScreen.tsx # All orders for a single phone number
-    │   │   └── AddEditItemScreen.tsx     # Create/edit product with multi-image upload
+    │   │   ├── AddEditItemScreen.tsx     # Create/edit product with multi-image upload
+    │   │   └── TenantManagementScreen.tsx # Super admin tenant management
     │   └── user/
     │       ├── HomeScreen.tsx            # Product grid with search, category filter, new arrivals
     │       ├── ProductDetailScreen.tsx   # Product gallery, details, add to cart / buy now
@@ -102,7 +107,8 @@ Always consult the exact versioned docs before writing code: <https://docs.expo.
     │   ├── categories.ts           # Category CRUD + realtime
     │   ├── images.ts               # Supabase Storage upload/delete
     │   ├── orders.ts               # Order CRUD + realtime
-    │   └── products.ts             # Product CRUD + realtime
+    │   ├── products.ts             # Product CRUD + realtime
+    │   └── tenants.ts              # Tenant admin list/delete
     ├── types/
     │   ├── index.ts                # Domain types (Product, Order, CartItem, etc.)
     │   └── navigation.ts           # React Navigation param lists
@@ -166,17 +172,21 @@ Actions:
 `AppNavigator.tsx` switches the root navigator based on `role`:
 
 - `role === 'user'` → `UserTabs` plus `ProductDetail`, `Checkout`, `OrderDetail`, and a hidden `AdminLogin` route
-- `role === 'admin'` → `AdminStack` plus shared `ProductDetail` and `OrderDetail`
+- `role === 'admin'` or `role === 'super_admin'` → `AdminStack` plus shared `ProductDetail` and `OrderDetail`
 
 The app starts as a shopper by default.
 
-Admins reach `AdminLogin` by typing the secret keyword (`ADMIN_KEYWORD` in `src/constants/admin.ts`) into the home-screen search bar, then entering the password configured in `EXPO_PUBLIC_ADMIN_PASSWORD`.
+Admins reach `AdminLogin` by typing the secret keyword (`ADMIN_KEYWORD` in `src/constants/admin.ts`) into the home-screen search bar, then entering the password configured in `EXPO_PUBLIC_ADMIN_EMAIL` and `EXPO_PUBLIC_ADMIN_PASSWORD`.
+
+Within the admin stack:
+- `super_admin` sees category management, tenant management, and all products.
+- `admin` (tenant admin) sees only products they uploaded and can choose from existing categories.
 
 Param lists are defined in `src/types/navigation.ts`.
 
 ### Data model
 
-- `Product`: `id`, `name`, `description`, `price`, `category`, `images` (string array), `coverImageIndex`, `createdAt`
+- `Product`: `id`, `name`, `description`, `price`, `category`, `images` (string array), `coverImageIndex`, `createdAt`, `ownerId`
 - `CartItem`: `{ product, quantity }`
 - `Order`: `id`, `items`, `total`, `paymentMethod`, `status`, `location`, `phoneNumber`, `createdAt`
 - `Category`: arbitrary string; defaults are `School Uniform`, `Stationery`, `Books`, `Sports`, `Electronics`, `Accessories`
@@ -219,8 +229,13 @@ AsyncStorage is only used for the local cache and theme:
    EXPO_PUBLIC_SUPABASE_URL=https://<your-project>.supabase.co
    EXPO_PUBLIC_SUPABASE_ANON_KEY=<your-anon-public-key>
    ```
-4. Run the migration in `supabase/migrations/001_initial_schema.sql` from the Supabase SQL Editor.
-5. Start the app. It begins with empty products, orders, and categories so you can add your own.
+4. Run the migrations in order from the Supabase SQL Editor:
+   - `supabase/migrations/001_initial_schema.sql`
+   - `supabase/migrations/002_admin_auth_rls.sql`
+   - `supabase/migrations/003_tenant_admins.sql`
+5. Create the super admin by running `node scripts/setup-admin.js` (requires `SUPABASE_SERVICE_ROLE_KEY` in `.env`).
+6. (Optional) Create tenant admins by running `node scripts/create-tenant.js` (requires `SUPABASE_SERVICE_ROLE_KEY`, `TENANT_EMAIL`, and `TENANT_PASSWORD` in `.env`).
+7. Start the app. It begins with empty products, orders, and categories so you can add your own.
 
 ---
 
@@ -255,7 +270,10 @@ There is no ESLint or Prettier configuration present. If you add one, keep rules
 
 ## Security considerations
 
-- **Admin authentication.** Admin access requires signing in through Supabase Auth with the email/password configured in `EXPO_PUBLIC_ADMIN_EMAIL` and `EXPO_PUBLIC_ADMIN_PASSWORD`. Supabase RLS policies enforce that only authenticated admins can create, update, or delete products, categories, and product images. Shoppers remain unauthenticated.
+- **Admin authentication.** Admin access requires signing in through Supabase Auth. Two admin roles exist:
+  - `super_admin`: full access; can manage categories, tenant admins, and all products.
+  - `admin`: tenant admin; can upload products and choose from existing categories, but can only edit/delete products they uploaded.
+  The super admin is created with `scripts/setup-admin.js` using `EXPO_PUBLIC_ADMIN_EMAIL` and `EXPO_PUBLIC_ADMIN_PASSWORD`. Tenant admins are created with `scripts/create-tenant.js`. Supabase RLS policies enforce these boundaries at the database level.
 - **No real payment processing.** Card details entered on the checkout screen are validated only by length and are never transmitted or stored securely.
 - **Public reads, authenticated writes.** Products and categories are readable by everyone so shoppers can browse. Orders can be placed without auth, but order history is only visible to admins in this MVP. Lock this down further with shopper authentication if you need per-user order history.
 - **Local cache.** AsyncStorage data is stored unencrypted on the device. Do not store real payment data, passwords, or PII in this app.

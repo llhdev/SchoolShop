@@ -74,14 +74,15 @@ export function AdminLoginScreen() {
       return;
     }
 
-    // Confirm the signed-in user is marked as admin.
+    // Confirm the signed-in user is marked as admin or super admin.
     const { data: profile, error: profileError } = await supabase
       .from('profiles')
       .select('role')
       .eq('id', data.user.id)
       .single();
 
-    if (profileError || profile?.role !== 'admin') {
+    const allowedRoles: string[] = ['admin', 'super_admin'];
+    if (profileError || !allowedRoles.includes(profile?.role ?? '')) {
       await supabase.auth.signOut();
       Alert.alert('Access denied', 'This account does not have admin privileges.');
       setPassword('');
@@ -91,7 +92,7 @@ export function AdminLoginScreen() {
     setPassword('');
     setAttempts(0);
     // Switching role lets AppNavigator render the admin stack automatically.
-    setRole('admin');
+    setRole(profile!.role as 'admin' | 'super_admin');
   }
 
   return (

@@ -13,11 +13,12 @@ const Stack = createNativeStackNavigator<RootStackParamList>();
 
 export function AppNavigator() {
   const { role } = useApp();
+  const isAdmin = role === 'admin' || role === 'super_admin';
 
   return (
     <NavigationContainer>
       <Stack.Navigator screenOptions={{ headerShown: false }}>
-        {role === 'admin' ? (
+        {isAdmin ? (
           <>
             <Stack.Screen name="AdminStack" component={AdminStackNavigator} />
             <Stack.Screen

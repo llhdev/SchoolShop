@@ -1,10 +1,13 @@
-// Setup script: creates the admin user in Supabase Auth and marks the profile as admin.
+// Setup script: creates a tenant admin user in Supabase Auth and marks the profile as admin.
+// Tenant admins can upload products and choose categories, but cannot manage categories or other tenants.
 //
 // Usage:
 //   1. Add SUPABASE_SERVICE_ROLE_KEY to your .env file (find it in Supabase → Project Settings → API).
-//      Example: SUPABASE_SERVICE_ROLE_KEY=eyJhbGciOiJIUzI1NiIs...
-//   2. Run: node scripts/setup-admin.js
-//   3. Remove SUPABASE_SERVICE_ROLE_KEY from .env afterward.
+//   2. Add the new tenant credentials to your .env file:
+//      TENANT_EMAIL=tenant@example.com
+//      TENANT_PASSWORD=<strong-password>
+//   3. Run: node scripts/create-tenant.js
+//   4. Remove TENANT_EMAIL and TENANT_PASSWORD from .env afterward.
 
 const fs = require('fs');
 const path = require('path');
@@ -31,8 +34,8 @@ loadEnv();
 
 const url = process.env.EXPO_PUBLIC_SUPABASE_URL;
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const email = process.env.EXPO_PUBLIC_ADMIN_EMAIL;
-const password = process.env.EXPO_PUBLIC_ADMIN_PASSWORD;
+const email = process.env.TENANT_EMAIL;
+const password = process.env.TENANT_PASSWORD;
 
 if (!url || !serviceRoleKey) {
   console.error('Missing EXPO_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY in .env');
@@ -40,7 +43,7 @@ if (!url || !serviceRoleKey) {
 }
 
 if (!email || !password) {
-  console.error('Missing EXPO_PUBLIC_ADMIN_EMAIL or EXPO_PUBLIC_ADMIN_PASSWORD in .env');
+  console.error('Missing TENANT_EMAIL or TENANT_PASSWORD in .env');
   process.exit(1);
 }
 
@@ -61,12 +64,12 @@ async function findUserByEmail(targetEmail) {
 }
 
 async function main() {
-  console.log(`Setting up admin user: ${email}`);
+  console.log(`Setting up tenant admin: ${email}`);
 
   let user = await findUserByEmail(email);
 
   if (user) {
-    console.log('User already exists. Updating password and confirming email...');
+    console.log('User already exists. Updating password, confirming email, and setting role to admin...');
     const { error: updateError } = await supabase.auth.admin.updateUserById(user.id, {
       password,
       email_confirm: true,
@@ -77,12 +80,12 @@ async function main() {
     }
     console.log('User updated.');
   } else {
-    console.log('Creating new admin user...');
+    console.log('Creating new tenant admin user...');
     const { data: createData, error: createError } = await supabase.auth.admin.createUser({
       email,
       password,
       email_confirm: true,
-      user_metadata: { role: 'super_admin' },
+      user_metadata: { role: 'admin' },
     });
     if (createError) {
       console.error('Failed to create user:', createError.message);
@@ -93,20 +96,20 @@ async function main() {
   }
 
   if (!user) {
-    console.error('Could not resolve admin user.');
+    console.error('Could not resolve tenant admin user.');
     process.exit(1);
   }
 
   const { error: upsertError } = await supabase
     .from('profiles')
-    .upsert({ id: user.id, role: 'super_admin', email }, { onConflict: 'id' });
+    .upsert({ id: user.id, role: 'admin', email }, { onConflict: 'id' });
 
   if (upsertError) {
-    console.error('Failed to set admin role:', upsertError.message);
+    console.error('Failed to set tenant admin role:', upsertError.message);
     process.exit(1);
   }
 
-  console.log('Admin setup complete. You can now log in from the app.');
+  console.log('Tenant admin setup complete. They can now log in from the app.');
 }
 
 main().catch((err) => {

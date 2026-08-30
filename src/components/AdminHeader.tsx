@@ -35,8 +35,9 @@ export function AdminHeader() {
   const styles = makeStyles(colors);
   const navigation = useNavigation<AdminNav>();
   const route = useRoute();
-  const { signOutAdmin } = useApp();
+  const { signOutAdmin, role } = useApp();
   const current = route.name;
+  const isSuperAdmin = role === 'super_admin';
 
   if (Platform.OS !== 'web') return null;
 
@@ -67,6 +68,14 @@ export function AdminHeader() {
             current={current}
             onPress={() => navigation.navigate('AddEditItem')}
           />
+          {isSuperAdmin && (
+            <NavLink
+              name="TenantManagement"
+              label="Tenants"
+              current={current}
+              onPress={() => navigation.navigate('TenantManagement')}
+            />
+          )}
         </View>
 
         <ThemeToggle />

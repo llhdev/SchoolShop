@@ -11,6 +11,7 @@ interface DbProduct {
   images: string[];
   cover_image_index: number;
   created_at: string;
+  owner_id?: string;
 }
 
 function toProduct(db: DbProduct): Product {
@@ -23,6 +24,7 @@ function toProduct(db: DbProduct): Product {
     images: db.images,
     coverImageIndex: db.cover_image_index,
     createdAt: db.created_at,
+    ownerId: db.owner_id,
   };
 }
 
@@ -36,6 +38,7 @@ function toDbProduct(product: Product): DbProduct {
     images: product.images,
     cover_image_index: product.coverImageIndex,
     created_at: product.createdAt,
+    owner_id: product.ownerId,
   };
 }
 
@@ -57,7 +60,16 @@ export async function fetchProducts(): Promise<Product[]> {
 }
 
 export async function createProduct(product: Product): Promise<Product> {
-  const { error } = await supabase.from('products').insert(toDbProduct(product));
+  const {
+    data: { user },
+  } = await supabase.auth.getUser();
+
+  const dbProduct = toDbProduct(product);
+  if (!dbProduct.owner_id && user?.id) {
+    dbProduct.owner_id = user.id;
+  }
+
+  const { error } = await supabase.from('products').insert(dbProduct);
   if (error) throw error;
   return product;
 }

@@ -183,6 +183,7 @@ function migrateLegacyProducts(products: Product[]): Product[] {
 }
 
 interface AppContextValue extends AppState {
+  currentUserId: string | null;
   setRole: (role: Role) => void;
   signOutAdmin: () => Promise<void>;
   toggleTheme: () => void;
@@ -210,6 +211,7 @@ const AppContext = createContext<AppContextValue | undefined>(undefined);
 export function AppProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(reducer, initialState);
   const [isHydrated, setIsHydrated] = useState(false);
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null);
 
   useEffect(() => {
     async function hydrate() {
@@ -238,13 +240,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
           data: { session },
         } = await supabase.auth.getSession();
         if (session?.user) {
+          setCurrentUserId(session.user.id);
           const { data: profile } = await supabase
             .from('profiles')
             .select('role')
             .eq('id', session.user.id)
             .single();
-          if (profile?.role === 'admin') {
-            dispatch({ type: 'SET_ROLE', payload: 'admin' });
+          if (profile?.role === 'super_admin' || profile?.role === 'admin') {
+            dispatch({ type: 'SET_ROLE', payload: profile.role });
           }
         }
       } catch (error) {
@@ -276,6 +279,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
     }
     hydrate();
+  }, []);
+
+  useEffect(() => {
+    const {
+      data: { subscription },
+    } = supabase.auth.onAuthStateChange((_event, session) => {
+      setCurrentUserId(session?.user?.id ?? null);
+    });
+
+    return () => {
+      subscription.unsubscribe();
+    };
   }, []);
 
   useEffect(() => {
@@ -316,6 +331,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
   const value: AppContextValue = {
     ...state,
+    currentUserId,
     setRole: (role) => dispatch({ type: 'SET_ROLE', payload: role }),
     signOutAdmin: async () => {
       try {
@@ -323,6 +339,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       } catch (error) {
         console.error('Failed to sign out admin:', error);
       }
+      setCurrentUserId(null);
       dispatch({ type: 'SET_ROLE', payload: 'user' });
     },
     toggleTheme: () =>

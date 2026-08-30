@@ -33,12 +33,15 @@ export function AddEditItemScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<AdminStackParamList>>();
   const route = useRoute();
   const { productId } = (route.params as { productId?: string }) ?? {};
-  const { products, categories, addProduct, updateProduct } = useApp();
+  const { products, categories, addProduct, updateProduct, role, currentUserId } = useApp();
   const { isDesktop } = useResponsive();
   const colors = useThemeColors();
   const styles = makeStyles(colors);
 
   const existing = productId ? products.find((p) => p.id === productId) : undefined;
+  const isSuperAdmin = role === 'super_admin';
+  const canEditExisting =
+    !existing || isSuperAdmin || existing.ownerId === currentUserId;
 
   const [name, setName] = useState(existing?.name ?? '');
   const [price, setPrice] = useState(existing?.price.toString() ?? '');
@@ -55,6 +58,14 @@ export function AddEditItemScreen() {
       );
     }
   }, [categories.length, existing, navigation]);
+
+  useEffect(() => {
+    if (existing && !canEditExisting) {
+      Alert.alert('Access denied', 'You can only edit products you uploaded.', [
+        { text: 'OK', onPress: () => navigation.navigate('AdminDashboard') },
+      ]);
+    }
+  }, [existing, canEditExisting, navigation]);
 
   const isValid =
     name.trim() &&
@@ -111,6 +122,7 @@ export function AddEditItemScreen() {
       images,
       coverImageIndex: images.length > 0 ? coverImageIndex : 0,
       createdAt: existing?.createdAt ?? new Date().toISOString(),
+      ownerId: existing?.ownerId ?? currentUserId ?? undefined,
     };
 
     try {
