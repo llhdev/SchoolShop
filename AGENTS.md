@@ -10,6 +10,8 @@ OnlineShop (also referred to as "Gold Fashion" in the UI) is a cross-platform mo
 
 The admin layer is tenant-based: a single **super admin** manages categories and tenant admins, while each **tenant admin** can only upload products and choose from the existing categories. Tenant admins cannot add or remove categories or manage other tenants.
 
+Admins log in by typing their **username** into the home-screen search bar. The default super admin username is `santa2024`.
+
 Key facts:
 
 - **Supabase** is the source of truth for products, orders, and categories. AsyncStorage is used as a local cache for instant UI rendering.
@@ -58,10 +60,14 @@ Always consult the exact versioned docs before writing code: <https://docs.expo.
 ├── start-app.bat                   # Windows quick-start helper
 ├── assets/                         # App icons, splash, favicon
 ├── supabase/
+│   ├── functions/
+│   │   └── create-tenant/
+│   │       └── index.ts            # Edge Function: creates tenant admins
 │   └── migrations/
 │       ├── 001_initial_schema.sql  # Supabase tables, RLS, storage bucket
 │       ├── 002_admin_auth_rls.sql  # Profiles, auth triggers, admin RLS
-│       └── 003_tenant_admins.sql   # Super admin / tenant admin roles and product ownership
+│       ├── 003_tenant_admins.sql   # Super admin / tenant admin roles and product ownership
+│       └── 004_username_login.sql  # Username-based admin login lookup
 └── src/
     ├── components/                 # Reusable UI components
     │   ├── AdminHeader.tsx         # Web-only admin navigation header
@@ -176,7 +182,9 @@ Actions:
 
 The app starts as a shopper by default.
 
-Admins reach `AdminLogin` by typing the secret keyword (`ADMIN_KEYWORD` in `src/constants/admin.ts`) into the home-screen search bar, then entering the password configured in `EXPO_PUBLIC_ADMIN_EMAIL` and `EXPO_PUBLIC_ADMIN_PASSWORD`.
+Admins reach `AdminLogin` by typing their **username** into the home-screen search bar. The app looks up the username via `get_admin_by_username` and, if found, opens the admin login screen pre-filled with that admin's email. The admin then enters their password.
+
+The default super admin username is `santa2024` (set by `scripts/setup-admin.js`).
 
 Within the admin stack:
 - `super_admin` sees category management, tenant management, and all products.
@@ -190,6 +198,7 @@ Param lists are defined in `src/types/navigation.ts`.
 - `CartItem`: `{ product, quantity }`
 - `Order`: `id`, `items`, `total`, `paymentMethod`, `status`, `location`, `phoneNumber`, `createdAt`
 - `Category`: arbitrary string; defaults are `School Uniform`, `Stationery`, `Books`, `Sports`, `Electronics`, `Accessories`
+- `Profile`: `id`, `role`, `email`, `username`
 - `PaymentMethod`: `cash_on_delivery` | `online_payment`
 - `OrderStatus`: `pending` | `paid` | `delivered`
 
@@ -233,8 +242,14 @@ AsyncStorage is only used for the local cache and theme:
    - `supabase/migrations/001_initial_schema.sql`
    - `supabase/migrations/002_admin_auth_rls.sql`
    - `supabase/migrations/003_tenant_admins.sql`
-5. Create the super admin by running `node scripts/setup-admin.js` (requires `SUPABASE_SERVICE_ROLE_KEY` in `.env`).
-6. (Optional) Create tenant admins by running `node scripts/create-tenant.js` (requires `SUPABASE_SERVICE_ROLE_KEY`, `TENANT_EMAIL`, and `TENANT_PASSWORD` in `.env`).
+   - `supabase/migrations/004_username_login.sql`
+5. Deploy the `create-tenant` Edge Function:
+   ```bash
+   supabase login
+   supabase link --project-ref <your-project-ref>
+   supabase functions deploy create-tenant
+   ```
+6. Create the super admin by running `node scripts/setup-admin.js` (requires `SUPABASE_SERVICE_ROLE_KEY` and `EXPO_PUBLIC_ADMIN_EMAIL`/`EXPO_PUBLIC_ADMIN_PASSWORD` in `.env`).
 7. Start the app. It begins with empty products, orders, and categories so you can add your own.
 
 ---
@@ -273,7 +288,8 @@ There is no ESLint or Prettier configuration present. If you add one, keep rules
 - **Admin authentication.** Admin access requires signing in through Supabase Auth. Two admin roles exist:
   - `super_admin`: full access; can manage categories, tenant admins, and all products.
   - `admin`: tenant admin; can upload products and choose from existing categories, but can only edit/delete products they uploaded.
-  The super admin is created with `scripts/setup-admin.js` using `EXPO_PUBLIC_ADMIN_EMAIL` and `EXPO_PUBLIC_ADMIN_PASSWORD`. Tenant admins are created with `scripts/create-tenant.js`. Supabase RLS policies enforce these boundaries at the database level.
+  Admins are found by typing their `username` into the home-screen search bar. The `get_admin_by_username` RPC only returns data for an exact username match.
+  The super admin is created with `scripts/setup-admin.js` using `EXPO_PUBLIC_ADMIN_EMAIL` and `EXPO_PUBLIC_ADMIN_PASSWORD`. Tenant admins are created in-app via the `create-tenant` Edge Function, which validates that the caller is a `super_admin` before creating the auth user and profile.
 - **No real payment processing.** Card details entered on the checkout screen are validated only by length and are never transmitted or stored securely.
 - **Public reads, authenticated writes.** Products and categories are readable by everyone so shoppers can browse. Orders can be placed without auth, but order history is only visible to admins in this MVP. Lock this down further with shopper authentication if you need per-user order history.
 - **Local cache.** AsyncStorage data is stored unencrypted on the device. Do not store real payment data, passwords, or PII in this app.

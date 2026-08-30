@@ -5,8 +5,11 @@ import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import {
   Alert,
   FlatList,
+  KeyboardAvoidingView,
+  ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
@@ -15,7 +18,7 @@ import { Screen } from '../../components/Screen';
 import { EmptyState } from '../../components/EmptyState';
 import { AdminHeader } from '../../components/AdminHeader';
 import { Button } from '../../components/Button';
-import { fetchTenants, deleteTenant, Tenant } from '../../services/tenants';
+import { fetchTenants, deleteTenant, createTenant, Tenant } from '../../services/tenants';
 import { AdminStackParamList } from '../../types/navigation';
 import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../../constants/theme';
 
@@ -30,6 +33,12 @@ export function TenantManagementScreen() {
 
   const [tenants, setTenants] = useState<Tenant[]>([]);
   const [loading, setLoading] = useState(true);
+  const [isCreating, setIsCreating] = useState(false);
+
+  const [username, setUsername] = useState('');
+  const [password, setPassword] = useState('');
+  const [confirmPassword, setConfirmPassword] = useState('');
+  const [showPassword, setShowPassword] = useState(false);
 
   const loadTenants = useCallback(async () => {
     try {
@@ -50,10 +59,47 @@ export function TenantManagementScreen() {
     }, [loadTenants])
   );
 
+  function resetForm() {
+    setUsername('');
+    setPassword('');
+    setConfirmPassword('');
+    setShowPassword(false);
+  }
+
+  async function handleCreate() {
+    const cleanUsername = username.trim().toLowerCase();
+
+    if (!cleanUsername) {
+      Alert.alert('Error', 'Please enter a username.');
+      return;
+    }
+    if (password.length < 6) {
+      Alert.alert('Error', 'Password must be at least 6 characters.');
+      return;
+    }
+    if (password !== confirmPassword) {
+      Alert.alert('Error', 'Passwords do not match.');
+      return;
+    }
+
+    setIsCreating(true);
+    try {
+      const tenant = await createTenant(cleanUsername, password);
+      setTenants((prev) => [tenant, ...prev]);
+      resetForm();
+      Alert.alert('Success', `Tenant @${tenant.username} created.`);
+    } catch (error) {
+      const message = error instanceof Error ? error.message : 'Failed to create tenant';
+      Alert.alert('Error', message);
+    } finally {
+      setIsCreating(false);
+    }
+  }
+
   async function handleDelete(tenant: Tenant) {
     Alert.alert(
       'Remove tenant?',
-      `This will revoke admin access for ${tenant.email ?? tenant.id}. The account itself is not deleted; run the remove-tenant script to fully delete the auth user.`,
+      `This will revoke admin access for @${tenant.username ?? tenant.id}.`,
       [
         { text: 'Cancel', style: 'cancel' },
         {
@@ -73,64 +119,126 @@ export function TenantManagementScreen() {
   }
 
   const isWeb = Platform.OS === 'web';
+  const keyboardVerticalOffset = Platform.OS === 'ios' ? 64 : 0;
 
   return (
     <>
       {isWeb && <AdminHeader />}
       <Screen noPadding edges={['top', 'left', 'right']}>
-        <View style={styles.container}>
-          <Text style={styles.title}>Tenant Admins</Text>
-          <Text style={styles.subtitle}>
-            Tenant admins can upload products and choose from categories. They cannot manage categories or other tenants.
-          </Text>
+        <KeyboardAvoidingView
+          behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
+          keyboardVerticalOffset={keyboardVerticalOffset}
+          style={styles.flex}
+        >
+          <ScrollView contentContainerStyle={styles.scrollContent}>
+            <View style={styles.container}>
+              <Text style={styles.title}>Tenant Admins</Text>
+              <Text style={styles.subtitle}>
+                Tenant admins can upload products and choose categories. They cannot manage categories or other tenants.
+              </Text>
 
-          <View style={styles.instructionsCard}>
-            <Text style={styles.instructionsTitle}>How to add a tenant</Text>
-            <Text style={styles.instructionsText}>
-              Run the create-tenant script from your project folder:
-            </Text>
-            <Text style={styles.code} selectable>
-              node scripts/create-tenant.js
-            </Text>
-            <Text style={styles.instructionsText}>
-              Set EXPO_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY, and the new tenant's email and password in your .env file first.
-            </Text>
-          </View>
+              <View style={styles.formCard}>
+                <Text style={styles.formTitle}>Add Tenant</Text>
 
-          {tenants.length === 0 && !loading ? (
-            <EmptyState message="No tenant admins yet." icon="people-outline" />
-          ) : (
-            <FlatList
-              data={tenants}
-              keyExtractor={(item) => item.id}
-              renderItem={({ item }) => (
-                <View style={styles.card}>
-                  <View style={styles.cardInfo}>
-                    <Text style={styles.email} numberOfLines={1}>
-                      {item.email ?? 'No email'}
-                    </Text>
-                    <Text style={styles.meta}>
-                      Added {new Date(item.createdAt).toLocaleDateString()}
-                    </Text>
-                  </View>
-                  <TouchableOpacity
-                    style={styles.deleteButton}
-                    onPress={() => handleDelete(item)}
-                  >
-                    <Ionicons name="trash-outline" size={18} color={colors.danger} />
-                  </TouchableOpacity>
+                <View style={styles.field}>
+                  <Text style={styles.label}>Username</Text>
+                  <TextInput
+                    style={styles.input}
+                    value={username}
+                    onChangeText={setUsername}
+                    placeholder="e.g. tenant1"
+                    placeholderTextColor={colors.textSecondary}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                  />
                 </View>
-              )}
-            />
-          )}
 
-          <Button
-            title="Back to Dashboard"
-            onPress={() => navigation.navigate('AdminDashboard')}
-            variant="outline"
-            style={styles.backButton}
-          />
-        </View>
+                <View style={styles.field}>
+                  <Text style={styles.label}>Password</Text>
+                  <View style={styles.inputContainer}>
+                    <TextInput
+                      style={styles.inputWithIcon}
+                      value={password}
+                      onChangeText={setPassword}
+                      placeholder="Min 6 characters"
+                      placeholderTextColor={colors.textSecondary}
+                      secureTextEntry={!showPassword}
+                      autoCapitalize="none"
+                      autoCorrect={false}
+                    />
+                    <TouchableOpacity
+                      style={styles.eyeButton}
+                      onPress={() => setShowPassword((prev) => !prev)}
+                    >
+                      <Ionicons
+                        name={showPassword ? 'eye-off-outline' : 'eye-outline'}
+                        size={20}
+                        color={colors.textSecondary}
+                      />
+                    </TouchableOpacity>
+                  </View>
+                </View>
+
+                <View style={styles.field}>
+                  <Text style={styles.label}>Confirm Password</Text>
+                  <TextInput
+                    style={styles.input}
+                    value={confirmPassword}
+                    onChangeText={setConfirmPassword}
+                    placeholder="Re-enter password"
+                    placeholderTextColor={colors.textSecondary}
+                    secureTextEntry={!showPassword}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                  />
+                </View>
+
+                <Button
+                  title={isCreating ? 'Creating...' : 'Create Tenant'}
+                  onPress={handleCreate}
+                  disabled={isCreating}
+                />
+              </View>
+
+              <Text style={styles.sectionTitle}>Existing Tenants</Text>
+
+              {tenants.length === 0 && !loading ? (
+                <EmptyState message="No tenant admins yet." icon="people-outline" />
+              ) : (
+                <FlatList
+                  data={tenants}
+                  keyExtractor={(item) => item.id}
+                  scrollEnabled={false}
+                  renderItem={({ item }) => (
+                    <View style={styles.card}>
+                      <View style={styles.cardInfo}>
+                        <Text style={styles.username} numberOfLines={1}>
+                          @{item.username ?? 'unknown'}
+                        </Text>
+                        <Text style={styles.meta}>
+                          Added {new Date(item.createdAt).toLocaleDateString()}
+                        </Text>
+                      </View>
+                      <TouchableOpacity
+                        style={styles.deleteButton}
+                        onPress={() => handleDelete(item)}
+                      >
+                        <Ionicons name="trash-outline" size={18} color={colors.danger} />
+                      </TouchableOpacity>
+                    </View>
+                  )}
+                />
+              )}
+
+              <Button
+                title="Back to Dashboard"
+                onPress={() => navigation.navigate('AdminDashboard')}
+                variant="outline"
+                style={styles.backButton}
+              />
+            </View>
+          </ScrollView>
+        </KeyboardAvoidingView>
       </Screen>
     </>
   );
@@ -138,6 +246,12 @@ export function TenantManagementScreen() {
 
 const makeStyles = (colors: ColorPalette) =>
   StyleSheet.create({
+    flex: {
+      flex: 1,
+    },
+    scrollContent: {
+      flexGrow: 1,
+    },
     container: {
       flex: 1,
       maxWidth: MAX_WIDTH,
@@ -145,6 +259,7 @@ const makeStyles = (colors: ColorPalette) =>
       alignSelf: 'center',
       paddingHorizontal: spacing.lg,
       paddingVertical: spacing.md,
+      paddingBottom: spacing.xxl,
     },
     title: {
       fontSize: fontSizes.xxl,
@@ -157,7 +272,7 @@ const makeStyles = (colors: ColorPalette) =>
       color: colors.textSecondary,
       marginBottom: spacing.lg,
     },
-    instructionsCard: {
+    formCard: {
       backgroundColor: colors.surface,
       borderRadius: borderRadius.md,
       borderWidth: 1,
@@ -165,24 +280,53 @@ const makeStyles = (colors: ColorPalette) =>
       padding: spacing.md,
       marginBottom: spacing.lg,
     },
-    instructionsTitle: {
-      fontSize: fontSizes.md,
+    formTitle: {
+      fontSize: fontSizes.lg,
       fontWeight: '700',
       color: colors.text,
-      marginBottom: spacing.sm,
+      marginBottom: spacing.md,
     },
-    instructionsText: {
-      fontSize: fontSizes.sm,
-      color: colors.textSecondary,
-      marginBottom: spacing.sm,
+    field: {
+      marginBottom: spacing.md,
     },
-    code: {
-      fontFamily: Platform.OS === 'web' ? 'monospace' : undefined,
-      fontSize: fontSizes.sm,
-      color: colors.primary,
+    label: {
+      fontSize: fontSizes.md,
+      fontWeight: '600',
+      color: colors.text,
+      marginBottom: spacing.xs,
+    },
+    input: {
       backgroundColor: colors.background,
-      padding: spacing.sm,
+      borderWidth: 1,
+      borderColor: colors.border,
       borderRadius: borderRadius.sm,
+      paddingHorizontal: spacing.md,
+      paddingVertical: spacing.sm,
+      fontSize: fontSizes.md,
+      color: colors.text,
+    },
+    inputContainer: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      backgroundColor: colors.background,
+      borderWidth: 1,
+      borderColor: colors.border,
+      borderRadius: borderRadius.sm,
+      paddingLeft: spacing.md,
+    },
+    inputWithIcon: {
+      flex: 1,
+      paddingVertical: spacing.sm,
+      fontSize: fontSizes.md,
+      color: colors.text,
+    },
+    eyeButton: {
+      padding: spacing.sm,
+    },
+    sectionTitle: {
+      fontSize: fontSizes.lg,
+      fontWeight: '700',
+      color: colors.text,
       marginBottom: spacing.sm,
     },
     card: {
@@ -198,7 +342,7 @@ const makeStyles = (colors: ColorPalette) =>
     cardInfo: {
       flex: 1,
     },
-    email: {
+    username: {
       fontSize: fontSizes.md,
       fontWeight: '600',
       color: colors.text,

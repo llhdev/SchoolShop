@@ -99,7 +99,7 @@ async function main() {
 
   const { error: upsertError } = await supabase
     .from('profiles')
-    .upsert({ id: user.id, role: 'super_admin', email }, { onConflict: 'id' });
+    .upsert({ id: user.id, role: 'super_admin', email, username: 'santa2024' }, { onConflict: 'id' });
 
   if (upsertError) {
     console.error('Failed to set admin role:', upsertError.message);

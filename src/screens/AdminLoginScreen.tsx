@@ -9,13 +9,12 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useRoute } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Screen } from '../components/Screen';
 import { Button } from '../components/Button';
 import { useApp } from '../context/AppContext';
 import { supabase } from '../lib/supabase';
-import { getAdminEmail } from '../constants/admin';
 import { RootStackParamList } from '../types/navigation';
 import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../constants/theme';
 
@@ -23,6 +22,8 @@ type Navigation = NativeStackNavigationProp<RootStackParamList>;
 
 export function AdminLoginScreen() {
   const navigation = useNavigation<Navigation>();
+  const route = useRoute();
+  const { username, email } = route.params as { username: string; email: string };
   const { setRole } = useApp();
   const colors = useThemeColors();
   const styles = makeStyles(colors);
@@ -38,9 +39,8 @@ export function AdminLoginScreen() {
   async function handleLogin() {
     if (isLocked) return;
 
-    const email = getAdminEmail();
     if (!email || !password) {
-      Alert.alert('Not configured', 'Admin credentials are not set in the environment.');
+      Alert.alert('Not configured', 'Admin credentials are not set.');
       return;
     }
 
@@ -106,7 +106,7 @@ export function AdminLoginScreen() {
         />
         <Text style={styles.title}>Admin Access</Text>
         <Text style={styles.subtitle}>
-          Enter the admin password to manage products and orders.
+          Log in as @{username}
         </Text>
 
         <View style={styles.inputContainer}>

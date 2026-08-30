@@ -15,7 +15,7 @@ import { useApp } from '../../context/AppContext';
 import { useResponsive } from '../../hooks/useResponsive';
 import { Category, Product } from '../../types';
 import { RootStackParamList } from '../../types/navigation';
-import { ADMIN_KEYWORD } from '../../constants/admin';
+import { supabase } from '../../lib/supabase';
 import { useThemeColors, spacing, fontSizes, ColorPalette } from '../../constants/theme';
 
 const MAX_CONTENT_WIDTH = 1200;
@@ -37,10 +37,32 @@ export function HomeScreen() {
 
   useEffect(() => {
     const trimmed = query.trim().toLowerCase();
-    if (trimmed === ADMIN_KEYWORD.toLowerCase()) {
-      setQuery('');
-      navigation.navigate('AdminLogin');
+    if (!trimmed) return;
+
+    let cancelled = false;
+
+    async function checkAdminUsername() {
+      const { data, error } = await supabase.rpc('get_admin_by_username', {
+        username: trimmed,
+      });
+
+      if (cancelled || error || !data || data.length === 0) return;
+
+      const admin = data[0] as { email: string; role: string };
+      if (admin.email && admin.role) {
+        setQuery('');
+        navigation.navigate('AdminLogin', {
+          username: trimmed,
+          email: admin.email,
+        });
+      }
     }
+
+    const timeout = setTimeout(checkAdminUsername, 400);
+    return () => {
+      cancelled = true;
+      clearTimeout(timeout);
+    };
   }, [query, navigation]);
 
   const filtered = useMemo(() => {
