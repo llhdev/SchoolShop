@@ -60,14 +60,12 @@ Always consult the exact versioned docs before writing code: <https://docs.expo.
 ├── start-app.bat                   # Windows quick-start helper
 ├── assets/                         # App icons, splash, favicon
 ├── supabase/
-│   ├── functions/
-│   │   └── create-tenant/
-│   │       └── index.ts            # Edge Function: creates tenant admins
 │   └── migrations/
 │       ├── 001_initial_schema.sql  # Supabase tables, RLS, storage bucket
 │       ├── 002_admin_auth_rls.sql  # Profiles, auth triggers, admin RLS
 │       ├── 003_tenant_admins.sql   # Super admin / tenant admin roles and product ownership
-│       └── 004_username_login.sql  # Username-based admin login lookup
+│       ├── 004_username_login.sql  # Username-based admin login lookup
+│       └── 005_tenant_signup_trigger.sql  # Tenant signup trigger for in-app tenant creation
 └── src/
     ├── components/                 # Reusable UI components
     │   ├── AdminHeader.tsx         # Web-only admin navigation header
@@ -186,6 +184,8 @@ Admins reach `AdminLogin` by typing their **username** into the home-screen sear
 
 The default super admin username is `santa2024` (set by `scripts/setup-admin.js`).
 
+Tenant admins are created in-app from the **Tenant Management** screen. The super admin enters a username and password; the app derives a tenant email (`<username>@tenant.schoolshop.app`) and calls `supabase.auth.signUp()` with a secondary, in-memory client so the super admin's session is preserved. The Postgres trigger `on_auth_user_created` then creates the profile with `role='admin'` and the chosen username.
+
 Within the admin stack:
 - `super_admin` sees category management, tenant management, and all products.
 - `admin` (tenant admin) sees only products they uploaded and can choose from existing categories.
@@ -243,12 +243,8 @@ AsyncStorage is only used for the local cache and theme:
    - `supabase/migrations/002_admin_auth_rls.sql`
    - `supabase/migrations/003_tenant_admins.sql`
    - `supabase/migrations/004_username_login.sql`
-5. Deploy the `create-tenant` Edge Function:
-   ```bash
-   supabase login
-   supabase link --project-ref <your-project-ref>
-   supabase functions deploy create-tenant
-   ```
+   - `supabase/migrations/005_tenant_signup_trigger.sql`
+5. Enable **Email auto-confirm** in Authentication > Providers > Email (or set `mailer_autoconfirm` to `true` via the Management API). This is required so tenant accounts created in-app are immediately active.
 6. Create the super admin by running `node scripts/setup-admin.js` (requires `SUPABASE_SERVICE_ROLE_KEY` and `EXPO_PUBLIC_ADMIN_EMAIL`/`EXPO_PUBLIC_ADMIN_PASSWORD` in `.env`).
 7. Start the app. It begins with empty products, orders, and categories so you can add your own.
 
@@ -289,7 +285,7 @@ There is no ESLint or Prettier configuration present. If you add one, keep rules
   - `super_admin`: full access; can manage categories, tenant admins, and all products.
   - `admin`: tenant admin; can upload products and choose from existing categories, but can only edit/delete products they uploaded.
   Admins are found by typing their `username` into the home-screen search bar. The `get_admin_by_username` RPC only returns data for an exact username match.
-  The super admin is created with `scripts/setup-admin.js` using `EXPO_PUBLIC_ADMIN_EMAIL` and `EXPO_PUBLIC_ADMIN_PASSWORD`. Tenant admins are created in-app via the `create-tenant` Edge Function, which validates that the caller is a `super_admin` before creating the auth user and profile.
+  The super admin is created with `scripts/setup-admin.js` using `EXPO_PUBLIC_ADMIN_EMAIL` and `EXPO_PUBLIC_ADMIN_PASSWORD`. Tenant admins are created in-app via `supabase.auth.signUp()` from the super admin's session. The tenant email domain (`tenant.schoolshop.app`) and the `on_auth_user_created` trigger ensure the new profile is created with `role='admin'`. Anyone who discovers the tenant email pattern can create a tenant account in this MVP; lock this down with an invitation flow or Edge Function validation if you move beyond the MVP.
 - **No real payment processing.** Card details entered on the checkout screen are validated only by length and are never transmitted or stored securely.
 - **Public reads, authenticated writes.** Products and categories are readable by everyone so shoppers can browse. Orders can be placed without auth, but order history is only visible to admins in this MVP. Lock this down further with shopper authentication if you need per-user order history.
 - **Local cache.** AsyncStorage data is stored unencrypted on the device. Do not store real payment data, passwords, or PII in this app.
