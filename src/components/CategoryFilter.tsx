@@ -1,8 +1,8 @@
-import { useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   Dimensions,
+  LayoutChangeEvent,
   Modal,
-  ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -19,6 +19,12 @@ interface CategoryFilterProps {
   onSelect: (category: Category | null) => void;
 }
 
+interface MeasuredWidths {
+  all: number;
+  more: number;
+  categories: Record<string, number>;
+}
+
 export function CategoryFilter({
   selected,
   onSelect,
@@ -27,7 +33,6 @@ export function CategoryFilter({
   const styles = makeStyles(colors);
   const { categories } = useApp();
   const { isPhone } = useResponsive();
-  const VISIBLE_COUNT = isPhone ? 5 : 3;
   const [dropdownVisible, setDropdownVisible] = useState(false);
   const [moreLayout, setMoreLayout] = useState<{
     x: number;
@@ -35,25 +40,98 @@ export function CategoryFilter({
     width: number;
     height: number;
   } | null>(null);
+  const [containerWidth, setContainerWidth] = useState(0);
+  const [measured, setMeasured] = useState<MeasuredWidths | null>(null);
+  const pendingRef = useRef<{ all?: number; more?: number; categories: Record<string, number> }>({
+    categories: {},
+  });
   const moreButtonRef = useRef<View>(null);
 
-  const visibleCategories = categories.slice(0, VISIBLE_COUNT);
-  const hiddenCategories = categories.slice(VISIBLE_COUNT);
+  const gap = isPhone ? 2 : spacing.sm;
+  const categoriesKey = categories.join('\n');
+
+  // Categories can change at runtime; re-measure when the list changes.
+  useEffect(() => {
+    setMeasured(null);
+    pendingRef.current = { categories: {} };
+  }, [categoriesKey]);
+
+  const visibleCount = useMemo(() => {
+    if (!measured || containerWidth <= 0) return categories.length;
+
+    const fitCount = (reserveMore: boolean): number => {
+      const moreReserve = reserveMore ? gap + measured.more : 0;
+      let used = measured.all;
+      let count = 0;
+      for (const category of categories) {
+        const width = measured.categories[category] ?? 0;
+        const candidate = used + gap + width;
+        if (candidate + moreReserve > containerWidth) break;
+        used = candidate;
+        count += 1;
+      }
+      return count;
+    };
+
+    if (fitCount(false) >= categories.length) return categories.length;
+    return fitCount(true);
+  }, [measured, containerWidth, categories, gap]);
+
+  const visibleCategories = categories.slice(0, visibleCount);
+  const hiddenCategories = categories.slice(visibleCount);
 
   function handleSelect(category: Category | null) {
     onSelect(category);
     setDropdownVisible(false);
   }
 
+  function recordMeasurement(
+    key: 'all' | 'more' | string,
+    event: LayoutChangeEvent,
+  ) {
+    const width = event.nativeEvent.layout.width;
+    const pending = pendingRef.current;
+    if (key === 'all') pending.all = width;
+    else if (key === 'more') pending.more = width;
+    else pending.categories[key] = width;
+
+    if (
+      pending.all !== undefined &&
+      pending.more !== undefined &&
+      categories.every((c) => pending.categories[c] !== undefined)
+    ) {
+      setMeasured({
+        all: pending.all,
+        more: pending.more,
+        categories: { ...pending.categories },
+      });
+    }
+  }
+
+  function renderChipContent(
+    label: string,
+    active: boolean,
+    more: boolean,
+  ) {
+    return (
+      <Text
+        style={[
+          styles.text,
+          isPhone && styles.textCompact,
+          active && styles.activeText,
+          more && styles.moreText,
+        ]}
+      >
+        {label}
+      </Text>
+    );
+  }
+
   return (
     <View style={styles.wrapper}>
-      <ScrollView
-        horizontal
-        showsHorizontalScrollIndicator={false}
-        contentContainerStyle={[
-          styles.container,
-          isPhone && styles.containerCompact,
-        ]}
+      <View
+        style={[styles.container, isPhone && styles.containerCompact]}
+        onLayout={(e) => setContainerWidth(e.nativeEvent.layout.width)}
       >
         <TouchableOpacity
           style={[
@@ -63,15 +141,7 @@ export function CategoryFilter({
           ]}
           onPress={() => onSelect(null)}
         >
-          <Text
-            style={[
-              styles.text,
-              isPhone && styles.textCompact,
-              selected === null && styles.activeText,
-            ]}
-          >
-            All
-          </Text>
+          {renderChipContent('All', selected === null, false)}
         </TouchableOpacity>
 
         {visibleCategories.map((category) => (
@@ -84,15 +154,7 @@ export function CategoryFilter({
             ]}
             onPress={() => onSelect(category)}
           >
-            <Text
-              style={[
-                styles.text,
-                isPhone && styles.textCompact,
-                selected === category && styles.activeText,
-              ]}
-            >
-              {category}
-            </Text>
+            {renderChipContent(category, selected === category, false)}
           </TouchableOpacity>
         ))}
 
@@ -107,19 +169,34 @@ export function CategoryFilter({
                 });
               }}
             >
-              <Text
-                style={[
-                  styles.text,
-                  isPhone && styles.textCompact,
-                  styles.moreText,
-                ]}
-              >
-                More ▼
-              </Text>
+              {renderChipContent('More ▼', false, true)}
             </TouchableOpacity>
           </View>
         )}
-      </ScrollView>
+      </View>
+
+      {/* Offscreen pass to measure chip widths before deciding the split */}
+      {!measured && (
+        <View style={styles.measureRow} pointerEvents="none">
+          <View onLayout={(e) => recordMeasurement('all', e)}>
+            <View style={[styles.chip, isPhone && styles.chipCompact]}>
+              {renderChipContent('All', false, false)}
+            </View>
+          </View>
+          {categories.map((category) => (
+            <View key={category} onLayout={(e) => recordMeasurement(category, e)}>
+              <View style={[styles.chip, isPhone && styles.chipCompact]}>
+                {renderChipContent(category, false, false)}
+              </View>
+            </View>
+          ))}
+          <View onLayout={(e) => recordMeasurement('more', e)}>
+            <View style={[styles.chip, isPhone && styles.chipCompact, styles.moreChip]}>
+              {renderChipContent('More ▼', false, true)}
+            </View>
+          </View>
+        </View>
+      )}
 
       <Modal
         animationType="fade"
@@ -141,7 +218,7 @@ export function CategoryFilter({
                 },
               ]}
             >
-              {categories.map((category) => (
+              {hiddenCategories.map((category) => (
                 <TouchableOpacity
                   key={category}
                   style={styles.dropdownItem}
@@ -175,13 +252,19 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
     marginBottom: spacing.md,
   },
   container: {
-    paddingHorizontal: 0,
+    flexDirection: 'row',
     gap: spacing.sm,
     alignItems: 'center',
   },
   containerCompact: {
-    paddingHorizontal: 0,
     gap: 2,
+  },
+  measureRow: {
+    position: 'absolute',
+    top: 0,
+    left: 0,
+    flexDirection: 'row',
+    opacity: 0,
   },
   chip: {
     paddingHorizontal: spacing.md,
