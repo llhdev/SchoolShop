@@ -17,6 +17,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { Button } from './Button';
 import { Product } from '../types';
 import { getProductGalleryImages } from '../utils/images';
+import { formatPrice } from '../utils/format';
 import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../constants/theme';
 
 interface ProductViewerModalProps {
@@ -169,7 +170,7 @@ export function ProductViewerModal({
                 <Text style={styles.name} numberOfLines={2}>
                   {product.name}
                 </Text>
-                <Text style={styles.price}>${product.price.toFixed(2)}</Text>
+                <Text style={styles.price}>{formatPrice(product.price)}</Text>
               </View>
 
               <View style={styles.metaRow}>

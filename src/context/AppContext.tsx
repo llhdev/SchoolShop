@@ -34,6 +34,7 @@ import {
   subscribeToCategories,
 } from '../services/categories';
 import { deleteProductImages } from '../services/images';
+import { loadCartFromCache, saveCartToCache } from '../services/cache';
 
 const initialState: AppState = {
   role: 'user',
@@ -97,6 +98,9 @@ function reducer(state: AppState, action: AppAction): AppState {
         ],
       };
     }
+
+    case 'SET_CART':
+      return { ...state, cart: action.payload };
 
     case 'REMOVE_FROM_CART':
       return {
@@ -220,10 +224,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
         dispatch({ type: 'SET_THEME', payload: storedTheme });
       }
 
-      const [cachedProducts, cachedOrders, cachedCategories] = await Promise.all([
+      const [cachedProducts, cachedOrders, cachedCategories, cachedCart] = await Promise.all([
         loadProductsFromCache(),
         loadOrdersFromCache(),
         loadCategoriesFromCache(),
+        loadCartFromCache(),
       ]);
 
       const migratedProducts = migrateLegacyProducts(cachedProducts);
@@ -231,6 +236,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       dispatch({ type: 'SET_PRODUCTS', payload: migratedProducts });
       dispatch({ type: 'SET_ORDERS', payload: cachedOrders });
       dispatch({ type: 'SET_CATEGORIES', payload: cachedCategories });
+      dispatch({ type: 'SET_CART', payload: cachedCart });
 
       setIsHydrated(true);
 
@@ -292,6 +298,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
       subscription.unsubscribe();
     };
   }, []);
+
+  // Persist cart changes so the cart survives app restarts.
+  useEffect(() => {
+    if (!isHydrated) return;
+    saveCartToCache(state.cart);
+  }, [state.cart, isHydrated]);
 
   useEffect(() => {
     if (!isHydrated) return;
@@ -377,15 +389,15 @@ export function AppProvider({ children }: { children: ReactNode }) {
       dispatch({ type: 'DELETE_PRODUCT', payload: id });
       await saveProductsToCache(optimistic);
       try {
-        if (product) {
-          // Best-effort cleanup of storage objects; do not block product deletion.
-          await deleteProductImages(product.images).catch(() => {});
-        }
         await deleteProductFromSupabase(id);
       } catch {
         dispatch({ type: 'SET_PRODUCTS', payload: previous });
         await saveProductsToCache(previous);
         throw new Error('Failed to delete product');
+      }
+      // Best-effort cleanup of storage objects after the product is gone.
+      if (product) {
+        deleteProductImages(product.images).catch(() => {});
       }
     },
     addToCart: (product, selectedImageIndex = product.coverImageIndex ?? 0) =>

@@ -6,6 +6,7 @@ import { Screen } from '../../components/Screen';
 import { EmptyState } from '../../components/EmptyState';
 import { AdminHeader } from '../../components/AdminHeader';
 import { useApp } from '../../context/AppContext';
+import { formatPrice } from '../../utils/format';
 import { AdminStackParamList } from '../../types/navigation';
 import { Order } from '../../types';
 import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../../constants/theme';
@@ -90,7 +91,7 @@ export function AdminOrdersScreen() {
               </View>
 
               <View style={styles.cardFooter}>
-                <Text style={styles.total}>${item.total.toFixed(2)}</Text>
+                <Text style={styles.total}>{formatPrice(item.total)}</Text>
                 <Text style={styles.date}>
                   Last order: {item.latestDate.toLocaleDateString()}
                 </Text>

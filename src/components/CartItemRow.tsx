@@ -2,6 +2,7 @@ import { Image, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { CartItem } from '../types';
 import { getProductImage } from '../utils/images';
+import { formatPrice } from '../utils/format';
 import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../constants/theme';
 
 interface CartItemRowProps {
@@ -34,7 +35,7 @@ export function CartItemRow({
         <Text style={styles.name} numberOfLines={1}>
           {item.product.name}
         </Text>
-        <Text style={styles.price}>${item.product.price.toFixed(2)}</Text>
+        <Text style={styles.price}>{formatPrice(item.product.price)}</Text>
       </View>
       <View style={styles.quantity}>
         <TouchableOpacity onPress={onDecrease} style={styles.qtyButton}>
@@ -97,9 +98,9 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
     marginRight: spacing.md,
   },
   qtyButton: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
     backgroundColor: colors.background,
     justifyContent: 'center',
     alignItems: 'center',
@@ -113,6 +114,9 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
     textAlign: 'center',
   },
   removeButton: {
-    padding: spacing.xs,
+    width: 44,
+    height: 44,
+    justifyContent: 'center',
+    alignItems: 'center',
   },
 });

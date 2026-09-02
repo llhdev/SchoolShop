@@ -7,6 +7,7 @@ import { Screen } from '../../components/Screen';
 import { EmptyState } from '../../components/EmptyState';
 import { WebHeader } from '../../components/WebHeader';
 import { useApp } from '../../context/AppContext';
+import { formatPrice } from '../../utils/format';
 import { getProductCoverImage } from '../../utils/images';
 import { RootStackParamList } from '../../types/navigation';
 import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../../constants/theme';
@@ -71,7 +72,7 @@ export function OrdersScreen() {
                     <Text style={styles.name} numberOfLines={1}>
                       {itemNames}
                     </Text>
-                    <Text style={styles.price}>${item.total.toFixed(2)}</Text>
+                    <Text style={styles.price}>{formatPrice(item.total)}</Text>
                   </View>
                   <View style={styles.row}>
                     <Text style={styles.date}>

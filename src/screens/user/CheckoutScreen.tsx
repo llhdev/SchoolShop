@@ -21,12 +21,13 @@ import { RootStackParamList } from '../../types/navigation';
 import { Order, PaymentMethod } from '../../types';
 import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../../constants/theme';
 import { isValidEthiopianPhoneNumber } from '../../utils/validation';
+import { formatPrice } from '../../utils/format';
 
 const MAX_WIDTH = 900;
 
 export function CheckoutScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
-  const { cart, cartTotal, clearCart, addOrder } = useApp();
+  const { cart, cartTotal, cartCount, clearCart, addOrder } = useApp();
   const { isDesktop } = useResponsive();
   const colors = useThemeColors();
   const styles = makeStyles(colors);
@@ -57,26 +58,22 @@ export function CheckoutScreen() {
       return;
     }
 
-    const baseTime = Date.now();
-    const orders: Order[] = cart.map((cartItem, index) => ({
-      id: (baseTime + index).toString(),
-      items: [cartItem],
-      total: cartItem.product.price * cartItem.quantity,
+    const order: Order = {
+      id: Date.now().toString(),
+      items: cart,
+      total: cartTotal,
       paymentMethod,
       status: paymentMethod === 'online_payment' ? 'paid' : 'pending',
       location: location.trim(),
       phoneNumber: phoneNumber.trim(),
       createdAt: new Date().toISOString(),
-    }));
+    };
 
     try {
-      await Promise.all(orders.map((order) => addOrder(order)));
+      await addOrder(order);
       clearCart();
       navigation.navigate('UserTabs', { screen: 'Orders' });
-      Alert.alert(
-        'Order Placed',
-        `Thank you! Your ${orders.length} order${orders.length > 1 ? 's' : ''} have been placed.`
-      );
+      Alert.alert('Order Placed', 'Thank you! Your order has been placed.');
     } catch {
       Alert.alert('Error', 'Failed to place order. Please check your connection and try again.');
     }
@@ -84,20 +81,34 @@ export function CheckoutScreen() {
 
   function TouchableOption({
     label,
+    subtext,
     selected,
+    disabled,
     onPress,
   }: {
     label: string;
+    subtext?: string;
     selected: boolean;
+    disabled?: boolean;
     onPress: () => void;
   }) {
     return (
       <TouchableOpacity
-        style={[styles.option, selected && styles.optionSelected]}
+        style={[
+          styles.option,
+          selected && styles.optionSelected,
+          disabled && styles.optionDisabled,
+        ]}
         onPress={onPress}
+        disabled={disabled}
       >
         <View style={[styles.radio, selected && styles.radioSelected]} />
-        <Text style={styles.optionText}>{label}</Text>
+        <View style={styles.optionTextWrap}>
+          <Text style={[styles.optionText, disabled && styles.optionTextDisabled]}>
+            {label}
+          </Text>
+          {subtext ? <Text style={styles.optionSubtext}>{subtext}</Text> : null}
+        </View>
       </TouchableOpacity>
     );
   }
@@ -131,13 +142,18 @@ export function CheckoutScreen() {
                       {item.quantity} × {item.product.name}
                     </Text>
                     <Text style={styles.summaryText}>
-                      ${(item.product.price * item.quantity).toFixed(2)}
+                      {formatPrice(item.product.price * item.quantity)}
                     </Text>
                   </View>
                 ))}
+                <View style={styles.summaryRow}>
+                  <Text style={styles.summaryText}>Delivery (Addis Ababa)</Text>
+                  <Text style={[styles.summaryText, styles.freeText]}>FREE</Text>
+                </View>
+                <Text style={styles.estimateText}>Estimated delivery: 1–3 days</Text>
                 <View style={[styles.summaryRow, styles.totalRow]}>
                   <Text style={styles.totalText}>Total</Text>
-                  <Text style={styles.totalText}>${cartTotal.toFixed(2)}</Text>
+                  <Text style={styles.totalText}>{formatPrice(cartTotal)}</Text>
                 </View>
               </View>
             </View>
@@ -173,11 +189,20 @@ export function CheckoutScreen() {
                 <Text style={styles.sectionTitle}>Payment Method</Text>
                 <TouchableOption
                   label="Cash on Delivery"
+                  subtext="Pay when your order arrives. Inspect before you pay."
                   selected={paymentMethod === 'cash_on_delivery'}
                   onPress={() => setPaymentMethod('cash_on_delivery')}
                 />
                 <TouchableOption
+                  label="Telebirr"
+                  subtext="Coming soon"
+                  selected={false}
+                  disabled
+                  onPress={() => {}}
+                />
+                <TouchableOption
                   label="Online Payment"
+                  subtext="Demo — no real charge is made"
                   selected={paymentMethod === 'online_payment'}
                   onPress={() => setPaymentMethod('online_payment')}
                 />
@@ -216,16 +241,41 @@ export function CheckoutScreen() {
                 </View>
               )}
 
-              <Button
-                title="Place Order"
-                onPress={handlePlaceOrder}
-                disabled={!canPlaceOrder}
-                style={styles.placeButton}
-              />
+              <View style={styles.trustBlock}>
+                <View style={styles.trustRow}>
+                  <Ionicons name="shield-checkmark-outline" size={16} color={colors.success} />
+                  <Text style={styles.trustText}>
+                    7-day return on unused items — contact us to arrange a pickup.
+                  </Text>
+                </View>
+                <View style={styles.trustRow}>
+                  <Ionicons name="call-outline" size={16} color={colors.success} />
+                  <Text style={styles.trustText}>
+                    Questions? Call or message us on Telegram before you order.
+                  </Text>
+                </View>
+              </View>
             </View>
           </View>
         </View>
       </ScrollView>
+
+      <View style={styles.footer}>
+        <View style={styles.footerInner}>
+          <View style={styles.footerTotals}>
+            <Text style={styles.footerCount}>
+              {cartCount} item{cartCount === 1 ? '' : 's'}
+            </Text>
+            <Text style={styles.footerTotal}>{formatPrice(cartTotal)}</Text>
+          </View>
+          <Button
+            title="Place Order"
+            onPress={handlePlaceOrder}
+            disabled={!canPlaceOrder}
+            style={styles.footerButton}
+          />
+        </View>
+      </View>
     </Screen>
     </>
   );
@@ -237,6 +287,7 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
   },
   scrollContent: {
     flexGrow: 1,
+    paddingBottom: 120,
   },
   container: {
     flex: 1,
@@ -315,6 +366,15 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
     fontWeight: '700',
     color: colors.text,
   },
+  freeText: {
+    color: colors.success,
+    fontWeight: '700',
+  },
+  estimateText: {
+    fontSize: fontSizes.sm,
+    color: colors.textSecondary,
+    marginBottom: spacing.sm,
+  },
   option: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -327,7 +387,21 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
   },
   optionSelected: {
     borderColor: colors.primary,
-    backgroundColor: '#F0F7FF',
+    backgroundColor: `${colors.primary}14`,
+  },
+  optionDisabled: {
+    opacity: 0.5,
+  },
+  optionTextWrap: {
+    flex: 1,
+  },
+  optionTextDisabled: {
+    color: colors.textSecondary,
+  },
+  optionSubtext: {
+    fontSize: fontSizes.sm,
+    color: colors.textSecondary,
+    marginTop: 2,
   },
   radio: {
     width: 20,
@@ -370,7 +444,57 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
   halfInput: {
     flex: 1,
   },
-  placeButton: {
-    marginTop: spacing.md,
+  trustBlock: {
+    backgroundColor: colors.surface,
+    borderRadius: borderRadius.md,
+    padding: spacing.lg,
+    marginBottom: spacing.lg,
+    borderWidth: 1,
+    borderColor: colors.border,
+    gap: spacing.sm,
+  },
+  trustRow: {
+    flexDirection: 'row',
+    alignItems: 'flex-start',
+    gap: spacing.sm,
+  },
+  trustText: {
+    flex: 1,
+    fontSize: fontSizes.sm,
+    color: colors.textSecondary,
+  },
+  footer: {
+    position: 'absolute',
+    bottom: 0,
+    left: 0,
+    right: 0,
+    backgroundColor: colors.surface,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+    paddingHorizontal: spacing.lg,
+    paddingVertical: spacing.md,
+  },
+  footerInner: {
+    maxWidth: MAX_WIDTH,
+    width: '100%',
+    alignSelf: 'center',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.lg,
+  },
+  footerTotals: {
+    flexShrink: 0,
+  },
+  footerCount: {
+    fontSize: fontSizes.sm,
+    color: colors.textSecondary,
+  },
+  footerTotal: {
+    fontSize: fontSizes.xl,
+    fontWeight: '700',
+    color: colors.text,
+  },
+  footerButton: {
+    flex: 1,
   },
 });

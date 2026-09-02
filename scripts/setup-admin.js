@@ -31,8 +31,8 @@ loadEnv();
 
 const url = process.env.EXPO_PUBLIC_SUPABASE_URL;
 const serviceRoleKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
-const email = process.env.EXPO_PUBLIC_ADMIN_EMAIL;
-const password = process.env.EXPO_PUBLIC_ADMIN_PASSWORD;
+const email = process.env.SUPABASE_ADMIN_EMAIL;
+const password = process.env.SUPABASE_ADMIN_PASSWORD;
 
 if (!url || !serviceRoleKey) {
   console.error('Missing EXPO_PUBLIC_SUPABASE_URL or SUPABASE_SERVICE_ROLE_KEY in .env');
@@ -40,7 +40,7 @@ if (!url || !serviceRoleKey) {
 }
 
 if (!email || !password) {
-  console.error('Missing EXPO_PUBLIC_ADMIN_EMAIL or EXPO_PUBLIC_ADMIN_PASSWORD in .env');
+  console.error('Missing SUPABASE_ADMIN_EMAIL or SUPABASE_ADMIN_PASSWORD in .env');
   process.exit(1);
 }
 

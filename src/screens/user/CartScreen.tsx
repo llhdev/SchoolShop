@@ -9,6 +9,7 @@ import { EmptyState } from '../../components/EmptyState';
 import { Button } from '../../components/Button';
 import { WebHeader } from '../../components/WebHeader';
 import { useApp } from '../../context/AppContext';
+import { formatPrice } from '../../utils/format';
 import { RootStackParamList } from '../../types/navigation';
 import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../../constants/theme';
 
@@ -88,7 +89,7 @@ export function CartScreen() {
           </View>
           <View style={styles.row}>
             <Text style={styles.totalLabel}>Total</Text>
-            <Text style={styles.totalValue}>${cartTotal.toFixed(2)}</Text>
+            <Text style={styles.totalValue}>{formatPrice(cartTotal)}</Text>
           </View>
           <Button
             title="Proceed to Checkout"

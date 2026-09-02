@@ -67,6 +67,6 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
     color: colors.text,
   },
   inputCompact: {
-    fontSize: fontSizes.xs,
+    fontSize: fontSizes.sm,
   },
 });

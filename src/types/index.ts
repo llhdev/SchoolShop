@@ -56,6 +56,7 @@ export type AppAction =
   | { type: 'UPDATE_PRODUCT'; payload: Product }
   | { type: 'DELETE_PRODUCT'; payload: string }
   | { type: 'ADD_TO_CART'; payload: { product: Product; selectedImageIndex: number } }
+  | { type: 'SET_CART'; payload: CartItem[] }
   | { type: 'REMOVE_FROM_CART'; payload: { productId: string; selectedImageIndex: number } }
   | { type: 'UPDATE_CART_QUANTITY'; payload: { productId: string; selectedImageIndex: number; quantity: number } }
   | { type: 'CLEAR_CART' }

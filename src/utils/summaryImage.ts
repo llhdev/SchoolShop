@@ -1,4 +1,5 @@
 import { CartItem } from '../types';
+import { formatPrice } from './format';
 import { ColorPalette, fontSizes, spacing } from '../constants/theme';
 
 const WIDTH = 640;
@@ -159,7 +160,7 @@ export function createWebSummaryImage(
         ? ` (Variant ${item.selectedImageIndex + 1})`
         : '';
     const name = `${item.quantity} × ${item.product.name}${variantLabel}`;
-    const price = `$${(item.product.price * item.quantity).toFixed(2)}`;
+    const price = formatPrice(item.product.price * item.quantity);
 
     const lines = wrapText(ctx, name, maxNameWidth, 2);
     const blockHeight = lines.length * getLineHeight(ITEM_SIZE);
@@ -203,7 +204,7 @@ export function createWebSummaryImage(
   ctx.fillText('Total', PADDING, y);
   ctx.fillStyle = colors.primary;
   ctx.textAlign = 'right';
-  ctx.fillText(`$${cartTotal.toFixed(2)}`, WIDTH - PADDING, y);
+  ctx.fillText(formatPrice(cartTotal), WIDTH - PADDING, y);
   y += getLineHeight(TOTAL_SIZE) + SECTION_GAP;
 
   // Footer.

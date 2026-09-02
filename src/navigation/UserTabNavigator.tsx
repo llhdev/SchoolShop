@@ -53,7 +53,7 @@ export function UserTabNavigator() {
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="cart-outline" size={size} color={color} />
           ),
-          tabBarBadge: cartCount > 0 ? cartCount : undefined,
+          tabBarBadge: cartCount > 0 ? (cartCount > 99 ? '99+' : cartCount) : undefined,
         }}
       />
       <Tab.Screen

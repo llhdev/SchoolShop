@@ -21,6 +21,7 @@ import { useApp } from '../../context/AppContext';
 import { useResponsive } from '../../hooks/useResponsive';
 import { AdminStackParamList } from '../../types/navigation';
 import { getProductCoverImage } from '../../utils/images';
+import { formatPrice } from '../../utils/format';
 import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../../constants/theme';
 
 const MAX_WIDTH = 1200;
@@ -233,7 +234,7 @@ export function AdminDashboardScreen() {
                               {item.name}
                             </Text>
                             <Text style={styles.productMeta}>
-                              {item.category} · <Text style={styles.productPrice}>${item.price.toFixed(2)}</Text>
+                              {item.category} · <Text style={styles.productPrice}>{formatPrice(item.price)}</Text>
                             </Text>
                           </View>
                         </View>
@@ -257,7 +258,7 @@ export function AdminDashboardScreen() {
                             {item.category}
                           </Text>
                           <Text style={[styles.productCellText, styles.colPrice]}>
-                            ${item.price.toFixed(2)}
+                            {formatPrice(item.price)}
                           </Text>
                         </>
                       )}

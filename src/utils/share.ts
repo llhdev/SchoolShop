@@ -1,6 +1,7 @@
 import { Platform, Share } from 'react-native';
 import { File as ExpoFile, Paths } from 'expo-file-system';
 import { CartItem } from '../types';
+import { formatPrice } from './format';
 
 export function formatOrderMessage(
   cart: CartItem[],
@@ -9,13 +10,13 @@ export function formatOrderMessage(
   const items = cart
     .map(
       (item) =>
-        `${item.quantity} × ${item.product.name} — $${(
+        `${item.quantity} × ${item.product.name} — ${formatPrice(
           item.product.price * item.quantity
-        ).toFixed(2)}`
+        )}`
     )
     .join('\n');
 
-  return `Hello, I would like to order:\n\n${items}\n\nTotal: $${cartTotal.toFixed(2)}`;
+  return `Hello, I would like to order:\n\n${items}\n\nTotal: ${formatPrice(cartTotal)}`;
 }
 
 async function downloadImage(uri: string): Promise<string | null> {

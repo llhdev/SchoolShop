@@ -21,6 +21,7 @@ import { EmptyState } from '../../components/EmptyState';
 import { useApp } from '../../context/AppContext';
 import { useResponsive } from '../../hooks/useResponsive';
 import { getProductGalleryImages } from '../../utils/images';
+import { formatPrice } from '../../utils/format';
 import { RootStackParamList } from '../../types/navigation';
 import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../../constants/theme';
 
@@ -64,7 +65,7 @@ export function ProductDetailScreen() {
         <Text style={styles.name} numberOfLines={2}>
           {product.name}
         </Text>
-        <Text style={styles.price}>${product.price.toFixed(2)}</Text>
+        <Text style={styles.price}>{formatPrice(product.price)}</Text>
       </View>
 
       <View style={styles.metaRow}>

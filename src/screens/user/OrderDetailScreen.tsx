@@ -7,6 +7,7 @@ import { Screen } from '../../components/Screen';
 import { EmptyState } from '../../components/EmptyState';
 import { WebHeader } from '../../components/WebHeader';
 import { useApp } from '../../context/AppContext';
+import { formatPrice } from '../../utils/format';
 import { RootStackParamList } from '../../types/navigation';
 import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../../constants/theme';
 
@@ -79,13 +80,13 @@ export function OrderDetailScreen() {
                   {item.quantity} × {item.product.name}
                 </Text>
                 <Text style={styles.itemPrice}>
-                  ${(item.product.price * item.quantity).toFixed(2)}
+                  {formatPrice(item.product.price * item.quantity)}
                 </Text>
               </View>
             ))}
             <View style={styles.totalRow}>
               <Text style={styles.totalLabel}>Total</Text>
-              <Text style={styles.totalValue}>${order.total.toFixed(2)}</Text>
+              <Text style={styles.totalValue}>{formatPrice(order.total)}</Text>
             </View>
           </View>
 

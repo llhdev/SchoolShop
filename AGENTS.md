@@ -21,7 +21,7 @@ Key facts:
 - No real payment gateway. Online payment is simulated.
 - Supports **iOS**, **Android**, and **web** targets through Expo.
 - Entry point: `index.ts` registers `App.tsx` as the root component.
-- Web target has dedicated responsive headers (`WebHeader`, `AdminHeader`) and a footer on the home screen; native targets use the standard bottom tab navigator and screen headers.
+- Web target has dedicated responsive headers (`WebHeader`, `AdminHeader`); native targets use the standard bottom tab navigator and screen headers.
 
 ---
 
@@ -119,6 +119,7 @@ Always consult the exact versioned docs before writing code: <https://docs.expo.
     │   ├── index.ts                # Domain types (Product, Order, CartItem, etc.)
     │   └── navigation.ts           # React Navigation param lists
     └── utils/
+        ├── format.ts               # ETB price formatting (formatPrice)
         ├── images.ts               # Placeholder image generation + cover/gallery helpers
         ├── storage.ts              # AsyncStorage read/write for theme only
         └── validation.ts           # Ethiopian phone number validation
@@ -160,7 +161,7 @@ Windows quick start: double-click `start-app.bat`, which opens a terminal, runs 
 All shared state lives in `src/context/AppContext.tsx`:
 
 - A single `useReducer` manages `role`, `products`, `cart`, `orders`, and `categories`.
-- On first mount the app loads products, orders, and categories from the AsyncStorage cache immediately so the UI renders without waiting on the network.
+- On first mount the app loads products, orders, categories, and the cart from the AsyncStorage cache immediately so the UI renders without waiting on the network.
 - A background sync then fetches fresh data from Supabase and replaces the local cache and state.
 - Mutations are optimistic: the reducer updates local state first, the cache is updated, and then the change is sent to Supabase. If the call fails, the local change is rolled back.
 - Supabase Realtime subscriptions listen for product, order, and category changes and refresh the local state + cache automatically.
@@ -169,7 +170,7 @@ All shared state lives in `src/context/AppContext.tsx`:
 Actions:
 
 - `SET_ROLE`, `SET_PRODUCTS`, `ADD_PRODUCT`, `UPDATE_PRODUCT`, `DELETE_PRODUCT`
-- `ADD_TO_CART`, `REMOVE_FROM_CART`, `UPDATE_CART_QUANTITY`, `CLEAR_CART`
+- `ADD_TO_CART`, `SET_CART`, `REMOVE_FROM_CART`, `UPDATE_CART_QUANTITY`, `CLEAR_CART`
 - `SET_ORDERS`, `ADD_ORDER`, `DELETE_ORDER`
 - `SET_CATEGORIES`, `ADD_CATEGORY`, `REMOVE_CATEGORY`
 
@@ -197,12 +198,13 @@ Param lists are defined in `src/types/navigation.ts`.
 ### Data model
 
 - `Product`: `id`, `name`, `description`, `price`, `category`, `images` (string array), `coverImageIndex`, `createdAt`, `ownerId`
-- `CartItem`: `{ product, quantity }`
+- `CartItem`: `{ product, quantity, selectedImageIndex }`
 - `Order`: `id`, `items`, `total`, `paymentMethod`, `status`, `location`, `phoneNumber`, `createdAt`
 - `Category`: arbitrary string; defaults are `School Uniform`, `Stationery`, `Books`, `Sports`, `Electronics`, `Accessories`
 - `Profile`: `id`, `role`, `email`, `username`, `shopName`
 - `PaymentMethod`: `cash_on_delivery` | `online_payment`
 - `OrderStatus`: `pending` | `paid` | `delivered`
+- Prices are plain numbers; always display them with `formatPrice` from `src/utils/format.ts` (whole Birr, e.g., `1,250 ETB`) — never hard-code `$` or `.toFixed(2)`.
 
 ### Images
 
@@ -218,15 +220,16 @@ Param lists are defined in `src/types/navigation.ts`.
 - The checkout screen collects a delivery `location` and an Ethiopian phone number.
 - Phone numbers are validated with `isValidEthiopianPhoneNumber` in `src/utils/validation.ts`.
 - Cash on delivery creates orders with `pending` status; online payment creates orders with `paid` status.
-- Each cart line item becomes a separate `Order` entry, sharing the same location and phone number.
+- A checkout creates a single `Order` containing all cart line items, sharing the same location and phone number.
 
 ### Persistence keys
 
 AsyncStorage is only used for the local cache and theme:
 
-- `@onlineshop_products` (cache)
-- `@onlineshop_orders` (cache)
-- `@onlineshop_categories` (cache)
+- `@schoolshop_products` (cache)
+- `@schoolshop_orders` (cache)
+- `@schoolshop_categories` (cache)
+- `@schoolshop_cart` (cart persistence)
 - `@onlineshop_theme`
 
 ---
@@ -249,7 +252,7 @@ AsyncStorage is only used for the local cache and theme:
    - `supabase/migrations/006_tenant_shop_name.sql`
    - `supabase/migrations/007_delete_tenant_user.sql`
 5. Enable **Email auto-confirm** in Authentication > Providers > Email (or set `mailer_autoconfirm` to `true` via the Management API). This is required so tenant accounts created in-app are immediately active.
-6. Create the super admin by running `node scripts/setup-admin.js` (requires `SUPABASE_SERVICE_ROLE_KEY` and `EXPO_PUBLIC_ADMIN_EMAIL`/`EXPO_PUBLIC_ADMIN_PASSWORD` in `.env`).
+6. Create the super admin by running `node scripts/setup-admin.js` (requires `SUPABASE_SERVICE_ROLE_KEY` and `SUPABASE_ADMIN_EMAIL`/`SUPABASE_ADMIN_PASSWORD` in `.env`).
 7. Start the app. It begins with empty products, orders, and categories so you can add your own.
 
 ---
@@ -289,7 +292,7 @@ There is no ESLint or Prettier configuration present. If you add one, keep rules
   - `super_admin`: full access; can manage categories, tenant admins, and all products.
   - `admin`: tenant admin; can upload products and choose from existing categories, but can only edit/delete products they uploaded.
   Admins are found by typing their `username` into the home-screen search bar. The `get_admin_by_username` RPC only returns data for an exact username match.
-  The super admin is created with `scripts/setup-admin.js` using `EXPO_PUBLIC_ADMIN_EMAIL` and `EXPO_PUBLIC_ADMIN_PASSWORD`. Tenant admins are created in-app via `supabase.auth.signUp()` from the super admin's session. The tenant email domain (`tenant.schoolshop.app`) and the `on_auth_user_created` trigger ensure the new profile is created with `role='admin'`. Anyone who discovers the tenant email pattern can create a tenant account in this MVP; lock this down with an invitation flow or Edge Function validation if you move beyond the MVP.
+  The super admin is created with `scripts/setup-admin.js` using `SUPABASE_ADMIN_EMAIL` and `SUPABASE_ADMIN_PASSWORD` (these must NOT use the `EXPO_PUBLIC_` prefix — that prefix inlines values into the client bundle). Tenant admins are created in-app via `supabase.auth.signUp()` from the super admin's session. The tenant email domain (`tenant.schoolshop.app`) and the `on_auth_user_created` trigger ensure the new profile is created with `role='admin'`. Anyone who discovers the tenant email pattern can create a tenant account in this MVP; lock this down with an invitation flow or Edge Function validation if you move beyond the MVP.
 - **No real payment processing.** Card details entered on the checkout screen are validated only by length and are never transmitted or stored securely.
 - **Public reads, authenticated writes.** Products and categories are readable by everyone so shoppers can browse. Orders can be placed without auth, but order history is only visible to admins in this MVP. Lock this down further with shopper authentication if you need per-user order history.
 - **Local cache.** AsyncStorage data is stored unencrypted on the device. Do not store real payment data, passwords, or PII in this app.

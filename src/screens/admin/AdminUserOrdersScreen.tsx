@@ -6,6 +6,7 @@ import { Screen } from '../../components/Screen';
 import { EmptyState } from '../../components/EmptyState';
 import { AdminHeader } from '../../components/AdminHeader';
 import { useApp } from '../../context/AppContext';
+import { formatPrice } from '../../utils/format';
 import { getProductCoverImage } from '../../utils/images';
 import { RootStackParamList } from '../../types/navigation';
 import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../../constants/theme';
@@ -63,7 +64,7 @@ export function AdminUserOrdersScreen() {
                 </View>
                 <View style={styles.details}>
                   <View style={styles.header}>
-                    <Text style={styles.total}>${item.total.toFixed(2)}</Text>
+                    <Text style={styles.total}>{formatPrice(item.total)}</Text>
                     <Text style={styles.date}>
                       {new Date(item.createdAt).toLocaleDateString()}
                     </Text>

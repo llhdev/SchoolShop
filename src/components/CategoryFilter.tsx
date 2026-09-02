@@ -278,8 +278,8 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
   },
   chipCompact: {
     paddingHorizontal: spacing.sm,
-    paddingVertical: 2,
-    height: 24,
+    paddingVertical: 4,
+    height: 36,
   },
   activeChip: {
     backgroundColor: colors.primary,
@@ -293,7 +293,7 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
     color: colors.text,
   },
   textCompact: {
-    fontSize: fontSizes.xs,
+    fontSize: fontSizes.sm,
   },
   activeText: {
     color: colors.surface,

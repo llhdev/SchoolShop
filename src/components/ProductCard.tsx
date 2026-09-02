@@ -9,6 +9,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { Product } from '../types';
 import { getProductCoverImage } from '../utils/images';
+import { formatPrice } from '../utils/format';
 import { useApp } from '../context/AppContext';
 import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../constants/theme';
 
@@ -58,7 +59,7 @@ export function ProductCard({ product, onPress }: ProductCardProps) {
           {product.name}
         </Text>
         <View style={styles.footer}>
-          <Text style={styles.price}>${product.price.toFixed(2)}</Text>
+          <Text style={styles.price}>{formatPrice(product.price)}</Text>
           <View style={styles.actions}>
             {cartQuantity > 0 && (
               <TouchableOpacity
@@ -144,9 +145,9 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
     gap: spacing.xs,
   },
   qtyButton: {
-    width: 26,
-    height: 26,
-    borderRadius: 13,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     backgroundColor: colors.background,
     justifyContent: 'center',
     alignItems: 'center',
@@ -154,9 +155,9 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
     borderColor: colors.border,
   },
   addButton: {
-    width: 28,
-    height: 28,
-    borderRadius: 14,
+    width: 44,
+    height: 44,
+    borderRadius: 22,
     backgroundColor: colors.primary,
     justifyContent: 'center',
     alignItems: 'center',
@@ -176,7 +177,7 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
   },
   badgeText: {
     color: colors.surface,
-    fontSize: 9,
+    fontSize: 10,
     fontWeight: '700',
   },
 });
