@@ -1,4 +1,4 @@
--- OnlineShop admin auth + RLS migration
+-- Timor Shop admin auth + RLS migration
 -- Run this in the Supabase SQL Editor after the initial schema is in place.
 
 -- Profiles table: maps auth users to roles.

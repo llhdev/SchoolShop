@@ -79,7 +79,9 @@ export async function fetchTenantById(id: string): Promise<Tenant | null> {
 }
 
 export async function deleteTenant(id: string): Promise<void> {
-  const { error } = await supabase.from('profiles').delete().eq('id', id);
+  const { error } = await supabase.rpc('delete_tenant_user', {
+    tenant_id: id,
+  });
   if (error) throw error;
 }
 

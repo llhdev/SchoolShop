@@ -210,7 +210,7 @@ export function createWebSummaryImage(
   ctx.fillStyle = colors.textSecondary;
   ctx.font = `${FOOTER_SIZE}px sans-serif`;
   ctx.textAlign = 'center';
-  ctx.fillText('Sent from OnlineShop', WIDTH / 2, y);
+  ctx.fillText('Sent from Timor Shop', WIDTH / 2, y);
 
   return canvas.toDataURL('image/png');
 }

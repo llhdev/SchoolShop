@@ -1,4 +1,4 @@
--- OnlineShop tenant admin migration
+-- Timor Shop tenant admin migration
 -- Run this in the Supabase SQL Editor after 002_admin_auth_rls.sql is in place.
 
 -- 1. Allow the super-admin role in profiles and store email for tenant management UI.

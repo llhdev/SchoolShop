@@ -1,4 +1,4 @@
--- OnlineShop username-based admin login migration
+-- Timor Shop username-based admin login migration
 -- Run this in the Supabase SQL Editor after 003_tenant_admins.sql is in place.
 
 -- 1. Store a human-friendly username for each admin. The username is typed into

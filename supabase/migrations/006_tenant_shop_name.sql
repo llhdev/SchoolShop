@@ -1,4 +1,4 @@
--- OnlineShop tenant shop name migration
+-- Timor Shop tenant shop name migration
 -- Adds a human-readable shop name to each tenant admin profile.
 
 -- 1. Store the shop name on the profile.

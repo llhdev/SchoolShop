@@ -1,4 +1,4 @@
--- OnlineShop initial Supabase schema
+-- Timor Shop initial Supabase schema
 -- Run this in the Supabase SQL Editor after creating your project.
 
 -- Products

@@ -1,4 +1,4 @@
--- OnlineShop tenant self-service signup migration
+-- Timor Shop tenant self-service signup migration
 -- Replaces the Edge Function path with an in-app signUp + Postgres trigger flow.
 --
 -- How it works:

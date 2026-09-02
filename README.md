@@ -1,4 +1,4 @@
-# OnlineShop
+# Timor Shop
 
 Cross-platform mobile and web app built with **Expo SDK 54** and **React Native** for student online shopping.
 
@@ -87,7 +87,7 @@ npx tsc --noEmit
     │   ├── ProductCard.tsx         # Product grid card
     │   ├── Screen.tsx              # Safe-area wrapper with optional scroll/padding
     │   ├── SearchBar.tsx           # Text input with search/clear icons
-    │   └── WebHeader.tsx           # Web-only Gold Fashion header
+    │   └── WebHeader.tsx           # Web-only Timor Shop header
     ├── constants/
     │   ├── categories.ts           # Default category list and colors
     │   └── theme.ts                # Colors, spacing, font sizes, border radius

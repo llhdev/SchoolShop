@@ -179,7 +179,7 @@ async function shareWithWebFiles(
   try {
     await navigator.share({
       files,
-      title: 'Order from OnlineShop',
+      title: 'Order from Timor Shop',
     });
     return true;
   } catch (error) {
