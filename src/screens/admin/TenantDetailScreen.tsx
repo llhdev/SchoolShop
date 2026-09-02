@@ -15,6 +15,7 @@ import { Screen } from '../../components/Screen';
 import { AdminHeader } from '../../components/AdminHeader';
 import { Button } from '../../components/Button';
 import { fetchTenantById, deleteTenant, Tenant } from '../../services/tenants';
+import { confirmAction } from '../../utils/confirm';
 import { AdminStackParamList } from '../../types/navigation';
 import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../../constants/theme';
 
@@ -49,26 +50,24 @@ export function TenantDetailScreen() {
     loadTenant();
   }, [loadTenant]);
 
+  async function performDelete() {
+    if (!tenant) return;
+    try {
+      await deleteTenant(tenant.id);
+      navigation.navigate('TenantManagement');
+    } catch (error) {
+      console.error('Failed to remove tenant:', error);
+      Alert.alert('Error', 'Failed to remove tenant. Please try again.');
+    }
+  }
+
   function handleDelete() {
     if (!tenant) return;
-    Alert.alert(
+    confirmAction(
       'Remove tenant?',
-      `This will revoke admin access for ${tenant.shopName ?? tenant.username ?? tenant.id}.`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Remove',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              await deleteTenant(tenant.id);
-              navigation.navigate('TenantManagement');
-            } catch {
-              Alert.alert('Error', 'Failed to remove tenant. Please try again.');
-            }
-          },
-        },
-      ]
+      `This will permanently delete ${tenant.shopName ?? tenant.username ?? tenant.id}. Their username and password will no longer work.`,
+      'Remove',
+      performDelete
     );
   }
 

@@ -18,7 +18,7 @@ import { Screen } from '../../components/Screen';
 import { EmptyState } from '../../components/EmptyState';
 import { AdminHeader } from '../../components/AdminHeader';
 import { Button } from '../../components/Button';
-import { fetchTenants, deleteTenant, createTenant, Tenant } from '../../services/tenants';
+import { fetchTenants, createTenant, Tenant } from '../../services/tenants';
 import { AdminStackParamList } from '../../types/navigation';
 import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../../constants/theme';
 
@@ -104,28 +104,6 @@ export function TenantManagementScreen() {
 
   function handleView(tenant: Tenant) {
     navigation.navigate('TenantDetail', { tenantId: tenant.id });
-  }
-
-  function handleDelete(tenant: Tenant) {
-    Alert.alert(
-      'Remove tenant?',
-      `This will revoke admin access for ${tenant.shopName ?? tenant.username ?? tenant.id}.`,
-      [
-        { text: 'Cancel', style: 'cancel' },
-        {
-          text: 'Remove',
-          style: 'destructive',
-          onPress: async () => {
-            try {
-              await deleteTenant(tenant.id);
-              setTenants((prev) => prev.filter((t) => t.id !== tenant.id));
-            } catch {
-              Alert.alert('Error', 'Failed to remove tenant. Please try again.');
-            }
-          },
-        },
-      ]
-    );
   }
 
   const isWeb = Platform.OS === 'web';
@@ -252,12 +230,6 @@ export function TenantManagementScreen() {
                           onPress={() => handleView(item)}
                         >
                           <Ionicons name="eye-outline" size={18} color={colors.primary} />
-                        </TouchableOpacity>
-                        <TouchableOpacity
-                          style={styles.actionButton}
-                          onPress={() => handleDelete(item)}
-                        >
-                          <Ionicons name="trash-outline" size={18} color={colors.danger} />
                         </TouchableOpacity>
                       </View>
                     </TouchableOpacity>
