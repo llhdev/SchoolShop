@@ -1,6 +1,10 @@
 <!DOCTYPE html>
 <html lang="en">
   <head>
+<!-- tma-error-trap --><script>(function(){var box=null;function show(m){if(!box){box=document.createElement('pre');box.style.cssText='position:fixed;top:0;left:0;right:0;z-index:99999;background:#7f1d1d;color:#fff;padding:12px;font:12px/1.4 monospace;white-space:pre-wrap;max-height:60%;overflow:auto;margin:0';(document.body||document.documentElement).appendChild(box);}box.textContent+=m+'\n\n';}
+window.addEventListener('error',function(e){show((e.message||'Script error')+'\n'+(e.filename||'')+':'+(e.lineno||''));});
+window.addEventListener('unhandledrejection',function(e){show('Unhandled rejection: '+((e.reason&&(e.reason.stack||e.reason.message))||e.reason));});
+})();</script>
     <meta charset="utf-8" />
     <meta httpEquiv="X-UA-Compatible" content="IE=edge" />
     <meta name="viewport" content="width=device-width, initial-scale=1, shrink-to-fit=no" />
