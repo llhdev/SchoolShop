@@ -88,7 +88,12 @@ export function ProductDetailScreen() {
 
   function handleScroll(event: NativeSyntheticEvent<NativeScrollEvent>) {
     const index = Math.round(event.nativeEvent.contentOffset.x / windowWidth);
-    setActiveIndex(Math.min(Math.max(index, 0), galleryImages.length - 1));
+    const clamped = Math.min(Math.max(index, 0), galleryImages.length - 1);
+    // onScroll fires continuously during a swipe; only update when the
+    // active page actually changes. onMomentumScrollEnd alone is unreliable
+    // in react-native-web inside the Telegram WebView, which is why the dots
+    // used to freeze after sliding.
+    setActiveIndex((prev) => (prev === clamped ? prev : clamped));
   }
 
   const infoSection = (
@@ -138,12 +143,6 @@ export function ProductDetailScreen() {
       </View>
 
       <View style={styles.divider} />
-
-      {galleryImages.length > 1 && (
-        <Text style={styles.variantLabel}>
-          Variant {activeIndex + 1} of {galleryImages.length}
-        </Text>
-      )}
 
       {!isTMA && (
         <View style={styles.actions}>
@@ -220,6 +219,8 @@ export function ProductDetailScreen() {
         decelerationRate="fast"
         bounces={false}
         keyExtractor={(_, index) => `gallery-${index}`}
+        onScroll={handleScroll}
+        scrollEventThrottle={32}
         onMomentumScrollEnd={handleScroll}
         renderItem={({ item }) => (
           <View style={[styles.imageSlide, { width: windowWidth, height: phoneImageHeight }]}>
@@ -432,12 +433,6 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
     fontSize: fontSizes.xs,
     color: colors.textSecondary,
     marginBottom: spacing.sm,
-  },
-  variantLabel: {
-    fontSize: fontSizes.sm,
-    color: colors.textSecondary,
-    fontWeight: '600',
-    marginBottom: spacing.md,
   },
   divider: {
     height: 1,
