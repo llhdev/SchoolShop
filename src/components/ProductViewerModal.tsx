@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import {
   FlatList,
-  Image,
   Modal,
   NativeScrollEvent,
   NativeSyntheticEvent,
@@ -15,6 +14,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Button } from './Button';
+import { ProductImage } from './ProductImage';
 import { Product } from '../types';
 import { getProductGalleryImages } from '../utils/images';
 import { formatPrice } from '../utils/format';
@@ -36,7 +36,7 @@ export function ProductViewerModal({
   const colors = useThemeColors();
   const styles = makeStyles(colors);
   const { width: windowWidth, height: windowHeight } = useWindowDimensions();
-  const flatListRef = useRef<FlatList<string>>(null);
+  const flatListRef = useRef<FlatList<string | null>>(null);
   const [activeIndex, setActiveIndex] = useState(0);
 
   const galleryImages = useMemo(
@@ -110,10 +110,11 @@ export function ProductViewerModal({
                       { width: windowWidth, height: imageHeight },
                     ]}
                   >
-                    <Image
-                      source={{ uri: item }}
+                    <ProductImage
+                      uri={item}
+                      category={product.category}
+                      name={product.name}
                       style={styles.image}
-                      resizeMode="contain"
                     />
                   </View>
                 )}
@@ -155,10 +156,12 @@ export function ProductViewerModal({
                       index === activeIndex && styles.thumbnailButtonActive,
                     ]}
                   >
-                    <Image
-                      source={{ uri }}
+                    <ProductImage
+                      uri={uri}
+                      category={product.category}
+                      name={product.name}
                       style={styles.thumbnailImage}
-                      resizeMode="cover"
+                      contentFit="cover"
                     />
                   </TouchableOpacity>
                 ))}
@@ -172,6 +175,12 @@ export function ProductViewerModal({
                 </Text>
                 <Text style={styles.price}>{formatPrice(product.price)}</Text>
               </View>
+
+              {product.shopName ? (
+                <Text style={styles.shopName} numberOfLines={1}>
+                  {product.shopName}
+                </Text>
+              ) : null}
 
               <View style={styles.metaRow}>
                 <Text style={styles.category}>{product.category}</Text>
@@ -324,6 +333,11 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
     fontSize: fontSizes.xl,
     fontWeight: '700',
     color: colors.text,
+  },
+  shopName: {
+    fontSize: fontSizes.xs,
+    color: colors.textSecondary,
+    marginBottom: spacing.sm,
   },
   price: {
     fontSize: fontSizes.xl,

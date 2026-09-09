@@ -2,11 +2,9 @@ import { useEffect, useState } from 'react';
 import { Platform } from 'react-native';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import * as ImagePicker from 'expo-image-picker';
 import {
   Alert,
   FlatList,
-  Image,
   ScrollView,
   StyleSheet,
   Text,
@@ -19,6 +17,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { Screen } from '../../components/Screen';
 import { Button } from '../../components/Button';
 import { AdminHeader } from '../../components/AdminHeader';
+import { ProductImage } from '../../components/ProductImage';
 import { useApp } from '../../context/AppContext';
 import { useResponsive } from '../../hooks/useResponsive';
 import { AdminStackParamList } from '../../types/navigation';
@@ -34,7 +33,7 @@ export function AddEditItemScreen() {
   const route = useRoute();
   const { productId } = (route.params as { productId?: string }) ?? {};
   const { products, categories, addProduct, updateProduct, role, currentUserId } = useApp();
-  const { isDesktop } = useResponsive();
+  const { isDesktop, isPhone } = useResponsive();
   const colors = useThemeColors();
   const styles = makeStyles(colors);
 
@@ -45,6 +44,9 @@ export function AddEditItemScreen() {
 
   const [name, setName] = useState(existing?.name ?? '');
   const [price, setPrice] = useState(existing?.price.toString() ?? '');
+  const [compareAtPrice, setCompareAtPrice] = useState(
+    existing?.compareAtPrice?.toString() ?? ''
+  );
   const [category, setCategory] = useState<Category>(existing?.category ?? categories[0] ?? '');
   const [images, setImages] = useState<string[]>(existing?.images ?? []);
   const [coverImageIndex, setCoverImageIndex] = useState(existing?.coverImageIndex ?? 0);
@@ -67,13 +69,32 @@ export function AddEditItemScreen() {
     }
   }, [existing, canEditExisting, navigation]);
 
+  const compareAt = compareAtPrice.trim() ? Number(compareAtPrice) : undefined;
   const isValid =
     name.trim() &&
     !isNaN(Number(price)) &&
     Number(price) > 0 &&
+    (compareAt === undefined || (!isNaN(compareAt) && compareAt > Number(price))) &&
     category.trim().length > 0;
 
   async function pickImages() {
+    // Web (browser + Telegram Mini App WebView): hidden file input + canvas
+    // resize. expo-image-picker does not run in a WebView.
+    if (Platform.OS === 'web') {
+      const { pickImagesWeb } = await import('../../lib/image-web');
+      const uris = await pickImagesWeb();
+      if (uris.length > 0) {
+        const resized = await Promise.all(
+          uris.map((uri) => resizeImage(uri, 800))
+        );
+        const uploaded = await uploadProductImages(resized);
+        setImages((prev) => [...prev, ...uploaded]);
+      }
+      return;
+    }
+
+    // Native: dynamically imported so the module stays out of the web bundle.
+    const ImagePicker = await import('expo-image-picker');
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (status !== 'granted') {
       Alert.alert('Permission needed', 'Please allow access to your photo library.');
@@ -118,6 +139,7 @@ export function AddEditItemScreen() {
       name: name.trim(),
       description: existing?.description ?? '',
       price: Number(price),
+      compareAtPrice: compareAt,
       category,
       images,
       coverImageIndex: images.length > 0 ? coverImageIndex : 0,
@@ -158,7 +180,9 @@ export function AddEditItemScreen() {
       <Screen noPadding edges={['top', 'left', 'right']}>
         <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
         <View style={styles.container}>
-          <Text style={styles.title}>{existing ? 'Edit Item' : 'Add New Item'}</Text>
+          <Text style={[styles.title, isPhone && styles.titleCompact]}>
+            {existing ? 'Edit Item' : 'Add New Item'}
+          </Text>
 
           <View style={styles.field}>
             <Text style={styles.label}>Product Images</Text>
@@ -169,7 +193,7 @@ export function AddEditItemScreen() {
               ]}
               onPress={pickImages}
             >
-              <Image source={{ uri: coverUri }} style={styles.coverImage} resizeMode="contain" />
+              <ProductImage uri={coverUri} category={category} name={name} style={styles.coverImage} />
               <View
                 style={[
                   styles.imageOverlay,
@@ -207,7 +231,7 @@ export function AddEditItemScreen() {
                     ]}
                   >
                     <TouchableOpacity onPress={() => setCoverImageIndex(index)}>
-                      <Image source={{ uri: item }} style={styles.thumbnail} resizeMode="cover" />
+                      <ProductImage uri={item} category={category} name={name} style={styles.thumbnail} contentFit="cover" />
                     </TouchableOpacity>
                     {index === coverImageIndex && (
                       <View style={styles.coverBadge}>
@@ -257,12 +281,23 @@ export function AddEditItemScreen() {
 
           <View style={[styles.row, isDesktop && styles.rowDesktop]}>
             <View style={[styles.field, styles.flex]}>
-              <Text style={styles.label}>Price ($)</Text>
+              <Text style={styles.label}>Price (ETB)</Text>
               <TextInput
                 style={styles.input}
                 value={price}
                 onChangeText={setPrice}
-                placeholder="0.00"
+                placeholder="0"
+                keyboardType="decimal-pad"
+              />
+            </View>
+
+            <View style={[styles.field, styles.flex]}>
+              <Text style={styles.label}>Original Price (ETB, optional)</Text>
+              <TextInput
+                style={styles.input}
+                value={compareAtPrice}
+                onChangeText={setCompareAtPrice}
+                placeholder="Higher than sale price"
                 keyboardType="decimal-pad"
               />
             </View>
@@ -302,6 +337,9 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
     fontWeight: '700',
     color: colors.text,
     marginBottom: spacing.lg,
+  },
+  titleCompact: {
+    fontSize: fontSizes.xl,
   },
   field: {
     marginBottom: spacing.lg,
@@ -410,6 +448,9 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
     paddingVertical: spacing.md,
     fontSize: fontSizes.md,
     color: colors.text,
+    ...(Platform.OS === 'web'
+      ? ({ outlineStyle: 'none', boxShadow: 'none' } as any)
+      : {}),
   },
   row: {
     gap: spacing.md,

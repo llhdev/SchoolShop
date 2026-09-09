@@ -1,4 +1,4 @@
-import { StyleSheet, Text, TouchableOpacity, ViewStyle } from 'react-native';
+import { ActivityIndicator, StyleSheet, Text, TouchableOpacity, View, ViewStyle } from 'react-native';
 import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../constants/theme';
 
 type ButtonVariant = 'primary' | 'secondary' | 'danger' | 'outline';
@@ -8,6 +8,7 @@ interface ButtonProps {
   onPress: () => void;
   variant?: ButtonVariant;
   disabled?: boolean;
+  loading?: boolean;
   style?: ViewStyle;
 }
 
@@ -16,6 +17,7 @@ export function Button({
   onPress,
   variant = 'primary',
   disabled = false,
+  loading = false,
   style,
 }: ButtonProps) {
   const colors = useThemeColors();
@@ -26,16 +28,21 @@ export function Button({
       style={[
         styles.button,
         styles[variant],
-        disabled && styles.disabled,
+        (disabled || loading) && styles.disabled,
         style,
       ]}
       onPress={onPress}
-      disabled={disabled}
+      disabled={disabled || loading}
       activeOpacity={0.8}
     >
-      <Text style={[styles.text, styles[`${variant}Text`], disabled && styles.disabledText]}>
-        {title}
-      </Text>
+      <View style={styles.content}>
+        {loading && (
+          <ActivityIndicator size="small" color={colors.textSecondary} />
+        )}
+        <Text style={[styles.text, styles[`${variant}Text`], (disabled || loading) && styles.disabledText]}>
+          {title}
+        </Text>
+      </View>
     </TouchableOpacity>
   );
 }
@@ -50,6 +57,11 @@ const makeStyles = (colors: ColorPalette) =>
       justifyContent: 'center',
       borderWidth: 1,
       borderColor: 'transparent',
+    },
+    content: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: spacing.sm,
     },
     primary: {
       backgroundColor: colors.primary,

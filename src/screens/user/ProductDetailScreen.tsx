@@ -5,7 +5,6 @@ import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import {
   Dimensions,
   FlatList,
-  Image,
   NativeScrollEvent,
   NativeSyntheticEvent,
   ScrollView,
@@ -18,10 +17,11 @@ import {
 import { Screen } from '../../components/Screen';
 import { Button } from '../../components/Button';
 import { EmptyState } from '../../components/EmptyState';
+import { ProductImage } from '../../components/ProductImage';
 import { useApp } from '../../context/AppContext';
 import { useResponsive } from '../../hooks/useResponsive';
 import { getProductGalleryImages } from '../../utils/images';
-import { formatPrice } from '../../utils/format';
+import { formatPrice, getDiscountPercent } from '../../utils/format';
 import { RootStackParamList } from '../../types/navigation';
 import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../../constants/theme';
 
@@ -50,6 +50,7 @@ export function ProductDetailScreen() {
   }
 
   const galleryImages = useMemo(() => getProductGalleryImages(product), [product]);
+  const discount = getDiscountPercent(product.price, product.compareAtPrice);
   const isWebDesktop = Platform.OS === 'web' && isDesktop;
 
   const phoneImageHeight = windowWidth * PHONE_IMAGE_HEIGHT_RATIO;
@@ -65,8 +66,22 @@ export function ProductDetailScreen() {
         <Text style={styles.name} numberOfLines={2}>
           {product.name}
         </Text>
-        <Text style={styles.price}>{formatPrice(product.price)}</Text>
+        <View style={styles.priceBlock}>
+          {discount !== null && product.compareAtPrice && (
+            <Text style={styles.compareAt}>{formatPrice(product.compareAtPrice)}</Text>
+          )}
+          <Text style={styles.price}>{formatPrice(product.price)}</Text>
+          {discount !== null && (
+            <Text style={styles.discountTag}>Save {discount}%</Text>
+          )}
+        </View>
       </View>
+
+      {product.shopName ? (
+        <Text style={styles.shopName} numberOfLines={1}>
+          {product.shopName}
+        </Text>
+      ) : null}
 
       <View style={styles.metaRow}>
         <Text style={styles.category}>{product.category}</Text>
@@ -108,10 +123,11 @@ export function ProductDetailScreen() {
           <View style={styles.desktopInner}>
             <View style={styles.desktopGallery}>
               <View style={styles.desktopMainImage}>
-                <Image
-                  source={{ uri: galleryImages[activeIndex] }}
+                <ProductImage
+                  uri={galleryImages[activeIndex] ?? null}
+                  category={product.category}
+                  name={product.name}
                   style={styles.desktopImage}
-                  resizeMode="contain"
                 />
               </View>
               {galleryImages.length > 1 && (
@@ -125,10 +141,12 @@ export function ProductDetailScreen() {
                       ]}
                       onPress={() => setActiveIndex(index)}
                     >
-                      <Image
-                        source={{ uri }}
+                      <ProductImage
+                        uri={uri}
+                        category={product.category}
+                        name={product.name}
                         style={styles.thumbnailImage}
-                        resizeMode="cover"
+                        contentFit="cover"
                       />
                     </TouchableOpacity>
                   ))}
@@ -156,7 +174,12 @@ export function ProductDetailScreen() {
         onMomentumScrollEnd={handleScroll}
         renderItem={({ item }) => (
           <View style={[styles.imageSlide, { width: windowWidth, height: phoneImageHeight }]}>
-            <Image source={{ uri: item }} style={styles.image} resizeMode="contain" />
+            <ProductImage
+              uri={item}
+              category={product.category}
+              name={product.name}
+              style={styles.image}
+            />
           </View>
         )}
         getItemLayout={(_, index) => ({
@@ -297,6 +320,20 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
     fontWeight: '700',
     color: colors.text,
   },
+  priceBlock: {
+    alignItems: 'flex-end',
+  },
+  compareAt: {
+    fontSize: fontSizes.sm,
+    color: colors.textSecondary,
+    textDecorationLine: 'line-through',
+  },
+  discountTag: {
+    fontSize: fontSizes.xs,
+    fontWeight: '700',
+    color: colors.price,
+    marginTop: 2,
+  },
   price: {
     fontSize: fontSizes.xxl,
     fontWeight: '700',
@@ -314,6 +351,11 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
     textTransform: 'uppercase',
     letterSpacing: 1,
     fontWeight: '600',
+  },
+  shopName: {
+    fontSize: fontSizes.xs,
+    color: colors.textSecondary,
+    marginBottom: spacing.sm,
   },
   variantLabel: {
     fontSize: fontSizes.sm,

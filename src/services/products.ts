@@ -1,17 +1,22 @@
 import { supabase } from '../lib/supabase';
+import { debounce } from '../lib/debounce';
 import { Product } from '../types';
 import { CACHE_KEYS, getCached, setCached } from './cache';
+
+const REFETCH_DEBOUNCE_MS = 500;
 
 interface DbProduct {
   id: string;
   name: string;
   description: string;
   price: number;
+  compare_at_price: number | null;
   category: string;
   images: string[];
   cover_image_index: number;
   created_at: string;
   owner_id?: string;
+  shop_name?: string | null;
 }
 
 function toProduct(db: DbProduct): Product {
@@ -20,11 +25,13 @@ function toProduct(db: DbProduct): Product {
     name: db.name,
     description: db.description,
     price: db.price,
+    compareAtPrice: db.compare_at_price ?? undefined,
     category: db.category,
     images: db.images,
     coverImageIndex: db.cover_image_index,
     createdAt: db.created_at,
     ownerId: db.owner_id,
+    shopName: db.shop_name ?? undefined,
   };
 }
 
@@ -34,6 +41,7 @@ function toDbProduct(product: Product): DbProduct {
     name: product.name,
     description: product.description,
     price: product.price,
+    compare_at_price: product.compareAtPrice ?? null,
     category: product.category,
     images: product.images,
     cover_image_index: product.coverImageIndex,
@@ -51,10 +59,9 @@ export async function saveProductsToCache(products: Product[]): Promise<void> {
 }
 
 export async function fetchProducts(): Promise<Product[]> {
-  const { data, error } = await supabase
-    .from('products')
-    .select('*')
-    .order('created_at', { ascending: false });
+  // SECURITY DEFINER RPC (migration 017) — products joined with the owner's
+  // shop_name, since profiles is not readable by anon clients.
+  const { data, error } = await supabase.rpc('fetch_products_with_shop');
   if (error) throw error;
   return (data ?? []).map(toProduct);
 }
@@ -95,19 +102,22 @@ export async function seedProducts(products: Product[]): Promise<void> {
 }
 
 export function subscribeToProducts(onChange: (products: Product[]) => void) {
+  // Debounce so a burst of events (e.g. a multi-image upload) triggers one refetch.
+  const refetch = debounce(async () => {
+    try {
+      const products = await fetchProducts();
+      onChange(products);
+    } catch {
+      // Keep cached data if the refresh fails.
+    }
+  }, REFETCH_DEBOUNCE_MS);
+
   const subscription = supabase
     .channel('products_changes')
     .on(
       'postgres_changes',
       { event: '*', schema: 'public', table: 'products' },
-      async () => {
-        try {
-          const products = await fetchProducts();
-          onChange(products);
-        } catch {
-          // Keep cached data if the refresh fails.
-        }
-      }
+      () => refetch()
     )
     .subscribe();
   return () => {

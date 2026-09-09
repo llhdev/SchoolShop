@@ -1,9 +1,10 @@
-import { useState } from 'react';
+import { useCallback, useState } from 'react';
 import { Platform } from 'react-native';
-import { useNavigation } from '@react-navigation/native';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import {
   Alert,
+  Modal,
   ScrollView,
   StyleSheet,
   Text,
@@ -21,25 +22,37 @@ import { RootStackParamList } from '../../types/navigation';
 import { Order, PaymentMethod } from '../../types';
 import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../../constants/theme';
 import { isValidEthiopianPhoneNumber } from '../../utils/validation';
+import { generateOrderCode } from '../../utils/orderCode';
 import { formatPrice } from '../../utils/format';
+import { LANDMARKS } from '../../constants/landmarks';
+import {
+  configureTelegramMainButton,
+  hasTelegramChrome,
+  isTelegramMiniApp,
+  setTelegramMainButtonProgress,
+} from '../../lib/telegram';
 
 const MAX_WIDTH = 900;
 
 export function CheckoutScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
-  const { cart, cartTotal, cartCount, clearCart, addOrder } = useApp();
-  const { isDesktop } = useResponsive();
+  const { cart, cartTotal, cartCount, clearCart, addOrder, shopper } = useApp();
+  const { isDesktop, isPhone } = useResponsive();
   const colors = useThemeColors();
   const styles = makeStyles(colors);
   const [paymentMethod, setPaymentMethod] = useState<PaymentMethod>('cash_on_delivery');
   const [location, setLocation] = useState('');
+  const [landmarkPickerVisible, setLandmarkPickerVisible] = useState(false);
+  const [landmarkQuery, setLandmarkQuery] = useState('');
   const [phoneNumber, setPhoneNumber] = useState('');
   const [phoneTouched, setPhoneTouched] = useState(false);
   const [cardNumber, setCardNumber] = useState('');
   const [expiry, setExpiry] = useState('');
   const [cvv, setCvv] = useState('');
+  const [placingOrder, setPlacingOrder] = useState(false);
 
   const isWeb = Platform.OS === 'web';
+  const isTMA = isTelegramMiniApp();
   const phoneValid = isValidEthiopianPhoneNumber(phoneNumber);
   const showPhoneError = phoneTouched && phoneNumber.trim().length > 0 && !phoneValid;
 
@@ -47,11 +60,34 @@ export function CheckoutScreen() {
     cart.length > 0 &&
     location.trim().length > 0 &&
     phoneValid &&
+    !placingOrder &&
     (paymentMethod === 'cash_on_delivery' ||
       (cardNumber.length >= 12 && expiry.length >= 4 && cvv.length >= 3));
 
+  // Inside Telegram, the native MainButton replaces the in-app footer CTA.
+  // useFocusEffect (not useEffect) so the button is hidden on blur: screens
+  // below the top of the stack stay mounted, and an unmount-only cleanup
+  // would leave the MainButton visible over Home/Orders.
+  useFocusEffect(
+    useCallback(() => {
+      if (!isTMA) return;
+      if (cart.length === 0) {
+        configureTelegramMainButton(null);
+        return;
+      }
+      configureTelegramMainButton({
+        text: `Place Order — ${formatPrice(cartTotal)}`,
+        color: colors.primary,
+        enabled: canPlaceOrder,
+        onPress: handlePlaceOrder,
+      });
+      return () => configureTelegramMainButton(null);
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, [isTMA, canPlaceOrder, cartTotal, cart.length, colors.primary, paymentMethod])
+  );
+
   async function handlePlaceOrder() {
-    if (cart.length === 0) return;
+    if (cart.length === 0 || placingOrder) return;
     if (!phoneValid) {
       setPhoneTouched(true);
       Alert.alert('Invalid Phone Number', 'Please enter a valid Ethiopian phone number.');
@@ -59,7 +95,7 @@ export function CheckoutScreen() {
     }
 
     const order: Order = {
-      id: Date.now().toString(),
+      id: generateOrderCode(),
       items: cart,
       total: cartTotal,
       paymentMethod,
@@ -67,15 +103,23 @@ export function CheckoutScreen() {
       location: location.trim(),
       phoneNumber: phoneNumber.trim(),
       createdAt: new Date().toISOString(),
+      telegramId: shopper?.telegramId,
     };
 
+    setPlacingOrder(true);
+    setTelegramMainButtonProgress(true);
     try {
       await addOrder(order);
       clearCart();
+      // Leave Checkout so it isn't kept in the stack over Home/Orders.
+      navigation.popToTop();
       navigation.navigate('UserTabs', { screen: 'Orders' });
       Alert.alert('Order Placed', 'Thank you! Your order has been placed.');
     } catch {
       Alert.alert('Error', 'Failed to place order. Please check your connection and try again.');
+    } finally {
+      setPlacingOrder(false);
+      setTelegramMainButtonProgress(false);
     }
   }
 
@@ -120,14 +164,16 @@ export function CheckoutScreen() {
         <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
         <View style={styles.container}>
           <View style={styles.titleRow}>
-            <Text style={styles.title}>Checkout</Text>
+            <Text style={[styles.title, isPhone && styles.titleCompact]}>Checkout</Text>
             {isWeb && (
               <TouchableOpacity
                 style={styles.homeLink}
                 onPress={() => navigation.navigate('UserTabs', { screen: 'Home' })}
               >
                 <Ionicons name="arrow-back" size={16} color={colors.primary} />
-                <Text style={styles.homeLinkText}>Continue Shopping</Text>
+                <Text style={[styles.homeLinkText, isPhone && styles.homeLinkTextCompact]}>
+                  Continue Shopping
+                </Text>
               </TouchableOpacity>
             )}
           </View>
@@ -161,9 +207,19 @@ export function CheckoutScreen() {
             <View style={styles.column}>
               <View style={styles.section}>
                 <Text style={styles.sectionTitle}>Delivery Location</Text>
+                <TouchableOpacity
+                  style={styles.landmarkButton}
+                  onPress={() => {
+                    setLandmarkQuery('');
+                    setLandmarkPickerVisible(true);
+                  }}
+                >
+                  <Ionicons name="location-outline" size={16} color={colors.primary} />
+                  <Text style={styles.landmarkButtonText}>Choose a common location</Text>
+                </TouchableOpacity>
                 <TextInput
                   style={styles.input}
-                  placeholder="Enter delivery location"
+                  placeholder="e.g. AAU Sidist Kilo Dorm, Block B"
                   value={location}
                   onChangeText={setLocation}
                 />
@@ -260,22 +316,69 @@ export function CheckoutScreen() {
         </View>
       </ScrollView>
 
-      <View style={styles.footer}>
-        <View style={styles.footerInner}>
-          <View style={styles.footerTotals}>
-            <Text style={styles.footerCount}>
-              {cartCount} item{cartCount === 1 ? '' : 's'}
-            </Text>
-            <Text style={styles.footerTotal}>{formatPrice(cartTotal)}</Text>
+      {/* In the Mini App Telegram's native MainButton takes over — unless the
+          SDK failed to load (stub mode), in which case the in-app button is
+          the only way to place the order. */}
+      {(!isTMA || !hasTelegramChrome()) && (
+        <View style={styles.footer}>
+          <View style={styles.footerInner}>
+            <View style={styles.footerTotals}>
+              <Text style={styles.footerCount}>
+                {cartCount} item{cartCount === 1 ? '' : 's'}
+              </Text>
+              <Text style={styles.footerTotal}>{formatPrice(cartTotal)}</Text>
+            </View>
+            <Button
+              title={placingOrder ? 'Placing Order…' : 'Place Order'}
+              onPress={handlePlaceOrder}
+              disabled={!canPlaceOrder}
+              loading={placingOrder}
+              style={styles.footerButton}
+            />
           </View>
-          <Button
-            title="Place Order"
-            onPress={handlePlaceOrder}
-            disabled={!canPlaceOrder}
-            style={styles.footerButton}
-          />
         </View>
-      </View>
+      )}
+
+      <Modal
+        animationType="fade"
+        transparent
+        visible={landmarkPickerVisible}
+        onRequestClose={() => setLandmarkPickerVisible(false)}
+      >
+        <TouchableOpacity
+          style={styles.landmarkOverlay}
+          activeOpacity={1}
+          onPress={() => setLandmarkPickerVisible(false)}
+        >
+          <View style={styles.landmarkSheet}>
+            <Text style={styles.landmarkTitle}>Common delivery locations</Text>
+            <TextInput
+              style={[styles.input, styles.landmarkSearch]}
+              placeholder="Search (e.g. AAU, Bole, Merkato)"
+              placeholderTextColor={colors.textSecondary}
+              value={landmarkQuery}
+              onChangeText={setLandmarkQuery}
+              autoFocus
+            />
+            <ScrollView style={styles.landmarkList} keyboardShouldPersistTaps="handled">
+              {LANDMARKS.filter((landmark) =>
+                landmark.toLowerCase().includes(landmarkQuery.trim().toLowerCase())
+              ).map((landmark) => (
+                <TouchableOpacity
+                  key={landmark}
+                  style={styles.landmarkItem}
+                  onPress={() => {
+                    setLocation(landmark);
+                    setLandmarkPickerVisible(false);
+                  }}
+                >
+                  <Text style={styles.landmarkItemText}>{landmark}</Text>
+                </TouchableOpacity>
+              ))}
+            </ScrollView>
+          </View>
+        </TouchableOpacity>
+      </Modal>
     </Screen>
     </>
   );
@@ -309,6 +412,9 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
     fontWeight: '700',
     color: colors.text,
   },
+  titleCompact: {
+    fontSize: fontSizes.xl,
+  },
   homeLink: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -319,12 +425,18 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
     color: colors.primary,
     fontWeight: '600',
   },
+  homeLinkTextCompact: {
+    fontSize: fontSizes.sm,
+  },
   columns: {
-    gap: spacing.lg,
+    // Mobile: columns stack, so the section marginBottom alone controls the
+    // gap — a column gap here would double it between summary and delivery.
+    gap: 0,
   },
   columnsDesktop: {
     flexDirection: 'row',
     alignItems: 'flex-start',
+    gap: spacing.lg,
   },
   column: {
     flex: 1,
@@ -427,6 +539,55 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
     paddingVertical: spacing.md,
     fontSize: fontSizes.md,
     backgroundColor: colors.background,
+    color: colors.text,
+    // Web draws a focus outline on the inner <input> that doubles the
+    // container border — suppress it so the field reads as one box.
+    ...(Platform.OS === 'web'
+      ? ({ outlineStyle: 'none', boxShadow: 'none' } as any)
+      : {}),
+  },
+  landmarkButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+    marginBottom: spacing.sm,
+  },
+  landmarkButtonText: {
+    fontSize: fontSizes.sm,
+    fontWeight: '600',
+    color: colors.primary,
+  },
+  landmarkOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.4)',
+    justifyContent: 'center',
+    padding: spacing.lg,
+  },
+  landmarkSheet: {
+    backgroundColor: colors.surface,
+    borderRadius: borderRadius.md,
+    padding: spacing.lg,
+    maxHeight: '80%',
+  },
+  landmarkTitle: {
+    fontSize: fontSizes.lg,
+    fontWeight: '700',
+    color: colors.text,
+    marginBottom: spacing.sm,
+  },
+  landmarkSearch: {
+    marginBottom: spacing.sm,
+  },
+  landmarkList: {
+    flexGrow: 0,
+  },
+  landmarkItem: {
+    paddingVertical: spacing.sm,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+  },
+  landmarkItemText: {
+    fontSize: fontSizes.md,
     color: colors.text,
   },
   inputError: {

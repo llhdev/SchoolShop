@@ -20,6 +20,7 @@ import { AdminHeader } from '../../components/AdminHeader';
 import { Button } from '../../components/Button';
 import { fetchTenants, createTenant, Tenant } from '../../services/tenants';
 import { AdminStackParamList } from '../../types/navigation';
+import { useResponsive } from '../../hooks/useResponsive';
 import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../../constants/theme';
 
 const MAX_WIDTH = 800;
@@ -28,6 +29,7 @@ type Navigation = NativeStackNavigationProp<AdminStackParamList>;
 
 export function TenantManagementScreen() {
   const navigation = useNavigation<Navigation>();
+  const { isPhone } = useResponsive();
   const colors = useThemeColors();
   const styles = makeStyles(colors);
 
@@ -37,6 +39,7 @@ export function TenantManagementScreen() {
 
   const [username, setUsername] = useState('');
   const [shopName, setShopName] = useState('');
+  const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -63,6 +66,7 @@ export function TenantManagementScreen() {
   function resetForm() {
     setUsername('');
     setShopName('');
+    setEmail('');
     setPassword('');
     setConfirmPassword('');
     setShowPassword(false);
@@ -90,7 +94,7 @@ export function TenantManagementScreen() {
 
     setIsCreating(true);
     try {
-      const tenant = await createTenant(cleanUsername, password, shopName.trim());
+      const tenant = await createTenant(cleanUsername, password, shopName.trim(), email);
       setTenants((prev) => [tenant, ...prev]);
       resetForm();
       Alert.alert('Success', `Tenant @${tenant.username} created.`);
@@ -120,7 +124,7 @@ export function TenantManagementScreen() {
         >
           <ScrollView contentContainerStyle={styles.scrollContent}>
             <View style={styles.container}>
-              <Text style={styles.title}>Tenant Admins</Text>
+              <Text style={[styles.title, isPhone && styles.titleCompact]}>Tenant Admins</Text>
               <Text style={styles.subtitle}>
                 Tenant admins can upload products and choose categories. They cannot manage categories or other tenants.
               </Text>
@@ -151,6 +155,20 @@ export function TenantManagementScreen() {
                     placeholderTextColor={colors.textSecondary}
                     autoCapitalize="none"
                     autoCorrect={false}
+                  />
+                </View>
+
+                <View style={styles.field}>
+                  <Text style={styles.label}>Email (optional)</Text>
+                  <TextInput
+                    style={styles.input}
+                    value={email}
+                    onChangeText={setEmail}
+                    placeholder="Leave blank to use the default"
+                    placeholderTextColor={colors.textSecondary}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    keyboardType="email-address"
                   />
                 </View>
 
@@ -221,7 +239,8 @@ export function TenantManagementScreen() {
                           {item.shopName ?? 'Untitled Shop'}
                         </Text>
                         <Text style={styles.meta}>
-                          @{item.username ?? 'unknown'} · Added {new Date(item.createdAt).toLocaleDateString()}
+                          @{item.username ?? 'unknown'}
+                          {item.code ? ` · ${item.code}` : ''} · Added {new Date(item.createdAt).toLocaleDateString()}
                         </Text>
                       </View>
                       <View style={styles.cardActions}>
@@ -274,6 +293,9 @@ const makeStyles = (colors: ColorPalette) =>
       color: colors.text,
       marginBottom: spacing.sm,
     },
+    titleCompact: {
+      fontSize: fontSizes.xl,
+    },
     subtitle: {
       fontSize: fontSizes.md,
       color: colors.textSecondary,
@@ -311,6 +333,9 @@ const makeStyles = (colors: ColorPalette) =>
       paddingVertical: spacing.sm,
       fontSize: fontSizes.md,
       color: colors.text,
+      ...(Platform.OS === 'web'
+        ? ({ outlineStyle: 'none', boxShadow: 'none' } as any)
+        : {}),
     },
     inputContainer: {
       flexDirection: 'row',
@@ -326,6 +351,11 @@ const makeStyles = (colors: ColorPalette) =>
       paddingVertical: spacing.sm,
       fontSize: fontSizes.md,
       color: colors.text,
+      // Icon-wrapped input: suppress the browser focus ring so it doesn't
+      // double the outer container's border.
+      ...(Platform.OS === 'web'
+        ? ({ outlineStyle: 'none', boxShadow: 'none' } as any)
+        : {}),
     },
     eyeButton: {
       padding: spacing.sm,

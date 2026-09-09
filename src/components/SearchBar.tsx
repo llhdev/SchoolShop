@@ -1,4 +1,4 @@
-import { StyleSheet, TextInput, View } from 'react-native';
+import { Platform, StyleSheet, TextInput, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { useResponsive } from '../hooks/useResponsive';
 import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../constants/theme';
@@ -22,7 +22,7 @@ export function SearchBar({
     <View style={[styles.container, isPhone && styles.containerCompact]}>
       <Ionicons
         name="search-outline"
-        size={isPhone ? 14 : 18}
+        size={isPhone ? 16 : 18}
         color={colors.textSecondary}
       />
       <TextInput
@@ -35,7 +35,7 @@ export function SearchBar({
       {value.length > 0 && (
         <Ionicons
           name="close-circle"
-          size={isPhone ? 14 : 18}
+          size={isPhone ? 16 : 18}
           color={colors.textSecondary}
           onPress={() => onChangeText('')}
         />
@@ -57,16 +57,21 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
     gap: spacing.xs,
   },
   containerCompact: {
-    paddingHorizontal: spacing.xs,
-    paddingVertical: 1,
-    gap: 2,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
+    gap: spacing.xs,
   },
   input: {
     flex: 1,
     fontSize: fontSizes.sm,
     color: colors.text,
+    // On web the browser draws a focus outline around the inner <input>,
+    // which stacks on the container border and looks like a box-in-a-box.
+    ...(Platform.OS === 'web'
+      ? ({ outlineStyle: 'none', boxShadow: 'none' } as any)
+      : {}),
   },
   inputCompact: {
-    fontSize: fontSizes.sm,
+    fontSize: fontSizes.md,
   },
 });

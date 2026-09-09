@@ -1,5 +1,4 @@
 import {
-  Image,
   Platform,
   StyleSheet,
   Text,
@@ -8,8 +7,9 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Product } from '../types';
+import { ProductImage } from './ProductImage';
 import { getProductCoverImage } from '../utils/images';
-import { formatPrice } from '../utils/format';
+import { formatPrice, getDiscountPercent } from '../utils/format';
 import { useApp } from '../context/AppContext';
 import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../constants/theme';
 
@@ -22,9 +22,9 @@ export function ProductCard({ product, onPress }: ProductCardProps) {
   const { cart, addToCart, updateCartQuantity } = useApp();
   const colors = useThemeColors();
   const styles = makeStyles(colors);
-  const imageUri = getProductCoverImage(product);
 
   const coverIndex = product.coverImageIndex ?? 0;
+  const discount = getDiscountPercent(product.price, product.compareAtPrice);
 
   const cartQuantity = cart
     .filter((item) => item.product.id === product.id)
@@ -52,14 +52,37 @@ export function ProductCard({ product, onPress }: ProductCardProps) {
       activeOpacity={0.9}
     >
       <View style={styles.imageContainer}>
-        <Image source={{ uri: imageUri }} style={styles.image} resizeMode="contain" />
+        <ProductImage
+          uri={getProductCoverImage(product)}
+          category={product.category}
+          name={product.name}
+          thumbnail
+          style={styles.image}
+        />
+        {discount !== null && (
+          <View style={styles.discountBadge}>
+            <Text style={styles.discountBadgeText}>-{discount}%</Text>
+          </View>
+        )}
       </View>
       <View style={styles.content}>
         <Text style={styles.name} numberOfLines={1}>
           {product.name}
         </Text>
+        {product.shopName ? (
+          <Text style={styles.shopName} numberOfLines={1}>
+            {product.shopName}
+          </Text>
+        ) : null}
         <View style={styles.footer}>
-          <Text style={styles.price}>{formatPrice(product.price)}</Text>
+          <View style={styles.priceBlock}>
+            {discount !== null && product.compareAtPrice && (
+              <Text style={styles.compareAt} numberOfLines={1}>
+                {formatPrice(product.compareAtPrice)}
+              </Text>
+            )}
+            <Text style={styles.price}>{formatPrice(product.price)}</Text>
+          </View>
           <View style={styles.actions}>
             {cartQuantity > 0 && (
               <TouchableOpacity
@@ -75,7 +98,7 @@ export function ProductCard({ product, onPress }: ProductCardProps) {
               onPress={handleAdd}
               activeOpacity={0.8}
             >
-              <Ionicons name="add" size={18} color={colors.surface} />
+              <Ionicons name="add" size={18} color={colors.primary} />
               {cartQuantity > 0 && (
                 <View style={styles.badge}>
                   <Text style={styles.badgeText}>
@@ -115,6 +138,20 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
     aspectRatio: 1,
     backgroundColor: colors.background,
   },
+  discountBadge: {
+    position: 'absolute',
+    top: spacing.xs,
+    left: spacing.xs,
+    backgroundColor: colors.price,
+    borderRadius: borderRadius.sm,
+    paddingHorizontal: spacing.xs,
+    paddingVertical: 2,
+  },
+  discountBadgeText: {
+    color: colors.surface,
+    fontSize: 10,
+    fontWeight: '700',
+  },
   image: {
     width: '100%',
     height: '100%',
@@ -124,15 +161,28 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
     gap: 2,
   },
   name: {
-    fontSize: fontSizes.md,
-    fontWeight: '700',
+    fontSize: fontSizes.sm,
+    fontWeight: '600',
     color: colors.text,
+  },
+  shopName: {
+    fontSize: fontSizes.xs,
+    color: colors.textSecondary,
   },
   footer: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
     marginTop: spacing.xs,
+  },
+  priceBlock: {
+    flex: 1,
+    marginRight: spacing.xs,
+  },
+  compareAt: {
+    fontSize: fontSizes.xs,
+    color: colors.textSecondary,
+    textDecorationLine: 'line-through',
   },
   price: {
     fontSize: fontSizes.sm,
@@ -145,20 +195,22 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
     gap: spacing.xs,
   },
   qtyButton: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: colors.background,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: colors.surface,
     justifyContent: 'center',
     alignItems: 'center',
     borderWidth: 1,
-    borderColor: colors.border,
+    borderColor: colors.primary,
   },
   addButton: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-    backgroundColor: colors.primary,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.primary,
     justifyContent: 'center',
     alignItems: 'center',
     position: 'relative',

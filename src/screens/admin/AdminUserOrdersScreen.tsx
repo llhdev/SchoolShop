@@ -1,11 +1,13 @@
 import { Platform } from 'react-native';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { FlatList, Image, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Screen } from '../../components/Screen';
 import { EmptyState } from '../../components/EmptyState';
 import { AdminHeader } from '../../components/AdminHeader';
+import { ProductImage } from '../../components/ProductImage';
 import { useApp } from '../../context/AppContext';
+import { useResponsive } from '../../hooks/useResponsive';
 import { formatPrice } from '../../utils/format';
 import { getProductCoverImage } from '../../utils/images';
 import { RootStackParamList } from '../../types/navigation';
@@ -18,6 +20,7 @@ export function AdminUserOrdersScreen() {
   const route = useRoute();
   const { phoneNumber } = route.params as { phoneNumber: string };
   const { orders } = useApp();
+  const { isPhone } = useResponsive();
   const colors = useThemeColors();
   const styles = makeStyles(colors);
 
@@ -43,7 +46,9 @@ export function AdminUserOrdersScreen() {
       {isWeb && <AdminHeader />}
       <Screen noPadding edges={['top', 'left', 'right']}>
         <View style={styles.container}>
-        <Text style={styles.phoneNumber}>{phoneNumber}</Text>
+        <Text style={[styles.phoneNumber, isPhone && styles.phoneNumberCompact]}>
+          {phoneNumber}
+        </Text>
         <Text style={styles.subtitle}>{userOrders.length} order(s)</Text>
 
         <FlatList
@@ -51,7 +56,7 @@ export function AdminUserOrdersScreen() {
           keyExtractor={(item) => item.id}
           renderItem={({ item }) => {
             const firstItem = item.items[0];
-            const imageUri = firstItem ? getProductCoverImage(firstItem.product) : '';
+            const imageUri = firstItem ? getProductCoverImage(firstItem.product) : null;
             const itemNames = item.items.map((i) => i.product.name).join(', ');
 
             return (
@@ -60,7 +65,13 @@ export function AdminUserOrdersScreen() {
                 onPress={() => navigation.navigate('OrderDetail', { orderId: item.id })}
               >
                 <View style={styles.thumbnail}>
-                  <Image source={{ uri: imageUri }} style={styles.thumbnailImage} resizeMode="contain" />
+                  <ProductImage
+                    uri={imageUri}
+                    category={firstItem?.product.category}
+                    name={firstItem?.product.name}
+                    thumbnail
+                    style={styles.thumbnailImage}
+                  />
                 </View>
                 <View style={styles.details}>
                   <View style={styles.header}>
@@ -84,6 +95,8 @@ export function AdminUserOrdersScreen() {
                     item.status === 'paid' && styles.paidBadge,
                     item.status === 'pending' && styles.pendingBadge,
                     item.status === 'delivered' && styles.deliveredBadge,
+                    item.status === 'completed' && styles.completedBadge,
+                    item.status === 'failed' && styles.failedBadge,
                   ]}
                 >
                   <Text style={styles.badgeText}>{item.status}</Text>
@@ -111,6 +124,9 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
     fontSize: fontSizes.xxl,
     fontWeight: '700',
     color: colors.text,
+  },
+  phoneNumberCompact: {
+    fontSize: fontSizes.xl,
   },
   subtitle: {
     fontSize: fontSizes.md,
@@ -190,6 +206,12 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
   },
   deliveredBadge: {
     backgroundColor: colors.primary,
+  },
+  completedBadge: {
+    backgroundColor: colors.success,
+  },
+  failedBadge: {
+    backgroundColor: colors.danger,
   },
   badgeText: {
     fontSize: fontSizes.xs,

@@ -8,18 +8,21 @@ export type Theme = 'light' | 'dark';
 
 export type PaymentMethod = 'cash_on_delivery' | 'online_payment';
 
-export type OrderStatus = 'pending' | 'paid' | 'delivered';
+export type OrderStatus = 'pending' | 'paid' | 'delivered' | 'completed' | 'failed';
 
 export interface Product {
   id: string;
   name: string;
   description: string;
   price: number;
+  compareAtPrice?: number;
   category: Category;
   images: string[];
   coverImageIndex: number;
   createdAt: string;
   ownerId?: string;
+  /** Tenant shop name, resolved from the owner's profile (profiles.shop_name). */
+  shopName?: string;
 }
 
 export interface CartItem {
@@ -37,6 +40,16 @@ export interface Order {
   location: string;
   phoneNumber: string;
   createdAt: string;
+  /** Set for orders placed from a Telegram Mini App session. */
+  telegramId?: number;
+}
+
+/** A shopper identified via a validated Telegram Mini App session. */
+export interface Shopper {
+  telegramId: number;
+  firstName: string;
+  lastName?: string;
+  username?: string;
 }
 
 export interface AppState {
@@ -62,6 +75,7 @@ export type AppAction =
   | { type: 'CLEAR_CART' }
   | { type: 'SET_ORDERS'; payload: Order[] }
   | { type: 'ADD_ORDER'; payload: Order }
+  | { type: 'UPDATE_ORDER'; payload: Order }
   | { type: 'DELETE_ORDER'; payload: string }
   | { type: 'SET_CATEGORIES'; payload: Category[] }
   | { type: 'ADD_CATEGORY'; payload: Category }

@@ -1,12 +1,15 @@
 import { Platform } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { FlatList, Image, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Screen } from '../../components/Screen';
 import { EmptyState } from '../../components/EmptyState';
 import { WebHeader } from '../../components/WebHeader';
+import { TelegramAccountBadge } from '../../components/TelegramAccountBadge';
+import { ProductImage } from '../../components/ProductImage';
 import { useApp } from '../../context/AppContext';
+import { useResponsive } from '../../hooks/useResponsive';
 import { formatPrice } from '../../utils/format';
 import { getProductCoverImage } from '../../utils/images';
 import { RootStackParamList } from '../../types/navigation';
@@ -16,9 +19,16 @@ const MAX_WIDTH = 900;
 
 export function OrdersScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
-  const { orders } = useApp();
+  const { orders, shopper } = useApp();
+  const { isPhone } = useResponsive();
   const colors = useThemeColors();
   const styles = makeStyles(colors);
+
+  const accountBadge = shopper ? (
+    <View style={styles.badgeWrap}>
+      <TelegramAccountBadge shopper={shopper} />
+    </View>
+  ) : null;
 
   const isWeb = Platform.OS === 'web';
 
@@ -27,7 +37,10 @@ export function OrdersScreen() {
       <>
         {isWeb && <WebHeader showSearch={false} />}
         <Screen>
-          <EmptyState message="No orders yet." icon="receipt-outline" />
+          <View style={styles.container}>
+            {accountBadge}
+            <EmptyState message="No orders yet." icon="receipt-outline" />
+          </View>
         </Screen>
       </>
     );
@@ -38,15 +51,18 @@ export function OrdersScreen() {
       {isWeb && <WebHeader showSearch={false} />}
       <Screen noPadding edges={['top', 'left', 'right']}>
         <View style={styles.container}>
+        {accountBadge}
         <View style={styles.titleRow}>
-          <Text style={styles.title}>My Orders</Text>
+          <Text style={[styles.title, isPhone && styles.titleCompact]}>My Orders</Text>
           {isWeb && (
             <TouchableOpacity
               style={styles.homeLink}
               onPress={() => navigation.navigate('UserTabs', { screen: 'Home' })}
             >
               <Ionicons name="arrow-back" size={16} color={colors.primary} />
-              <Text style={styles.homeLinkText}>Continue Shopping</Text>
+              <Text style={[styles.homeLinkText, isPhone && styles.homeLinkTextCompact]}>
+                Continue Shopping
+              </Text>
             </TouchableOpacity>
           )}
         </View>
@@ -54,45 +70,56 @@ export function OrdersScreen() {
         <FlatList
           data={orders}
           keyExtractor={(item) => item.id}
-          renderItem={({ item }) => {
-            const firstItem = item.items[0];
-            const imageUri = firstItem ? getProductCoverImage(firstItem.product) : '';
-            const itemNames = item.items.map((i) => i.product.name).join(', ');
+          renderItem={({ item }) => (
+            <TouchableOpacity
+              style={styles.card}
+              onPress={() => navigation.navigate('OrderDetail', { orderId: item.id })}
+            >
+              <View style={styles.orderHeader}>
+                <Text style={styles.date}>
+                  {new Date(item.createdAt).toLocaleDateString()}
+                </Text>
+                <View style={styles.headerRight}>
+                  <View
+                    style={[
+                      styles.badge,
+                      item.status === 'paid' && styles.paidBadge,
+                      item.status === 'pending' && styles.pendingBadge,
+                      item.status === 'delivered' && styles.deliveredBadge,
+                      item.status === 'completed' && styles.completedBadge,
+                      item.status === 'failed' && styles.failedBadge,
+                    ]}
+                  >
+                    <Text style={styles.badgeText}>{item.status}</Text>
+                  </View>
+                  <Text style={styles.price}>{formatPrice(item.total)}</Text>
+                </View>
+              </View>
 
-            return (
-              <TouchableOpacity
-                style={styles.card}
-                onPress={() => navigation.navigate('OrderDetail', { orderId: item.id })}
-              >
-                <View style={styles.thumbnail}>
-                  <Image source={{ uri: imageUri }} style={styles.thumbnailImage} resizeMode="contain" />
-                </View>
-                <View style={styles.info}>
-                  <View style={styles.row}>
-                    <Text style={styles.name} numberOfLines={1}>
-                      {itemNames}
-                    </Text>
-                    <Text style={styles.price}>{formatPrice(item.total)}</Text>
+              {item.items.map((i) => (
+                <View
+                  key={`${i.product.id}-${i.selectedImageIndex}`}
+                  style={styles.itemRow}
+                >
+                  <View style={styles.itemThumb}>
+                    <ProductImage
+                      uri={getProductCoverImage(i.product)}
+                      category={i.product.category}
+                      name={i.product.name}
+                      thumbnail
+                      style={styles.itemThumbImage}
+                    />
                   </View>
-                  <View style={styles.row}>
-                    <Text style={styles.date}>
-                      {new Date(item.createdAt).toLocaleDateString()}
-                    </Text>
-                    <View
-                      style={[
-                        styles.badge,
-                        item.status === 'paid' && styles.paidBadge,
-                        item.status === 'pending' && styles.pendingBadge,
-                        item.status === 'delivered' && styles.deliveredBadge,
-                      ]}
-                    >
-                      <Text style={styles.badgeText}>{item.status}</Text>
-                    </View>
-                  </View>
+                  <Text style={styles.itemName} numberOfLines={1}>
+                    {i.quantity} × {i.product.name}
+                  </Text>
+                  <Text style={styles.itemPrice}>
+                    {formatPrice(i.product.price * i.quantity)}
+                  </Text>
                 </View>
-              </TouchableOpacity>
-            );
-          }}
+              ))}
+            </TouchableOpacity>
+          )}
         />
       </View>
     </Screen>
@@ -120,6 +147,9 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
     fontWeight: '700',
     color: colors.text,
   },
+  titleCompact: {
+    fontSize: fontSizes.xl,
+  },
   homeLink: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -130,9 +160,13 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
     color: colors.primary,
     fontWeight: '600',
   },
+  homeLinkTextCompact: {
+    fontSize: fontSizes.sm,
+  },
+  badgeWrap: {
+    marginBottom: spacing.md,
+  },
   card: {
-    flexDirection: 'row',
-    alignItems: 'center',
     backgroundColor: colors.surface,
     borderRadius: borderRadius.md,
     padding: spacing.md,
@@ -145,36 +179,49 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
         } as any)
       : {}),
   },
-  thumbnail: {
-    width: 64,
-    height: 64,
+  orderHeader: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'center',
+    paddingBottom: spacing.sm,
+    marginBottom: spacing.sm,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+  },
+  headerRight: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+  },
+  itemRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    paddingVertical: spacing.xs,
+    gap: spacing.sm,
+  },
+  itemThumb: {
+    width: 40,
+    height: 40,
     borderRadius: borderRadius.sm,
     backgroundColor: colors.background,
     justifyContent: 'center',
     alignItems: 'center',
     overflow: 'hidden',
-    marginRight: spacing.md,
   },
-  thumbnailImage: {
+  itemThumbImage: {
     width: '100%',
     height: '100%',
   },
-  info: {
+  itemName: {
     flex: 1,
-    justifyContent: 'center',
-    gap: spacing.xs,
+    fontSize: fontSizes.sm,
+    fontWeight: '500',
+    color: colors.text,
   },
-  row: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  name: {
-    fontSize: fontSizes.md,
+  itemPrice: {
+    fontSize: fontSizes.sm,
     fontWeight: '600',
     color: colors.text,
-    flex: 1,
-    marginRight: spacing.sm,
   },
   price: {
     fontSize: fontSizes.md,
@@ -190,7 +237,6 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
     paddingVertical: spacing.xs,
     borderRadius: borderRadius.xl,
     backgroundColor: colors.border,
-    marginLeft: spacing.sm,
   },
   pendingBadge: {
     backgroundColor: colors.warning,
@@ -200,6 +246,12 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
   },
   deliveredBadge: {
     backgroundColor: colors.primary,
+  },
+  completedBadge: {
+    backgroundColor: colors.success,
+  },
+  failedBadge: {
+    backgroundColor: colors.danger,
   },
   badgeText: {
     fontSize: fontSizes.xs,

@@ -3,6 +3,7 @@ import { supabase } from '../lib/supabase';
 
 export interface Tenant {
   id: string;
+  code: string | null;
   username: string | null;
   email: string | null;
   shopName: string | null;
@@ -12,6 +13,7 @@ export interface Tenant {
 
 interface DbProfile {
   id: string;
+  tenant_code: string | null;
   username: string | null;
   email: string | null;
   shop_name: string | null;
@@ -22,6 +24,7 @@ interface DbProfile {
 function toTenant(db: DbProfile): Tenant {
   return {
     id: db.id,
+    code: db.tenant_code,
     username: db.username,
     email: db.email,
     shopName: db.shop_name,
@@ -55,7 +58,7 @@ function createSignupClient() {
 export async function fetchTenants(): Promise<Tenant[]> {
   const { data, error } = await supabase
     .from('profiles')
-    .select('id, username, email, shop_name, role, created_at')
+    .select('id, tenant_code, username, email, shop_name, role, created_at')
     .eq('role', 'admin')
     .order('created_at', { ascending: false });
 
@@ -66,7 +69,7 @@ export async function fetchTenants(): Promise<Tenant[]> {
 export async function fetchTenantById(id: string): Promise<Tenant | null> {
   const { data, error } = await supabase
     .from('profiles')
-    .select('id, username, email, shop_name, role, created_at')
+    .select('id, tenant_code, username, email, shop_name, role, created_at')
     .eq('id', id)
     .eq('role', 'admin')
     .single();
@@ -85,13 +88,68 @@ export async function deleteTenant(id: string): Promise<void> {
   if (error) throw error;
 }
 
+/** Super admin edits a tenant's username (gateway), email, and shop name. */
+export async function adminUpdateTenant(
+  id: string,
+  username: string,
+  email: string,
+  shopName: string
+): Promise<void> {
+  const cleanUsername = username.trim().toLowerCase();
+  const cleanEmail = email.trim().toLowerCase();
+  const cleanShopName = shopName.trim();
+
+  if (!/^[a-z0-9_]{3,20}$/.test(cleanUsername)) {
+    throw new Error('Username must be 3–20 characters: letters, numbers, underscores.');
+  }
+  if (!cleanEmail || !cleanEmail.includes('@')) {
+    throw new Error('Please enter a valid email.');
+  }
+  if (!cleanShopName) {
+    throw new Error('Shop name is required.');
+  }
+
+  const { error } = await supabase.rpc('admin_update_tenant', {
+    tenant_id: id,
+    new_username: cleanUsername,
+    new_email: cleanEmail,
+    new_shop_name: cleanShopName,
+  });
+  if (error) {
+    if (error.code === '23505') {
+      throw new Error(`Username "${cleanUsername}" is already taken.`);
+    }
+    throw new Error(error.message || 'Failed to update tenant.');
+  }
+}
+
+/** Super admin sets a tenant's password (empty string = leave unchanged). */
+export async function adminSetTenantPassword(
+  id: string,
+  newPassword: string
+): Promise<void> {
+  if (newPassword.length < 6) {
+    throw new Error('Password must be at least 6 characters.');
+  }
+  const { error } = await supabase.rpc('admin_set_tenant_password', {
+    tenant_id: id,
+    new_password: newPassword,
+  });
+  if (error) throw new Error(error.message || 'Failed to set password.');
+}
+
 export async function createTenant(
   username: string,
   password: string,
-  shopName: string
+  shopName: string,
+  email?: string
 ): Promise<Tenant> {
   const cleanUsername = username.trim().toLowerCase();
   const cleanShopName = shopName.trim();
+  // The super admin may give a custom email; otherwise derive one from the
+  // username so the account works with Supabase Auth regardless.
+  const customEmail = email?.trim().toLowerCase();
+  const finalEmail = customEmail || getTenantEmail(cleanUsername);
 
   if (!cleanUsername) {
     throw new Error('Username is required.');
@@ -102,22 +160,24 @@ export async function createTenant(
   if (!cleanShopName) {
     throw new Error('Shop name is required.');
   }
+  if (customEmail && !customEmail.includes('@')) {
+    throw new Error('Please enter a valid email.');
+  }
 
-  const email = getTenantEmail(cleanUsername);
   const signupClient = createSignupClient();
 
   const { data, error } = await signupClient.auth.signUp({
-    email,
+    email: finalEmail,
     password,
     options: {
-      data: { shop_name: cleanShopName },
+      data: { username: cleanUsername, shop_name: cleanShopName },
     },
   });
 
   if (error) {
     const message = error.message.toLowerCase();
     if (message.includes('already registered') || message.includes('already exists')) {
-      throw new Error(`Username "${cleanUsername}" is already taken.`);
+      throw new Error(`Username or email is already taken.`);
     }
     throw new Error(error.message || 'Failed to create tenant');
   }
@@ -128,8 +188,9 @@ export async function createTenant(
 
   return {
     id: data.user.id,
+    code: null, // Assigned by the database trigger; refetch to display it.
     username: cleanUsername,
-    email,
+    email: finalEmail,
     shopName: cleanShopName,
     role: 'admin',
     createdAt: new Date().toISOString(),

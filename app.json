@@ -26,6 +26,9 @@
     "web": {
       "favicon": "./assets/favicon.png"
     },
+    "experiments": {
+      "baseUrl": "/SchoolShop"
+    },
     "plugins": [
       "expo-asset",
       "expo-font"

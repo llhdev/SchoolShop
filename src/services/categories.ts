@@ -1,6 +1,9 @@
 import { supabase } from '../lib/supabase';
+import { debounce } from '../lib/debounce';
 import { Category } from '../types';
 import { CACHE_KEYS, getCached, setCached } from './cache';
+
+const REFETCH_DEBOUNCE_MS = 500;
 
 interface DbCategory {
   name: string;
@@ -44,19 +47,22 @@ export async function seedCategories(categories: Category[]): Promise<void> {
 }
 
 export function subscribeToCategories(onChange: (categories: Category[]) => void) {
+  // Debounce so a burst of events triggers one refetch.
+  const refetch = debounce(async () => {
+    try {
+      const categories = await fetchCategories();
+      onChange(categories);
+    } catch {
+      // Keep cached data if the refresh fails.
+    }
+  }, REFETCH_DEBOUNCE_MS);
+
   const subscription = supabase
     .channel('categories_changes')
     .on(
       'postgres_changes',
       { event: '*', schema: 'public', table: 'categories' },
-      async () => {
-        try {
-          const categories = await fetchCategories();
-          onChange(categories);
-        } catch {
-          // Keep cached data if the refresh fails.
-        }
-      }
+      () => refetch()
     )
     .subscribe();
   return () => {

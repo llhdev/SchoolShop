@@ -4,7 +4,6 @@ import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import {
   Alert,
-  Image,
   StyleSheet,
   Text,
   TextInput,
@@ -17,6 +16,7 @@ import { Button } from '../../components/Button';
 import { EmptyState } from '../../components/EmptyState';
 import { AdminHeader } from '../../components/AdminHeader';
 import { ThemeToggle } from '../../components/ThemeToggle';
+import { ProductImage } from '../../components/ProductImage';
 import { useApp } from '../../context/AppContext';
 import { useResponsive } from '../../hooks/useResponsive';
 import { AdminStackParamList } from '../../types/navigation';
@@ -27,11 +27,18 @@ import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '
 const MAX_WIDTH = 1200;
 
 function AdminHeaderRight() {
+  const navigation = useNavigation<NativeStackNavigationProp<AdminStackParamList>>();
   const { signOutAdmin } = useApp();
   const colors = useThemeColors();
 
   return (
     <View style={headerRightStyles.container}>
+      <TouchableOpacity
+        onPress={() => navigation.navigate('AdminAccount')}
+        accessibilityLabel="Account and security"
+      >
+        <Ionicons name="person-circle-outline" size={24} color={colors.primary} />
+      </TouchableOpacity>
       <ThemeToggle />
       <TouchableOpacity onPress={signOutAdmin}>
         <Text style={[headerRightStyles.text, { color: colors.danger }]}>
@@ -223,10 +230,12 @@ export function AdminDashboardScreen() {
                       {!isDesktop && (
                         <View style={styles.mobileContent}>
                           <View style={styles.thumbnail}>
-                            <Image
-                              source={{ uri: getProductCoverImage(item) }}
+                            <ProductImage
+                              uri={getProductCoverImage(item)}
+                              category={item.category}
+                              name={item.name}
+                              thumbnail
                               style={styles.thumbnailImage}
-                              resizeMode="contain"
                             />
                           </View>
                           <View style={styles.mobileText}>
@@ -244,10 +253,12 @@ export function AdminDashboardScreen() {
                         <>
                           <View style={[styles.productCell, styles.colProduct, styles.productMain]}>
                             <View style={styles.thumbnail}>
-                              <Image
-                                source={{ uri: getProductCoverImage(item) }}
+                              <ProductImage
+                                uri={getProductCoverImage(item)}
+                                category={item.category}
+                                name={item.name}
+                                thumbnail
                                 style={styles.thumbnailImage}
-                                resizeMode="contain"
                               />
                             </View>
                             <Text style={styles.productName} numberOfLines={1}>
@@ -392,6 +403,9 @@ const makeStyles = (colors: ColorPalette) =>
       paddingVertical: spacing.sm,
       fontSize: fontSizes.md,
       color: colors.text,
+      ...(Platform.OS === 'web'
+        ? ({ outlineStyle: 'none', boxShadow: 'none' } as any)
+        : {}),
     },
     categoryAddButton: {
       width: 44,

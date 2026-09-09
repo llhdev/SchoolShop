@@ -1,6 +1,7 @@
 import { Product } from '../types';
-import { generatePlaceholderImage } from '../utils/images';
 
+// Empty images: the UI renders local category-colored placeholders, so seed
+// products do not depend on any external image service.
 export const seedProducts: Product[] = [
   {
     id: '1',
@@ -8,7 +9,7 @@ export const seedProducts: Product[] = [
     description: 'White cotton school shirt, comfortable fit for daily wear.',
     price: 24.99,
     category: 'School Uniform',
-    images: [generatePlaceholderImage('School Uniform', 'Shirt')],
+    images: [],
     coverImageIndex: 0,
     createdAt: new Date().toISOString(),
   },
@@ -18,7 +19,7 @@ export const seedProducts: Product[] = [
     description: 'Durable navy blue trousers for school uniforms.',
     price: 34.5,
     category: 'School Uniform',
-    images: [generatePlaceholderImage('School Uniform', 'Trousers')],
+    images: [],
     coverImageIndex: 0,
     createdAt: new Date().toISOString(),
   },
@@ -28,7 +29,7 @@ export const seedProducts: Product[] = [
     description: 'Pack of 5 ruled notebooks, 80 pages each.',
     price: 9.99,
     category: 'Stationery',
-    images: [generatePlaceholderImage('Stationery', 'Notebooks')],
+    images: [],
     coverImageIndex: 0,
     createdAt: new Date().toISOString(),
   },
@@ -38,7 +39,7 @@ export const seedProducts: Product[] = [
     description: 'Smooth writing blue ink pens, pack of 10.',
     price: 5.49,
     category: 'Stationery',
-    images: [generatePlaceholderImage('Stationery', 'Pens')],
+    images: [],
     coverImageIndex: 0,
     createdAt: new Date().toISOString(),
   },
@@ -48,7 +49,7 @@ export const seedProducts: Product[] = [
     description: 'Grade 10 mathematics textbook with practice problems.',
     price: 45.0,
     category: 'Books',
-    images: [generatePlaceholderImage('Books', 'Math Book')],
+    images: [],
     coverImageIndex: 0,
     createdAt: new Date().toISOString(),
   },
@@ -58,7 +59,7 @@ export const seedProducts: Product[] = [
     description: 'Standard size 5 football for school sports.',
     price: 29.99,
     category: 'Sports',
-    images: [generatePlaceholderImage('Sports', 'Football')],
+    images: [],
     coverImageIndex: 0,
     createdAt: new Date().toISOString(),
   },
@@ -68,7 +69,7 @@ export const seedProducts: Product[] = [
     description: 'Solar-powered scientific calculator for math classes.',
     price: 18.99,
     category: 'Electronics',
-    images: [generatePlaceholderImage('Electronics', 'Calculator')],
+    images: [],
     coverImageIndex: 0,
     createdAt: new Date().toISOString(),
   },
@@ -78,7 +79,7 @@ export const seedProducts: Product[] = [
     description: 'Spacious backpack with laptop compartment and water bottle holder.',
     price: 39.99,
     category: 'Accessories',
-    images: [generatePlaceholderImage('Accessories', 'Backpack')],
+    images: [],
     coverImageIndex: 0,
     createdAt: new Date().toISOString(),
   },

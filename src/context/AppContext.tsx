@@ -6,7 +6,7 @@ import {
   useReducer,
   useState,
 } from 'react';
-import { AppAction, AppState, CartItem, Order, Product, Role, Theme } from '../types';
+import { AppAction, AppState, CartItem, Order, Product, Role, Shopper, Theme } from '../types';
 import { loadTheme, saveTheme } from '../utils/storage';
 import { supabase } from '../lib/supabase';
 import {
@@ -19,11 +19,15 @@ import {
   updateProduct,
 } from '../services/products';
 import {
+  attachOrderTelegramId,
   createOrder,
   fetchOrders,
+  fetchOrdersByTelegramId,
   loadOrdersFromCache,
   saveOrdersToCache,
   subscribeToOrders,
+  subscribeToShopperOrders,
+  updateOrderStatus,
 } from '../services/orders';
 import {
   createCategory,
@@ -34,7 +38,23 @@ import {
   subscribeToCategories,
 } from '../services/categories';
 import { deleteProductImages } from '../services/images';
-import { loadCartFromCache, saveCartToCache } from '../services/cache';
+import { getProductCoverImage, getThumbnailUrl } from '../utils/images';
+import { Image as ExpoImage } from 'expo-image';
+import {
+  CACHE_KEYS,
+  getCached,
+  loadCartFromCache,
+  saveCartToCache,
+  setCached,
+} from '../services/cache';
+import { authenticateTelegramShopper } from '../services/telegramAuth';
+import { notifyTelegramOrder } from '../services/telegramOrderNotify';
+import {
+  applyTelegramColors,
+  getTelegramInitData,
+  isTelegramMiniApp,
+} from '../lib/telegram';
+import { colors, darkColors } from '../constants/theme';
 
 const initialState: AppState = {
   role: 'user',
@@ -148,6 +168,14 @@ function reducer(state: AppState, action: AppAction): AppState {
     case 'ADD_ORDER':
       return { ...state, orders: [action.payload, ...state.orders] };
 
+    case 'UPDATE_ORDER':
+      return {
+        ...state,
+        orders: state.orders.map((o) =>
+          o.id === action.payload.id ? action.payload : o
+        ),
+      };
+
     case 'DELETE_ORDER':
       return {
         ...state,
@@ -188,6 +216,7 @@ function migrateLegacyProducts(products: Product[]): Product[] {
 
 interface AppContextValue extends AppState {
   currentUserId: string | null;
+  shopper: Shopper | null;
   setRole: (role: Role) => void;
   signOutAdmin: () => Promise<void>;
   toggleTheme: () => void;
@@ -203,6 +232,7 @@ interface AppContextValue extends AppState {
   ) => void;
   clearCart: () => void;
   addOrder: (order: Order) => Promise<void>;
+  updateOrderStatus: (orderId: string, status: Order['status']) => Promise<void>;
   setCategories: (categories: string[]) => void;
   addCategory: (category: string) => Promise<void>;
   removeCategory: (category: string) => Promise<void>;
@@ -216,9 +246,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(reducer, initialState);
   const [isHydrated, setIsHydrated] = useState(false);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
+  const [shopper, setShopper] = useState<Shopper | null>(null);
 
   useEffect(() => {
     async function hydrate() {
+      // Light is the default (initialState); only an explicit user toggle is
+      // persisted and restored. We deliberately do NOT follow Telegram's
+      // theme inside the Mini App — the shop always opens light unless the
+      // user opted into dark.
       const storedTheme = await loadTheme();
       if (storedTheme) {
         dispatch({ type: 'SET_THEME', payload: storedTheme });
@@ -260,11 +295,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
         console.error('Failed to restore admin session:', error);
       }
 
-      // Background sync from Supabase.
+      // Background sync from Supabase. Orders are intentionally NOT fetched
+      // here: they are admin-only and handled by the role effect below, so
+      // shoppers never download the order history.
       try {
-        const [remoteProducts, remoteOrders, remoteCategories] = await Promise.all([
+        const [remoteProducts, remoteCategories] = await Promise.all([
           fetchProducts(),
-          fetchOrders(),
           fetchCategories(),
         ]);
 
@@ -272,9 +308,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
           dispatch({ type: 'SET_PRODUCTS', payload: remoteProducts });
           await saveProductsToCache(remoteProducts);
         }
-
-        dispatch({ type: 'SET_ORDERS', payload: remoteOrders });
-        await saveOrdersToCache(remoteOrders);
 
         if (remoteCategories.length > 0) {
           dispatch({ type: 'SET_CATEGORIES', payload: remoteCategories });
@@ -313,11 +346,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       await saveProductsToCache(products);
     });
 
-    const unsubscribeOrders = subscribeToOrders(async (orders) => {
-      dispatch({ type: 'SET_ORDERS', payload: orders });
-      await saveOrdersToCache(orders);
-    });
-
     const unsubscribeCategories = subscribeToCategories(async (categories) => {
       dispatch({ type: 'SET_CATEGORIES', payload: categories });
       await saveCategoriesToCache(categories);
@@ -325,14 +353,168 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
     return () => {
       unsubscribeProducts();
-      unsubscribeOrders();
       unsubscribeCategories();
     };
   }, [isHydrated]);
 
+  // Orders are admin-only: fetch once and subscribe to realtime changes only
+  // while the role is admin/super_admin. Shoppers keep device-local history
+  // (their own placed orders) and never download the global order list.
+  useEffect(() => {
+    if (!isHydrated) return;
+    const isAdmin = state.role === 'admin' || state.role === 'super_admin';
+    if (!isAdmin) return;
+
+    let unsubscribeOrders: (() => void) | undefined;
+    let cancelled = false;
+
+    (async () => {
+      try {
+        const orders = await fetchOrders();
+        if (cancelled) return;
+        dispatch({ type: 'SET_ORDERS', payload: orders });
+        await saveOrdersToCache(orders);
+      } catch {
+        // Keep cached data if the fetch fails.
+      }
+      if (!cancelled) {
+        unsubscribeOrders = subscribeToOrders(async (orders) => {
+          dispatch({ type: 'SET_ORDERS', payload: orders });
+          await saveOrdersToCache(orders);
+        });
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      unsubscribeOrders?.();
+    };
+  }, [isHydrated, state.role]);
+
+  // Telegram Mini App identity: show any cached shopper immediately, then
+  // exchange the signed initData for the verified record (works offline on
+  // repeat launches because the cached record is used when the call fails).
+  useEffect(() => {
+    if (!isHydrated || !isTelegramMiniApp()) return;
+    let cancelled = false;
+    let retryTimer: ReturnType<typeof setTimeout> | undefined;
+
+    async function authenticate() {
+      const cached = await getCached<Shopper>(CACHE_KEYS.shopper);
+      if (cached && !cancelled) setShopper(cached);
+
+      const verified = await authenticateTelegramShopper(getTelegramInitData());
+      if (cancelled) return;
+      if (verified) {
+        setShopper(verified);
+        await setCached(CACHE_KEYS.shopper, verified);
+      } else if (!cached) {
+        // Cold function start or a flaky connection can fail the first
+        // exchange; one retry a few seconds later covers it.
+        retryTimer = setTimeout(async () => {
+          const secondTry = await authenticateTelegramShopper(getTelegramInitData());
+          if (cancelled) return;
+          if (secondTry) {
+            setShopper(secondTry);
+            await setCached(CACHE_KEYS.shopper, secondTry);
+          }
+        }, 5000);
+      }
+    }
+
+    authenticate();
+
+    return () => {
+      cancelled = true;
+      if (retryTimer) clearTimeout(retryTimer);
+    };
+  }, [isHydrated]);
+
+  // A Telegram shopper's order history lives in Supabase (not on the device),
+  // so it follows their account across devices. Admins use the admin order
+  // list instead, so this stays out of the way while an admin is signed in.
+  useEffect(() => {
+    if (!isHydrated || !shopper) return;
+    if (state.role === 'admin' || state.role === 'super_admin') return;
+    let cancelled = false;
+    let unsubscribe: (() => void) | undefined;
+
+    (async () => {
+      try {
+        const orders = await fetchOrdersByTelegramId(shopper.telegramId);
+        if (!cancelled) dispatch({ type: 'SET_ORDERS', payload: orders });
+      } catch {
+        // Keep whatever is already displayed.
+      }
+      if (!cancelled) {
+        unsubscribe = subscribeToShopperOrders(shopper.telegramId, (orders) => {
+          dispatch({ type: 'SET_ORDERS', payload: orders });
+        });
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+    };
+  }, [isHydrated, shopper, state.role]);
+
+  // Backfill: orders placed before initData validation finished have no
+  // telegram_id, and the server-side fetch above replaces local state — so
+  // stamp the shopper's id onto them (the RPC only fills a NULL column) as
+  // soon as the shopper is known. Fire-and-forget; the orders stay visible
+  // locally regardless, and the next server fetch will include them.
+  useEffect(() => {
+    if (!isHydrated || !shopper) return;
+    if (state.role === 'admin' || state.role === 'super_admin') return;
+    const unclaimed = state.orders.filter((o) => !o.telegramId);
+    if (unclaimed.length === 0) return;
+    unclaimed.forEach((order) => {
+      attachOrderTelegramId(order.id, shopper.telegramId)
+        .then(() => {
+          dispatch({
+            type: 'UPDATE_ORDER',
+            payload: { ...order, telegramId: shopper.telegramId },
+          });
+        })
+        .catch(() => {
+          // Still offline etc. — a later launch (or the realtime refetch)
+          // will retry this effect once the server fetch no longer overwrites.
+        });
+    });
+    // state.orders changes on every realtime refetch; only the unclaimed
+    // subset matters, so re-running extra times is harmless.
+  }, [isHydrated, shopper, state.role, state.orders]);
+
   useEffect(() => {
     if (!isHydrated) return;
     saveTheme(state.theme);
+  }, [state.theme, isHydrated]);
+
+  // Warm the image cache: prefetch cover thumbnails (fire-and-forget) so
+  // scrolling the catalog on a slow connection finds images already cached
+  // instead of starting cold fetches as cards appear.
+  useEffect(() => {
+    if (!isHydrated) return;
+    const urls = state.products
+      .slice(0, 60)
+      .map((p) => {
+        const cover = getProductCoverImage(p);
+        return cover ? getThumbnailUrl(cover) : null;
+      })
+      .filter((u): u is string => !!u);
+    if (urls.length === 0) return;
+    ExpoImage.prefetch(urls).catch(() => {});
+  }, [state.products, isHydrated]);
+
+  // Match the Telegram Mini App chrome (header/background) to the app theme.
+  // We intentionally do NOT follow Telegram's own themeChanged events: the
+  // app's theme is the user's explicit choice (light by default) and must
+  // not be overridden by Telegram's color scheme.
+  useEffect(() => {
+    if (!isHydrated || !isTelegramMiniApp()) return;
+    const palette = state.theme === 'dark' ? darkColors : colors;
+    applyTelegramColors(palette.background, palette.background);
   }, [state.theme, isHydrated]);
 
   const cartTotal = state.cart.reduce(
@@ -344,6 +526,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const value: AppContextValue = {
     ...state,
     currentUserId,
+    shopper,
     setRole: (role) => dispatch({ type: 'SET_ROLE', payload: role }),
     signOutAdmin: async () => {
       try {
@@ -353,6 +536,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
       }
       setCurrentUserId(null);
       dispatch({ type: 'SET_ROLE', payload: 'user' });
+      // Drop the admin order list so it does not leak into shopper mode.
+      dispatch({ type: 'SET_ORDERS', payload: [] });
+      await saveOrdersToCache([]);
     },
     toggleTheme: () =>
       dispatch({ type: 'SET_THEME', payload: state.theme === 'dark' ? 'light' : 'dark' }),
@@ -421,12 +607,39 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const optimistic = [order, ...previous];
       dispatch({ type: 'ADD_ORDER', payload: order });
       await saveOrdersToCache(optimistic);
+      let placed: Order;
       try {
-        await createOrder(order);
+        placed = await createOrder(order);
       } catch {
         dispatch({ type: 'DELETE_ORDER', payload: order.id });
         await saveOrdersToCache(previous);
         throw new Error('Failed to place order');
+      }
+      if (placed.id !== order.id) {
+        // createOrder had to regenerate the code after an id collision; swap
+        // the optimistic entry for the order that was actually stored.
+        dispatch({ type: 'DELETE_ORDER', payload: order.id });
+        dispatch({ type: 'ADD_ORDER', payload: placed });
+        await saveOrdersToCache([placed, ...previous]);
+      }
+      // Fire-and-forget: the Telegram group notification must never block
+      // or roll back a successfully placed order.
+      notifyTelegramOrder(placed, shopper ?? undefined).catch(() => {});
+    },
+    updateOrderStatus: async (orderId, status) => {
+      const previous = state.orders;
+      const target = previous.find((o) => o.id === orderId);
+      if (!target) return;
+      const updated = { ...target, status };
+      const optimistic = previous.map((o) => (o.id === orderId ? updated : o));
+      dispatch({ type: 'UPDATE_ORDER', payload: updated });
+      await saveOrdersToCache(optimistic);
+      try {
+        await updateOrderStatus(orderId, status);
+      } catch {
+        dispatch({ type: 'SET_ORDERS', payload: previous });
+        await saveOrdersToCache(previous);
+        throw new Error('Failed to update order status');
       }
     },
     setCategories: (categories) =>

@@ -2,6 +2,7 @@ import { ReactNode } from 'react';
 import { ScrollView, StyleSheet, View, ViewStyle } from 'react-native';
 import { SafeAreaView, Edge } from 'react-native-safe-area-context';
 import { useThemeColors, spacing, ColorPalette } from '../constants/theme';
+import { getTelegramBottomInset, isTelegramMiniApp } from '../lib/telegram';
 
 interface ScreenProps {
   children: ReactNode;
@@ -22,6 +23,10 @@ export function Screen({
 }: ScreenProps) {
   const colors = useThemeColors();
   const styles = makeStyles(colors);
+  // Inside a Telegram Mini App, CSS safe-area env values are unreliable —
+  // use the inset Telegram reports for bottom chrome instead.
+  const tmaBottomInset =
+    isTelegramMiniApp() && edges.includes('bottom') ? getTelegramBottomInset() : 0;
 
   const content = (
     <View
@@ -29,6 +34,7 @@ export function Screen({
         styles.container,
         centered && styles.centered,
         noPadding && styles.noPadding,
+        tmaBottomInset > 0 && { paddingBottom: spacing.md + tmaBottomInset },
         style,
       ]}
     >

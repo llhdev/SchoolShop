@@ -7,6 +7,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
@@ -14,9 +15,16 @@ import { Ionicons } from '@expo/vector-icons';
 import { Screen } from '../../components/Screen';
 import { AdminHeader } from '../../components/AdminHeader';
 import { Button } from '../../components/Button';
-import { fetchTenantById, deleteTenant, Tenant } from '../../services/tenants';
+import {
+  fetchTenantById,
+  deleteTenant,
+  adminUpdateTenant,
+  adminSetTenantPassword,
+  Tenant,
+} from '../../services/tenants';
 import { confirmAction } from '../../utils/confirm';
 import { AdminStackParamList } from '../../types/navigation';
+import { useResponsive } from '../../hooks/useResponsive';
 import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../../constants/theme';
 
 const MAX_WIDTH = 800;
@@ -27,11 +35,65 @@ export function TenantDetailScreen() {
   const navigation = useNavigation<Navigation>();
   const route = useRoute();
   const { tenantId } = route.params as { tenantId: string };
+  const { isPhone } = useResponsive();
   const colors = useThemeColors();
   const styles = makeStyles(colors);
 
   const [tenant, setTenant] = useState<Tenant | null>(null);
   const [loading, setLoading] = useState(true);
+
+  const [editing, setEditing] = useState(false);
+  const [editUsername, setEditUsername] = useState('');
+  const [editEmail, setEditEmail] = useState('');
+  const [editShopName, setEditShopName] = useState('');
+  const [editPassword, setEditPassword] = useState('');
+  const [editMessage, setEditMessage] = useState<{
+    kind: 'success' | 'error';
+    text: string;
+  } | null>(null);
+  const [saving, setSaving] = useState(false);
+
+  function startEditing() {
+    if (!tenant) return;
+    setEditUsername(tenant.username ?? '');
+    setEditEmail(tenant.email ?? '');
+    setEditShopName(tenant.shopName ?? '');
+    setEditPassword('');
+    setEditMessage(null);
+    setEditing(true);
+  }
+
+  async function handleSave() {
+    if (!tenant) return;
+    setSaving(true);
+    setEditMessage(null);
+    try {
+      await adminUpdateTenant(
+        tenant.id,
+        editUsername,
+        editEmail,
+        editShopName
+      );
+      if (editPassword.trim()) {
+        await adminSetTenantPassword(tenant.id, editPassword.trim());
+      }
+      setEditing(false);
+      await loadTenant();
+      Alert.alert(
+        'Tenant Updated',
+        editPassword.trim()
+          ? 'Account details and password were updated.'
+          : 'Account details were updated.'
+      );
+    } catch (error) {
+      setEditMessage({
+        kind: 'error',
+        text: error instanceof Error ? error.message : 'Failed to update tenant.',
+      });
+    } finally {
+      setSaving(false);
+    }
+  }
 
   const loadTenant = useCallback(async () => {
     try {
@@ -107,7 +169,7 @@ export function TenantDetailScreen() {
     { label: 'Email', value: tenant.email ?? '—' },
     { label: 'Role', value: tenant.role },
     { label: 'Added On', value: new Date(tenant.createdAt).toLocaleString() },
-    { label: 'Tenant ID', value: tenant.id },
+    { label: 'Tenant Code', value: tenant.code ?? '—' },
   ];
 
   return (
@@ -121,27 +183,108 @@ export function TenantDetailScreen() {
                 <Ionicons name="storefront-outline" size={32} color={colors.primary} />
               </View>
               <View style={styles.headerText}>
-                <Text style={styles.shopName}>{tenant.shopName ?? 'Untitled Shop'}</Text>
-                <Text style={styles.username}>@{tenant.username ?? 'unknown'}</Text>
+                <Text style={[styles.shopName, isPhone && styles.shopNameCompact]}>
+                  {tenant.shopName ?? 'Untitled Shop'}
+                </Text>
+                <Text style={styles.username}>
+                  @{tenant.username ?? 'unknown'}
+                  {tenant.code ? `  ·  ${tenant.code}` : ''}
+                </Text>
               </View>
             </View>
 
-            <View style={styles.card}>
-              {detailItems.map((item, index) => (
-                <View
-                  key={item.label}
-                  style={[
-                    styles.row,
-                    index === detailItems.length - 1 && styles.rowLast,
-                  ]}
-                >
-                  <Text style={styles.rowLabel}>{item.label}</Text>
-                  <Text style={styles.rowValue}>{item.value}</Text>
+            {editing ? (
+              <View style={styles.card}>
+                <Text style={styles.editTitle}>Edit Account</Text>
+                <Text style={styles.editLabel}>Gateway (username)</Text>
+                <TextInput
+                  style={styles.editInput}
+                  value={editUsername}
+                  onChangeText={setEditUsername}
+                  placeholder="Gateway"
+                  placeholderTextColor={colors.textSecondary}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+                <Text style={styles.editLabel}>Email (used for login)</Text>
+                <TextInput
+                  style={styles.editInput}
+                  value={editEmail}
+                  onChangeText={setEditEmail}
+                  placeholder="Email"
+                  placeholderTextColor={colors.textSecondary}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  keyboardType="email-address"
+                />
+                <Text style={styles.editLabel}>Shop name</Text>
+                <TextInput
+                  style={styles.editInput}
+                  value={editShopName}
+                  onChangeText={setEditShopName}
+                  placeholder="Shop name"
+                  placeholderTextColor={colors.textSecondary}
+                />
+                <Text style={styles.editLabel}>New password</Text>
+                <TextInput
+                  style={styles.editInput}
+                  value={editPassword}
+                  onChangeText={setEditPassword}
+                  placeholder="Leave blank to keep current password"
+                  placeholderTextColor={colors.textSecondary}
+                  secureTextEntry
+                />
+                {editMessage && (
+                  <Text
+                    style={[
+                      styles.editMessage,
+                      editMessage.kind === 'success' ? styles.editSuccess : styles.editError,
+                    ]}
+                  >
+                    {editMessage.text}
+                  </Text>
+                )}
+                <View style={styles.editActions}>
+                  <Button
+                    title="Save Changes"
+                    onPress={handleSave}
+                    loading={saving}
+                    disabled={saving}
+                    style={styles.editSaveButton}
+                  />
+                  <Button
+                    title="Cancel"
+                    onPress={() => setEditing(false)}
+                    variant="outline"
+                    disabled={saving}
+                  />
                 </View>
-              ))}
-            </View>
+              </View>
+            ) : (
+              <View style={styles.card}>
+                {detailItems.map((item, index) => (
+                  <View
+                    key={item.label}
+                    style={[
+                      styles.row,
+                      index === detailItems.length - 1 && styles.rowLast,
+                    ]}
+                  >
+                    <Text style={styles.rowLabel}>{item.label}</Text>
+                    <Text style={styles.rowValue}>{item.value}</Text>
+                  </View>
+                ))}
+              </View>
+            )}
 
             <View style={styles.actions}>
+              {!editing && (
+                <Button
+                  title="Edit Account"
+                  onPress={startEditing}
+                  style={styles.editAccountButton}
+                />
+              )}
               <Button
                 title="Remove Tenant"
                 onPress={handleDelete}
@@ -204,6 +347,9 @@ const makeStyles = (colors: ColorPalette) =>
       color: colors.text,
       marginBottom: spacing.xs,
     },
+    shopNameCompact: {
+      fontSize: fontSizes.xl,
+    },
     username: {
       fontSize: fontSizes.md,
       color: colors.textSecondary,
@@ -241,6 +387,52 @@ const makeStyles = (colors: ColorPalette) =>
     },
     actions: {
       gap: spacing.md,
+    },
+    editAccountButton: {
+      marginBottom: spacing.md,
+    },
+    editTitle: {
+      fontSize: fontSizes.md,
+      fontWeight: '700',
+      color: colors.text,
+      marginBottom: spacing.xs,
+    },
+    editLabel: {
+      fontSize: fontSizes.sm,
+      fontWeight: '600',
+      color: colors.textSecondary,
+      marginBottom: spacing.xs,
+    },
+    editInput: {
+      backgroundColor: colors.background,
+      borderWidth: 1,
+      borderColor: colors.border,
+      borderRadius: borderRadius.sm,
+      paddingHorizontal: spacing.md,
+      paddingVertical: spacing.sm,
+      fontSize: fontSizes.md,
+      color: colors.text,
+      marginBottom: spacing.sm,
+      ...(Platform.OS === 'web'
+        ? ({ outlineStyle: 'none', boxShadow: 'none' } as any)
+        : {}),
+    },
+    editMessage: {
+      fontSize: fontSizes.sm,
+      fontWeight: '600',
+      marginBottom: spacing.sm,
+    },
+    editSuccess: {
+      color: colors.success,
+    },
+    editError: {
+      color: colors.danger,
+    },
+    editActions: {
+      gap: spacing.md,
+    },
+    editSaveButton: {
+      marginBottom: spacing.md,
     },
     deleteButton: {
       marginBottom: spacing.md,

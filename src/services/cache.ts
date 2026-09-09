@@ -6,6 +6,7 @@ export const CACHE_KEYS = {
   orders: '@schoolshop_orders',
   categories: '@schoolshop_categories',
   cart: '@schoolshop_cart',
+  shopper: '@schoolshop_shopper',
 } as const;
 
 export async function getCached<T>(key: string): Promise<T | null> {

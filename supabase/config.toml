@@ -412,3 +412,13 @@ enabled = true
 # declarative_schema_path = "./database"
 # JSON string passed through to pg-delta SQL formatting.
 # format_options = "{\"keywordCase\":\"upper\",\"indent\":2,\"maxWidth\":80,\"commaStyle\":\"trailing\"}"
+
+# Called directly from the Mini App client without a user session; the
+# signed Telegram initData is the authentication.
+[functions.telegram-auth]
+verify_jwt = false
+
+# Called by the client right after an order is placed; gated by the anon
+# key header instead of a JWT so shoppers without accounts can trigger it.
+[functions.telegram-order-notify]
+verify_jwt = false

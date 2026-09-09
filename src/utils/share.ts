@@ -1,7 +1,7 @@
 import { Platform, Share } from 'react-native';
-import { File as ExpoFile, Paths } from 'expo-file-system';
 import { CartItem } from '../types';
 import { formatPrice } from './format';
+import { isTelegramMiniApp } from '../lib/telegram';
 
 export function formatOrderMessage(
   cart: CartItem[],
@@ -36,6 +36,9 @@ async function downloadImage(uri: string): Promise<string | null> {
     const filename = `shared-image-${Date.now()}-${Math.random()
       .toString(36)
       .slice(2)}.${extension}`;
+    // Dynamic import keeps expo-file-system out of the web bundle; this
+    // function only runs on native.
+    const { File: ExpoFile, Paths } = await import('expo-file-system');
     const file = await ExpoFile.downloadFileAsync(
       uri,
       new ExpoFile(Paths.cache, filename)
@@ -199,6 +202,18 @@ export async function shareOrder(
 ) {
   // Web: share image files via the Web Share API when supported.
   if (Platform.OS === 'web') {
+    // Inside the Telegram Mini App WebView the share sheet is unreliable —
+    // hand the order text to a t.me share link the customer can send to the
+    // shop's bot or any chat.
+    if (isTelegramMiniApp()) {
+      const text = encodeURIComponent(formatOrderMessage(cart, cartTotal));
+      const win = globalThis as unknown as {
+        window?: { open?: (url: string, target: string) => void };
+      };
+      win.window?.open?.(`https://t.me/share/url?url=&text=${text}`, '_blank');
+      return true;
+    }
+
     const shared = await shareWithWebFiles(cart, cartTotal, summaryImageUri);
     if (shared) return true;
 

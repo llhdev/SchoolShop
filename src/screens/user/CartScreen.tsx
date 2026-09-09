@@ -9,6 +9,7 @@ import { EmptyState } from '../../components/EmptyState';
 import { Button } from '../../components/Button';
 import { WebHeader } from '../../components/WebHeader';
 import { useApp } from '../../context/AppContext';
+import { useResponsive } from '../../hooks/useResponsive';
 import { formatPrice } from '../../utils/format';
 import { RootStackParamList } from '../../types/navigation';
 import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../../constants/theme';
@@ -18,6 +19,7 @@ const MAX_WIDTH = 900;
 export function CartScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const { cart, cartTotal, cartCount, updateCartQuantity, removeFromCart } = useApp();
+  const { isPhone } = useResponsive();
   const colors = useThemeColors();
   const styles = makeStyles(colors);
 
@@ -40,14 +42,16 @@ export function CartScreen() {
       <Screen noPadding edges={['top', 'left', 'right']}>
         <View style={styles.container}>
         <View style={styles.titleRow}>
-          <Text style={styles.title}>Shopping Cart</Text>
+          <Text style={[styles.title, isPhone && styles.titleCompact]}>Shopping Cart</Text>
           {isWeb && (
             <TouchableOpacity
               style={styles.homeLink}
               onPress={() => navigation.navigate('UserTabs', { screen: 'Home' })}
             >
               <Ionicons name="arrow-back" size={16} color={colors.primary} />
-              <Text style={styles.homeLinkText}>Continue Shopping</Text>
+              <Text style={[styles.homeLinkText, isPhone && styles.homeLinkTextCompact]}>
+                Continue Shopping
+              </Text>
             </TouchableOpacity>
           )}
         </View>
@@ -124,6 +128,9 @@ const makeStyles = (colors: ColorPalette) =>
       fontWeight: '700',
       color: colors.text,
     },
+    titleCompact: {
+      fontSize: fontSizes.xl,
+    },
     homeLink: {
       flexDirection: 'row',
       alignItems: 'center',
@@ -133,6 +140,9 @@ const makeStyles = (colors: ColorPalette) =>
       fontSize: fontSizes.md,
       color: colors.primary,
       fontWeight: '600',
+    },
+    homeLinkTextCompact: {
+      fontSize: fontSizes.sm,
     },
     list: {
       paddingBottom: Platform.OS === 'web' ? 24 : 200,

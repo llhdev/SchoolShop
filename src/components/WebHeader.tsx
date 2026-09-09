@@ -26,7 +26,9 @@ export function WebHeader({
   const { cartCount } = useApp();
   const { isDesktop } = useResponsive();
 
-  if (Platform.OS !== 'web') return null;
+  // Wide screens get the full top header; narrow web/TMA sessions rely on
+  // the bottom tab bar (thumb-friendly) instead.
+  if (Platform.OS !== 'web' || !isDesktop) return null;
 
   return (
     <View style={styles.header}>

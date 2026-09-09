@@ -1,6 +1,7 @@
-import { Image, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { CartItem } from '../types';
+import { ProductImage } from './ProductImage';
 import { getProductImage } from '../utils/images';
 import { formatPrice } from '../utils/format';
 import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../constants/theme';
@@ -20,16 +21,18 @@ export function CartItemRow({
 }: CartItemRowProps) {
   const colors = useThemeColors();
   const styles = makeStyles(colors);
-  const imageUri = getProductImage(
-    item.product.category,
-    item.product.name,
-    item.product.images[item.selectedImageIndex]
-  );
+  const imageUri = getProductImage(item.product.images[item.selectedImageIndex]);
 
   return (
     <View style={styles.container}>
       <View style={styles.thumbnail}>
-        <Image source={{ uri: imageUri }} style={styles.thumbnailImage} resizeMode="contain" />
+        <ProductImage
+          uri={imageUri}
+          category={item.product.category}
+          name={item.product.name}
+          thumbnail
+          style={styles.thumbnailImage}
+        />
       </View>
       <View style={styles.details}>
         <Text style={styles.name} numberOfLines={1}>

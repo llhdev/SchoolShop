@@ -193,6 +193,11 @@ const makeStyles = (colors: ColorPalette) =>
       paddingVertical: spacing.md,
       fontSize: fontSizes.md,
       color: colors.text,
+      // Web draws a focus outline on the inner <input> that doubles the
+      // container border — suppress it so the field reads as one box.
+      ...(Platform.OS === 'web'
+        ? ({ outlineStyle: 'none', boxShadow: 'none' } as any)
+        : {}),
     },
     eyeButton: {
       padding: spacing.sm,

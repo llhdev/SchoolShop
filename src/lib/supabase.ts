@@ -1,3 +1,4 @@
+import AsyncStorage from '@react-native-async-storage/async-storage';
 import { createClient } from '@supabase/supabase-js';
 
 const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
@@ -10,4 +11,18 @@ if (!supabaseUrl || !supabaseAnonKey) {
   );
 }
 
-export const supabase = createClient(supabaseUrl, supabaseAnonKey);
+// Back auth sessions with AsyncStorage so they survive app restarts on
+// native (on web this maps to localStorage, so behavior is consistent).
+const authStorage = {
+  getItem: (key: string) => AsyncStorage.getItem(key),
+  setItem: (key: string, value: string) => AsyncStorage.setItem(key, value),
+  removeItem: (key: string) => AsyncStorage.removeItem(key),
+};
+
+export const supabase = createClient(supabaseUrl, supabaseAnonKey, {
+  auth: {
+    storage: authStorage,
+    autoRefreshToken: true,
+    persistSession: true,
+  },
+});

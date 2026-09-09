@@ -1,12 +1,14 @@
-import { Platform } from 'react-native';
+import { Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View, Alert } from 'react-native';
+import { useState } from 'react';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Screen } from '../../components/Screen';
 import { EmptyState } from '../../components/EmptyState';
 import { WebHeader } from '../../components/WebHeader';
+import { Button } from '../../components/Button';
 import { useApp } from '../../context/AppContext';
+import { useResponsive } from '../../hooks/useResponsive';
 import { formatPrice } from '../../utils/format';
 import { RootStackParamList } from '../../types/navigation';
 import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../../constants/theme';
@@ -17,12 +19,45 @@ export function OrderDetailScreen() {
   const route = useRoute();
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const { orderId } = route.params as { orderId: string };
-  const { orders } = useApp();
+  const { orders, role, updateOrderStatus } = useApp();
+  const { isPhone } = useResponsive();
   const colors = useThemeColors();
   const styles = makeStyles(colors);
+  const [statusError, setStatusError] = useState('');
+  const [statusBusy, setStatusBusy] = useState(false);
 
   const order = orders.find((o) => o.id === orderId);
   const isWeb = Platform.OS === 'web';
+  const canManageStatus =
+    role === 'super_admin' && !!order && (order.status === 'pending' || order.status === 'paid');
+
+  const changeStatus = async (status: 'completed' | 'failed') => {
+    if (!order) return;
+    setStatusBusy(true);
+    setStatusError('');
+    try {
+      await updateOrderStatus(order.id, status);
+    } catch {
+      setStatusError('Failed to update the order status. Please try again.');
+    } finally {
+      setStatusBusy(false);
+    }
+  };
+
+  const confirmAndFail = () => {
+    const fail = () => {
+      changeStatus('failed').catch(() => {});
+    };
+    if (Platform.OS === 'web') {
+      const win = globalThis as { confirm?: (message?: string) => boolean };
+      if (win.confirm?.('Mark this order as failed?')) fail();
+      return;
+    }
+    Alert.alert('Mark as failed?', 'This marks the order as failed.', [
+      { text: 'Cancel', style: 'cancel' },
+      { text: 'Mark failed', style: 'destructive', onPress: fail },
+    ]);
+  };
 
   if (!order) {
     return (
@@ -42,14 +77,16 @@ export function OrderDetailScreen() {
         <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
         <View style={styles.container}>
           <View style={styles.titleRow}>
-            <Text style={styles.title}>Order Details</Text>
+            <Text style={[styles.title, isPhone && styles.titleCompact]}>Order Details</Text>
             {isWeb && (
               <TouchableOpacity
                 style={styles.homeLink}
                 onPress={() => navigation.navigate('UserTabs', { screen: 'Home' })}
               >
                 <Ionicons name="arrow-back" size={16} color={colors.primary} />
-                <Text style={styles.homeLinkText}>Continue Shopping</Text>
+                <Text style={[styles.homeLinkText, isPhone && styles.homeLinkTextCompact]}>
+                  Continue Shopping
+                </Text>
               </TouchableOpacity>
             )}
           </View>
@@ -66,6 +103,8 @@ export function OrderDetailScreen() {
                 order.status === 'paid' && styles.paidBadge,
                 order.status === 'pending' && styles.pendingBadge,
                 order.status === 'delivered' && styles.deliveredBadge,
+                order.status === 'completed' && styles.completedBadge,
+                order.status === 'failed' && styles.failedBadge,
               ]}
             >
               <Text style={styles.badgeText}>{order.status}</Text>
@@ -108,6 +147,29 @@ export function OrderDetailScreen() {
                 : 'Paid Online'}
             </Text>
           </View>
+
+          {canManageStatus && (
+            <View style={styles.section}>
+              <Text style={styles.sectionTitle}>Update Status</Text>
+              <View style={styles.statusButtons}>
+                <Button
+                  title="Mark as Completed"
+                  variant="primary"
+                  disabled={statusBusy}
+                  style={styles.statusButton}
+                  onPress={() => changeStatus('completed').catch(() => {})}
+                />
+                <Button
+                  title="Mark as Failed"
+                  variant="danger"
+                  disabled={statusBusy}
+                  style={styles.statusButton}
+                  onPress={confirmAndFail}
+                />
+              </View>
+              {!!statusError && <Text style={styles.statusError}>{statusError}</Text>}
+            </View>
+          )}
         </View>
       </ScrollView>
     </Screen>
@@ -142,6 +204,9 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
     fontWeight: '700',
     color: colors.text,
   },
+  titleCompact: {
+    fontSize: fontSizes.xl,
+  },
   homeLink: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -151,6 +216,9 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
     fontSize: fontSizes.md,
     color: colors.primary,
     fontWeight: '600',
+  },
+  homeLinkTextCompact: {
+    fontSize: fontSizes.sm,
   },
   header: {
     flexDirection: 'row',
@@ -178,11 +246,28 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
   deliveredBadge: {
     backgroundColor: colors.primary,
   },
+  completedBadge: {
+    backgroundColor: colors.success,
+  },
+  failedBadge: {
+    backgroundColor: colors.danger,
+  },
   badgeText: {
     fontSize: fontSizes.xs,
     fontWeight: '600',
     color: colors.surface,
     textTransform: 'capitalize',
+  },
+  statusButtons: {
+    gap: spacing.md,
+  },
+  statusButton: {
+    width: '100%',
+  },
+  statusError: {
+    marginTop: spacing.md,
+    fontSize: fontSizes.sm,
+    color: colors.danger,
   },
   section: {
     backgroundColor: colors.surface,
