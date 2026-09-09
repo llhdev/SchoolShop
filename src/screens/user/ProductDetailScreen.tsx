@@ -93,20 +93,39 @@ export function ProductDetailScreen() {
 
   const infoSection = (
     <View style={styles.info}>
-      <View style={styles.headerRow}>
-        <Text style={styles.name} numberOfLines={2}>
-          {product.name}
-        </Text>
-        <View style={styles.priceBlock}>
-          {discount !== null && product.compareAtPrice && (
-            <Text style={styles.compareAt}>{formatPrice(product.compareAtPrice)}</Text>
-          )}
-          <Text style={styles.price}>{formatPrice(product.price)}</Text>
-          {discount !== null && (
-            <Text style={styles.discountTag}>Save {discount}%</Text>
-          )}
+      {isTMA ? (
+        // Mini App: clean stacked layout — smaller, lighter product name on
+        // its own line, then a single price row.
+        <>
+          <Text style={styles.tmaName} numberOfLines={2}>
+            {product.name}
+          </Text>
+          <View style={styles.tmaPriceRow}>
+            <Text style={styles.tmaPrice}>{formatPrice(product.price)}</Text>
+            {discount !== null && product.compareAtPrice && (
+              <Text style={styles.compareAt}>{formatPrice(product.compareAtPrice)}</Text>
+            )}
+            {discount !== null && (
+              <Text style={styles.discountTag}>Save {discount}%</Text>
+            )}
+          </View>
+        </>
+      ) : (
+        <View style={styles.headerRow}>
+          <Text style={styles.name} numberOfLines={2}>
+            {product.name}
+          </Text>
+          <View style={styles.priceBlock}>
+            {discount !== null && product.compareAtPrice && (
+              <Text style={styles.compareAt}>{formatPrice(product.compareAtPrice)}</Text>
+            )}
+            <Text style={styles.price}>{formatPrice(product.price)}</Text>
+            {discount !== null && (
+              <Text style={styles.discountTag}>Save {discount}%</Text>
+            )}
+          </View>
         </View>
-      </View>
+      )}
 
       {product.shopName ? (
         <Text style={styles.shopName} numberOfLines={1}>
@@ -447,6 +466,23 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
   },
   tmaContainer: {
     flex: 1,
+  },
+  tmaName: {
+    fontSize: fontSizes.lg,
+    fontWeight: '600',
+    color: colors.text,
+    marginBottom: spacing.xs,
+  },
+  tmaPriceRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    marginBottom: spacing.xs,
+  },
+  tmaPrice: {
+    fontSize: fontSizes.xl,
+    fontWeight: '700',
+    color: colors.price,
   },
   tmaScroll: {
     flex: 1,
