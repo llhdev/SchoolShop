@@ -16,6 +16,7 @@ import { useResponsive } from '../../hooks/useResponsive';
 import { Category, Product } from '../../types';
 import { RootStackParamList } from '../../types/navigation';
 import { supabase } from '../../lib/supabase';
+import { isTelegramMiniApp } from '../../lib/telegram';
 import { useThemeColors, spacing, fontSizes, ColorPalette } from '../../constants/theme';
 
 const MAX_CONTENT_WIDTH = 1200;
@@ -129,7 +130,14 @@ export function HomeScreen() {
               return (
                 <ProductCard
                   product={item}
-                  onPress={() => setViewerProductId(item.id)}
+                  onPress={() => {
+                    // Mini App: full-screen product page. Web/native: modal.
+                    if (isTelegramMiniApp()) {
+                      navigation.navigate('ProductDetail', { productId: item.id });
+                    } else {
+                      setViewerProductId(item.id);
+                    }
+                  }}
                 />
               );
             }}

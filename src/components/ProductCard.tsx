@@ -11,6 +11,7 @@ import { ProductImage } from './ProductImage';
 import { getProductCoverImage } from '../utils/images';
 import { formatPrice, getDiscountPercent } from '../utils/format';
 import { useApp } from '../context/AppContext';
+import { isTelegramMiniApp } from '../lib/telegram';
 import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../constants/theme';
 
 interface ProductCardProps {
@@ -22,6 +23,9 @@ export function ProductCard({ product, onPress }: ProductCardProps) {
   const { cart, addToCart, updateCartQuantity } = useApp();
   const colors = useThemeColors();
   const styles = makeStyles(colors);
+  // Inside the Mini App there is no quick-add: tapping a card opens the
+  // full-screen product page instead.
+  const isTMA = isTelegramMiniApp();
 
   const coverIndex = product.coverImageIndex ?? 0;
   const discount = getDiscountPercent(product.price, product.compareAtPrice);
@@ -83,31 +87,33 @@ export function ProductCard({ product, onPress }: ProductCardProps) {
             )}
             <Text style={styles.price}>{formatPrice(product.price)}</Text>
           </View>
-          <View style={styles.actions}>
-            {cartQuantity > 0 && (
+          {!isTMA && (
+            <View style={styles.actions}>
+              {cartQuantity > 0 && (
+                <TouchableOpacity
+                  style={styles.qtyButton}
+                  onPress={handleDecrease}
+                  activeOpacity={0.8}
+                >
+                  <Ionicons name="remove" size={16} color={colors.primary} />
+                </TouchableOpacity>
+              )}
               <TouchableOpacity
-                style={styles.qtyButton}
-                onPress={handleDecrease}
+                style={styles.addButton}
+                onPress={handleAdd}
                 activeOpacity={0.8}
               >
-                <Ionicons name="remove" size={16} color={colors.primary} />
+                <Ionicons name="add" size={18} color={colors.primary} />
+                {cartQuantity > 0 && (
+                  <View style={styles.badge}>
+                    <Text style={styles.badgeText}>
+                      {cartQuantity > 99 ? '99+' : cartQuantity}
+                    </Text>
+                  </View>
+                )}
               </TouchableOpacity>
-            )}
-            <TouchableOpacity
-              style={styles.addButton}
-              onPress={handleAdd}
-              activeOpacity={0.8}
-            >
-              <Ionicons name="add" size={18} color={colors.primary} />
-              {cartQuantity > 0 && (
-                <View style={styles.badge}>
-                  <Text style={styles.badgeText}>
-                    {cartQuantity > 99 ? '99+' : cartQuantity}
-                  </Text>
-                </View>
-              )}
-            </TouchableOpacity>
-          </View>
+            </View>
+          )}
         </View>
       </View>
     </TouchableOpacity>

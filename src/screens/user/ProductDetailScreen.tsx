@@ -1,4 +1,4 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Platform } from 'react-native';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -21,6 +21,7 @@ import { ProductImage } from '../../components/ProductImage';
 import { useApp } from '../../context/AppContext';
 import { useResponsive } from '../../hooks/useResponsive';
 import { getProductGalleryImages } from '../../utils/images';
+import { isTelegramMiniApp } from '../../lib/telegram';
 import { formatPrice, getDiscountPercent } from '../../utils/format';
 import { RootStackParamList } from '../../types/navigation';
 import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../../constants/theme';
@@ -38,6 +39,9 @@ export function ProductDetailScreen() {
   const colors = useThemeColors();
   const styles = makeStyles(colors);
   const [activeIndex, setActiveIndex] = useState(0);
+  const [justAdded, setJustAdded] = useState(false);
+  const addResetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isTMA = isTelegramMiniApp();
 
   const product = products.find((p) => p.id === productId);
 
@@ -52,6 +56,33 @@ export function ProductDetailScreen() {
   const galleryImages = useMemo(() => getProductGalleryImages(product), [product]);
   const discount = getDiscountPercent(product.price, product.compareAtPrice);
   const isWebDesktop = Platform.OS === 'web' && isDesktop;
+
+  useEffect(
+    () => () => {
+      if (addResetTimer.current) clearTimeout(addResetTimer.current);
+    },
+    []
+  );
+
+  function handleAddToCart() {
+    if (!product) return;
+    addToCart(product, activeIndex);
+    if (isTMA) {
+      // Same confirmation mark the card's quick-add shows: a brief check
+      // state on the button instead of leaving the page.
+      setJustAdded(true);
+      if (addResetTimer.current) clearTimeout(addResetTimer.current);
+      addResetTimer.current = setTimeout(() => setJustAdded(false), 1600);
+    } else {
+      navigation.goBack();
+    }
+  }
+
+  function handleBuy() {
+    if (!product) return;
+    addToCart(product, activeIndex);
+    navigation.navigate('Checkout');
+  }
 
   const phoneImageHeight = windowWidth * PHONE_IMAGE_HEIGHT_RATIO;
 
@@ -95,16 +126,15 @@ export function ProductDetailScreen() {
         </Text>
       )}
 
-      <View style={styles.actions}>
-        <Button
-          title="Add to Cart"
-          onPress={() => {
-            addToCart(product, activeIndex);
-            navigation.goBack();
-          }}
-          style={styles.actionButton}
-        />
-      </View>
+      {!isTMA && (
+        <View style={styles.actions}>
+          <Button
+            title="Add to Cart"
+            onPress={handleAddToCart}
+            style={styles.actionButton}
+          />
+        </View>
+      )}
 
       {product.description.length > 0 && (
         <>
@@ -200,6 +230,33 @@ export function ProductDetailScreen() {
       )}
     </View>
   );
+
+  if (isTMA) {
+    // Mini App: full-screen page with a fixed bottom action bar. Screen is
+    // non-scroll here so the bar stays put; the page content scrolls inside.
+    return (
+      <Screen noPadding edges={['top', 'left', 'right', 'bottom']}>
+        <View style={styles.tmaContainer}>
+          <ScrollView
+            style={styles.tmaScroll}
+            contentContainerStyle={styles.tmaScrollContent}
+          >
+            {gallerySection}
+            {infoSection}
+          </ScrollView>
+          <View style={styles.tmaBottomBar}>
+            <Button
+              title={justAdded ? '✓ Added to Cart' : 'Add to Cart'}
+              variant="outline"
+              onPress={handleAddToCart}
+              style={styles.tmaBarButton}
+            />
+            <Button title="Buy" onPress={handleBuy} style={styles.tmaBarButton} />
+          </View>
+        </View>
+      </Screen>
+    );
+  }
 
   return (
     <Screen scroll noPadding edges={['top', 'left', 'right']}>
@@ -387,5 +444,27 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
   actionButton: {
     flex: 1,
     maxWidth: 220,
+  },
+  tmaContainer: {
+    flex: 1,
+  },
+  tmaScroll: {
+    flex: 1,
+  },
+  tmaScrollContent: {
+    paddingBottom: spacing.xl,
+  },
+  tmaBottomBar: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.sm,
+    paddingBottom: spacing.sm,
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+    backgroundColor: colors.surface,
+  },
+  tmaBarButton: {
+    flex: 1,
   },
 });

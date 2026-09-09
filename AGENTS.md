@@ -94,7 +94,7 @@ Always consult the exact versioned docs before writing code: <https://docs.expo.
     │   ├── CartItemRow.tsx         # Cart line item with quantity controls
     │   ├── CategoryFilter.tsx      # Horizontal category chips + "More" dropdown
     │   ├── EmptyState.tsx          # Empty list placeholder with icon
-    │   ├── ProductCard.tsx         # Product grid card (price, discount badge, quick add)
+    │   ├── ProductCard.tsx         # Product grid card (price, discount badge, shop name, quick add — quick-add hidden inside the Mini App)
     │   ├── ProductImage.tsx        # Cached product image (expo-image) + local placeholder
     │   ├── Screen.tsx              # Safe-area wrapper with optional scroll/padding
     │   ├── SearchBar.tsx           # Text input with search/clear icons
@@ -127,7 +127,7 @@ Always consult the exact versioned docs before writing code: <https://docs.expo.
     │   │   └── TenantManagementScreen.tsx # Super admin tenant management
     │   └── user/
     │       ├── HomeScreen.tsx            # Product grid with search, category filter, new arrivals
-    │       ├── ProductDetailScreen.tsx   # Product gallery, details, add to cart / buy now
+    │       ├── ProductDetailScreen.tsx   # Product gallery, details, add to cart; in the Mini App a full-screen page with a bottom Add to Cart / Buy bar (Buy goes straight to checkout)
     │       ├── CartScreen.tsx            # Cart review and checkout navigation
     │       ├── CheckoutScreen.tsx        # Delivery info, Ethiopian phone validation, payment
     │       ├── OrdersScreen.tsx          # User order history
