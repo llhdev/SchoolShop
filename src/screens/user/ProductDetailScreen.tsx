@@ -18,6 +18,7 @@ import { Screen } from '../../components/Screen';
 import { Button } from '../../components/Button';
 import { EmptyState } from '../../components/EmptyState';
 import { ProductImage } from '../../components/ProductImage';
+import { ImageViewerModal } from '../../components/ImageViewerModal';
 import { useApp } from '../../context/AppContext';
 import { useResponsive } from '../../hooks/useResponsive';
 import { getProductGalleryImages } from '../../utils/images';
@@ -40,6 +41,8 @@ export function ProductDetailScreen() {
   const styles = makeStyles(colors);
   const [activeIndex, setActiveIndex] = useState(0);
   const [justAdded, setJustAdded] = useState(false);
+  const [viewerVisible, setViewerVisible] = useState(false);
+  const [viewerIndex, setViewerIndex] = useState(0);
   const addResetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isTMA = isTelegramMiniApp();
 
@@ -222,15 +225,22 @@ export function ProductDetailScreen() {
         onScroll={handleScroll}
         scrollEventThrottle={32}
         onMomentumScrollEnd={handleScroll}
-        renderItem={({ item }) => (
-          <View style={[styles.imageSlide, { width: windowWidth, height: phoneImageHeight }]}>
+        renderItem={({ item, index }) => (
+          <TouchableOpacity
+            style={[styles.imageSlide, { width: windowWidth, height: phoneImageHeight }]}
+            activeOpacity={0.9}
+            onPress={() => {
+              setViewerIndex(index);
+              setViewerVisible(true);
+            }}
+          >
             <ProductImage
               uri={item}
               category={product.category}
               name={product.name}
               style={styles.image}
             />
-          </View>
+          </TouchableOpacity>
         )}
         getItemLayout={(_, index) => ({
           length: windowWidth,
@@ -248,6 +258,13 @@ export function ProductDetailScreen() {
           ))}
         </View>
       )}
+      <ImageViewerModal
+        visible={viewerVisible}
+        images={galleryImages}
+        initialIndex={viewerIndex}
+        product={product}
+        onClose={() => setViewerVisible(false)}
+      />
     </View>
   );
 

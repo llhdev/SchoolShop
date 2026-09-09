@@ -96,6 +96,7 @@ Always consult the exact versioned docs before writing code: <https://docs.expo.
     │   ├── EmptyState.tsx          # Empty list placeholder with icon
     │   ├── ProductCard.tsx         # Product grid card (price, discount badge, shop name, quick add — quick-add hidden inside the Mini App)
     │   ├── ProductImage.tsx        # Cached product image (expo-image) + local placeholder
+    │   ├── ImageViewerModal.tsx    # Fullscreen swipeable image viewer (black bg, back arrow, n/m counter) opened by tapping a product image
     │   ├── Screen.tsx              # Safe-area wrapper with optional scroll/padding
     │   ├── SearchBar.tsx           # Text input with search/clear icons
     │   └── WebHeader.tsx           # Web-only Timor Shop header
