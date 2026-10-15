@@ -7,6 +7,7 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Screen } from '../../components/Screen';
@@ -17,9 +18,10 @@ import { useApp } from '../../context/AppContext';
 import { useResponsive } from '../../hooks/useResponsive';
 import { formatPrice } from '../../utils/format';
 import { formatVariantLabel, getUnitPrice } from '../../utils/variants';
-import { getOrderItemsForTenant } from '../../services/orders';
+import { getItemStatus, getOrderItemsForTenant } from '../../services/orders';
 import { fetchShoppersByTelegramIds } from '../../services/telegramAuth';
-import { Shopper } from '../../types';
+import { ORDER_STATUSES, ORDER_STATUS_LABELS } from '../../constants/orderStatus';
+import { OrderStatus, Shopper } from '../../types';
 import { RootStackParamList } from '../../types/navigation';
 import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../../constants/theme';
 
@@ -36,9 +38,13 @@ interface AnalysisRow {
   telegramId?: number;
   productLabel: string;
   studentName: string;
+  /** Effective per-item status (falls back to the order-level status). */
+  status: OrderStatus;
   /** Checkout-question answers, excluding the name-like one. */
   answers: Record<string, string>;
 }
+
+type SortState = { key: string; dir: 'asc' | 'desc' } | null;
 
 function telegramName(shopper: Shopper | undefined): string {
   if (!shopper) return '—';
@@ -54,6 +60,7 @@ export function AdminAnalysisScreen() {
   const colors = useThemeColors();
   const styles = makeStyles(colors);
   const [query, setQuery] = useState('');
+  const [sort, setSort] = useState<SortState>(null);
   const [telegramNames, setTelegramNames] = useState<Map<number, Shopper>>(new Map());
 
   // Tenant admins are scoped to their own line items (mixed orders included);
@@ -93,6 +100,7 @@ export function AdminAnalysisScreen() {
           telegramId: order.telegramId,
           productLabel: `${item.product.name}${variant ? ` (${variant})` : ''} × ${item.quantity}`,
           studentName,
+          status: getItemStatus(order, item),
           answers,
         });
       });
@@ -145,26 +153,62 @@ export function AdminAnalysisScreen() {
     return { shoppers: phones.size, orders: orderCount, revenue };
   }, [orders, scopedTenantId]);
 
+  const telegramNameFor = (row: AnalysisRow) =>
+    telegramName(row.telegramId != null ? telegramNames.get(row.telegramId) : undefined);
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return rows;
-    return rows.filter((r) => {
-      const haystack = [
-        r.orderId,
-        r.phoneNumber,
-        r.location,
-        r.productLabel,
-        r.studentName,
-        telegramName(r.telegramId != null ? telegramNames.get(r.telegramId) : undefined),
-        ...Object.values(r.answers),
-      ]
-        .join(' ')
-        .toLowerCase();
-      return haystack.includes(q);
+    const base = !q
+      ? rows
+      : rows.filter((r) => {
+          const haystack = [
+            r.orderId,
+            r.phoneNumber,
+            r.location,
+            r.productLabel,
+            r.studentName,
+            ORDER_STATUS_LABELS[r.status],
+            telegramNameFor(r),
+            ...Object.values(r.answers),
+          ]
+            .join(' ')
+            .toLowerCase();
+          return haystack.includes(q);
+        });
+    if (!sort) return base;
+    // Status sorts by lifecycle order (pending -> completed), not alphabetically.
+    const value = (r: AnalysisRow): string => {
+      switch (sort.key) {
+        case 'order': return r.orderId;
+        case 'date': return r.createdAt;
+        case 'location': return r.location;
+        case 'phone': return r.phoneNumber;
+        case 'name': return telegramNameFor(r);
+        case 'student': return r.studentName;
+        case 'product': return r.productLabel;
+        case 'status': return String(ORDER_STATUSES.indexOf(r.status));
+        default: return r.answers[sort.key] ?? '';
+      }
+    };
+    const dir = sort.dir === 'asc' ? 1 : -1;
+    return [...base].sort((a, b) => {
+      const va = value(a);
+      const vb = value(b);
+      return (va < vb ? -1 : va > vb ? 1 : 0) * dir;
     });
-  }, [rows, query, telegramNames]);
+    // telegramNameFor is stable enough for this memo; it only reads telegramNames.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows, query, sort, telegramNames]);
 
   const isWeb = Platform.OS === 'web';
+
+  function toggleSort(key: string) {
+    setSort((prev) =>
+      prev?.key === key
+        ? { key, dir: prev.dir === 'asc' ? 'desc' : 'asc' }
+        : { key, dir: 'asc' }
+    );
+  }
 
   function renderCard(row: AnalysisRow) {
     const fields: [string, string][] = [
@@ -172,9 +216,10 @@ export function AdminAnalysisScreen() {
       ['Date & time', new Date(row.createdAt).toLocaleString()],
       ['Location', row.location || '—'],
       ['Phone', row.phoneNumber],
-      ['Name', telegramName(row.telegramId != null ? telegramNames.get(row.telegramId) : undefined)],
+      ['Name', telegramNameFor(row)],
       ['Student name', row.studentName || '—'],
       ['Product', row.productLabel],
+      ['Status', ORDER_STATUS_LABELS[row.status]],
       ...questionLabels.map(
         (label): [string, string] => [label, row.answers[label] ?? '—']
       ),
@@ -195,11 +240,36 @@ export function AdminAnalysisScreen() {
     );
   }
 
-  function cell(text: string, width: { width: number }, key: string, bold = false) {
+  function cell(text: string, width: { width: number }, key: string) {
     return (
-      <Text key={key} style={[styles.cell, width, bold && styles.cellBold]} numberOfLines={2}>
+      <Text key={key} style={[styles.cell, width]} numberOfLines={2}>
         {text}
       </Text>
+    );
+  }
+
+  function headerCell(label: string, sortKey: string, width: { width: number }) {
+    const active = sort?.key === sortKey;
+    return (
+      <TouchableOpacity
+        key={sortKey}
+        style={[styles.headerCell, width]}
+        onPress={() => toggleSort(sortKey)}
+      >
+        <Text
+          style={[styles.cell, styles.headerText, active && styles.headerTextActive]}
+          numberOfLines={1}
+        >
+          {label}
+        </Text>
+        {active && (
+          <Ionicons
+            name={sort.dir === 'asc' ? 'chevron-up' : 'chevron-down'}
+            size={12}
+            color={colors.primary}
+          />
+        )}
+      </TouchableOpacity>
     );
   }
 
@@ -253,14 +323,15 @@ export function AdminAnalysisScreen() {
             <ScrollView horizontal style={styles.tableScroll}>
               <View style={styles.table}>
                 <View style={[styles.trow, styles.thead]}>
-                  {cell('Order #', styles.wOrder, 'h-order', true)}
-                  {cell('Date & time', styles.wDate, 'h-date', true)}
-                  {cell('Location', styles.wLocation, 'h-location', true)}
-                  {cell('Phone', styles.wPhone, 'h-phone', true)}
-                  {cell('Name', styles.wName, 'h-name', true)}
-                  {cell('Student name', styles.wName, 'h-student', true)}
-                  {cell('Product', styles.wProduct, 'h-product', true)}
-                  {questionLabels.map((label) => cell(label, styles.wQuestion, `h-${label}`, true))}
+                  {headerCell('Order #', 'order', styles.wOrder)}
+                  {headerCell('Date & time', 'date', styles.wDate)}
+                  {headerCell('Location', 'location', styles.wLocation)}
+                  {headerCell('Phone', 'phone', styles.wPhone)}
+                  {headerCell('Name', 'name', styles.wName)}
+                  {headerCell('Student name', 'student', styles.wName)}
+                  {headerCell('Product', 'product', styles.wProduct)}
+                  {headerCell('Status', 'status', styles.wStatus)}
+                  {questionLabels.map((label) => headerCell(label, label, styles.wQuestion))}
                 </View>
                 {filtered.map((row) => (
                   <TouchableOpacity
@@ -272,13 +343,10 @@ export function AdminAnalysisScreen() {
                     {cell(new Date(row.createdAt).toLocaleString(), styles.wDate, `${row.key}-date`)}
                     {cell(row.location || '—', styles.wLocation, `${row.key}-location`)}
                     {cell(row.phoneNumber, styles.wPhone, `${row.key}-phone`)}
-                    {cell(
-                      telegramName(row.telegramId != null ? telegramNames.get(row.telegramId) : undefined),
-                      styles.wName,
-                      `${row.key}-name`
-                    )}
+                    {cell(telegramNameFor(row), styles.wName, `${row.key}-name`)}
                     {cell(row.studentName || '—', styles.wName, `${row.key}-student`)}
                     {cell(row.productLabel, styles.wProduct, `${row.key}-product`)}
+                    {cell(ORDER_STATUS_LABELS[row.status], styles.wStatus, `${row.key}-status`)}
                     {questionLabels.map((label) =>
                       cell(row.answers[label] ?? '—', styles.wQuestion, `${row.key}-${label}`)
                     )}
@@ -370,9 +438,20 @@ const makeStyles = (colors: ColorPalette) =>
       fontSize: fontSizes.sm,
       color: colors.text,
     },
-    cellBold: {
+    headerCell: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 2,
+      paddingRight: spacing.xs,
+      ...(Platform.OS === 'web' ? ({ cursor: 'pointer' } as any) : {}),
+    },
+    headerText: {
       fontWeight: '700',
       color: colors.textSecondary,
+      flexShrink: 1,
+    },
+    headerTextActive: {
+      color: colors.primary,
     },
     wOrder: { width: 100 },
     wDate: { width: 170 },
@@ -380,6 +459,7 @@ const makeStyles = (colors: ColorPalette) =>
     wPhone: { width: 120 },
     wName: { width: 150 },
     wProduct: { width: 220 },
+    wStatus: { width: 130 },
     wQuestion: { width: 150 },
     cardList: {
       marginTop: spacing.sm,
