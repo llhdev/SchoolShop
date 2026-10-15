@@ -4,6 +4,7 @@ import {
   ScrollView,
   StyleSheet,
   Text,
+  TextInput,
   TouchableOpacity,
   View,
 } from 'react-native';
@@ -27,6 +28,7 @@ import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '
 
 const MAX_WIDTH = 1200;
 const NAME_LABEL = /name/i;
+const DAY_MS = 24 * 60 * 60 * 1000;
 
 /** One row per merchant line item: checkout answers live on the cart line. */
 interface AnalysisRow {
@@ -46,6 +48,58 @@ interface AnalysisRow {
 
 type SortState = { key: string; dir: 'asc' | 'desc' } | null;
 
+type DateFilter = 'all' | 'today' | 'week' | 'month' | 'custom';
+
+const DATE_FILTERS: { key: DateFilter; label: string }[] = [
+  { key: 'all', label: 'All time' },
+  { key: 'today', label: 'Today' },
+  { key: 'week', label: 'This week' },
+  { key: 'month', label: 'This month' },
+  { key: 'custom', label: 'Custom range' },
+];
+
+/** Parse "YYYY-MM-DD" as local midnight (Date.parse would treat it as UTC). */
+function parseDateInput(value: string): number | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value.trim());
+  if (!m) return null;
+  const time = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])).getTime();
+  return Number.isNaN(time) ? null : time;
+}
+
+/** [startMs, endMs] inclusive in local time; null = no date filtering.
+ *  An incomplete/invalid custom range also yields null (no filtering). */
+function computeDateRange(
+  filter: DateFilter,
+  customStart: string,
+  customEnd: string
+): [number, number] | null {
+  const now = new Date();
+  const startOfDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const endOfToday = startOfDay(now) + DAY_MS - 1;
+  switch (filter) {
+    case 'today':
+      return [startOfDay(now), endOfToday];
+    case 'week': {
+      // Week starts on Monday.
+      const sinceMonday = (now.getDay() + 6) % 7;
+      const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - sinceMonday);
+      return [startOfDay(monday), endOfToday];
+    }
+    case 'month':
+      return [new Date(now.getFullYear(), now.getMonth(), 1).getTime(), endOfToday];
+    case 'custom': {
+      const start = parseDateInput(customStart);
+      const end = parseDateInput(customEnd);
+      if (start === null || end === null) return null;
+      const lo = Math.min(start, end);
+      const hi = Math.max(start, end);
+      return [lo, hi + DAY_MS - 1];
+    }
+    default:
+      return null;
+  }
+}
+
 function telegramName(shopper: Shopper | undefined): string {
   if (!shopper) return '—';
   const full = [shopper.firstName, shopper.lastName].filter(Boolean).join(' ').trim();
@@ -61,11 +115,28 @@ export function AdminAnalysisScreen() {
   const styles = makeStyles(colors);
   const [query, setQuery] = useState('');
   const [sort, setSort] = useState<SortState>(null);
+  const [dateFilter, setDateFilter] = useState<DateFilter>('all');
+  const [customStart, setCustomStart] = useState('');
+  const [customEnd, setCustomEnd] = useState('');
   const [telegramNames, setTelegramNames] = useState<Map<number, Shopper>>(new Map());
 
   // Tenant admins are scoped to their own line items (mixed orders included);
   // the super admin sees every shop's items.
   const scopedTenantId = role === 'admin' ? currentUserId : null;
+
+  const dateRange = useMemo(
+    () => computeDateRange(dateFilter, customStart, customEnd),
+    [dateFilter, customStart, customEnd]
+  );
+  const customRangeInvalid =
+    dateFilter === 'custom' &&
+    (customStart.trim() !== '' || customEnd.trim() !== '') &&
+    dateRange === null;
+  const inDateRange = (createdAt: string) => {
+    if (!dateRange) return true;
+    const t = new Date(createdAt).getTime();
+    return t >= dateRange[0] && t <= dateRange[1];
+  };
 
   const { rows, questionLabels } = useMemo(() => {
     const rows: AnalysisRow[] = [];
@@ -134,6 +205,7 @@ export function AdminAnalysisScreen() {
     let orderCount = 0;
     let revenue = 0;
     for (const order of orders) {
+      if (!inDateRange(order.createdAt)) continue;
       const items = scopedTenantId
         ? getOrderItemsForTenant(order, scopedTenantId)
         : order.items;
@@ -151,30 +223,33 @@ export function AdminAnalysisScreen() {
       revenue += itemTotal + fee;
     }
     return { shoppers: phones.size, orders: orderCount, revenue };
-  }, [orders, scopedTenantId]);
+    // inDateRange only reads dateRange (a dep).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [orders, scopedTenantId, dateRange]);
 
   const telegramNameFor = (row: AnalysisRow) =>
     telegramName(row.telegramId != null ? telegramNames.get(row.telegramId) : undefined);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    const base = !q
-      ? rows
-      : rows.filter((r) => {
-          const haystack = [
-            r.orderId,
-            r.phoneNumber,
-            r.location,
-            r.productLabel,
-            r.studentName,
-            ORDER_STATUS_LABELS[r.status],
-            telegramNameFor(r),
-            ...Object.values(r.answers),
-          ]
-            .join(' ')
-            .toLowerCase();
-          return haystack.includes(q);
-        });
+    let base = rows.filter((r) => inDateRange(r.createdAt));
+    if (q) {
+      base = base.filter((r) => {
+        const haystack = [
+          r.orderId,
+          r.phoneNumber,
+          r.location,
+          r.productLabel,
+          r.studentName,
+          ORDER_STATUS_LABELS[r.status],
+          telegramNameFor(r),
+          ...Object.values(r.answers),
+        ]
+          .join(' ')
+          .toLowerCase();
+        return haystack.includes(q);
+      });
+    }
     if (!sort) return base;
     // Status sorts by lifecycle order (pending -> completed), not alphabetically.
     const value = (r: AnalysisRow): string => {
@@ -196,9 +271,9 @@ export function AdminAnalysisScreen() {
       const vb = value(b);
       return (va < vb ? -1 : va > vb ? 1 : 0) * dir;
     });
-    // telegramNameFor is stable enough for this memo; it only reads telegramNames.
+    // telegramNameFor/inDateRange only read memo deps (telegramNames, dateRange).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [rows, query, sort, telegramNames]);
+  }, [rows, query, sort, telegramNames, dateRange]);
 
   const isWeb = Platform.OS === 'web';
 
@@ -310,13 +385,53 @@ export function AdminAnalysisScreen() {
             placeholder="Search orders, shoppers, products..."
           />
 
+          <View style={styles.filterRow}>
+            {DATE_FILTERS.map((f) => (
+              <TouchableOpacity
+                key={f.key}
+                style={[styles.chip, dateFilter === f.key && styles.chipActive]}
+                onPress={() => setDateFilter(f.key)}
+              >
+                <Text style={[styles.chipText, dateFilter === f.key && styles.chipTextActive]}>
+                  {f.label}
+                </Text>
+              </TouchableOpacity>
+            ))}
+          </View>
+          {dateFilter === 'custom' && (
+            <View style={styles.customRow}>
+              <TextInput
+                style={styles.dateInput}
+                value={customStart}
+                onChangeText={setCustomStart}
+                placeholder="From YYYY-MM-DD"
+                placeholderTextColor={colors.textSecondary}
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
+              <Text style={styles.customSep}>→</Text>
+              <TextInput
+                style={styles.dateInput}
+                value={customEnd}
+                onChangeText={setCustomEnd}
+                placeholder="To YYYY-MM-DD"
+                placeholderTextColor={colors.textSecondary}
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
+              {customRangeInvalid && (
+                <Text style={styles.dateError}>Use YYYY-MM-DD for both dates.</Text>
+              )}
+            </View>
+          )}
+
           {isEmpty ? (
             <EmptyState
               message="No orders yet — they appear here once customers buy something."
               icon="receipt-outline"
             />
           ) : filtered.length === 0 ? (
-            <EmptyState message="No rows match your search." icon="search-outline" />
+            <EmptyState message="No rows match your filters." icon="search-outline" />
           ) : isPhone ? (
             <View style={styles.cardList}>{filtered.map(renderCard)}</View>
           ) : (
@@ -410,6 +525,63 @@ const makeStyles = (colors: ColorPalette) =>
       fontSize: fontSizes.xs,
       color: colors.textSecondary,
       marginTop: spacing.xs,
+    },
+    filterRow: {
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      gap: spacing.sm,
+      marginTop: spacing.md,
+    },
+    chip: {
+      paddingHorizontal: spacing.md,
+      paddingVertical: spacing.xs,
+      borderRadius: borderRadius.xl,
+      borderWidth: 1,
+      borderColor: colors.border,
+      backgroundColor: colors.surface,
+      ...(Platform.OS === 'web' ? ({ cursor: 'pointer' } as any) : {}),
+    },
+    chipActive: {
+      backgroundColor: colors.primary,
+      borderColor: colors.primary,
+    },
+    chipText: {
+      fontSize: fontSizes.sm,
+      color: colors.text,
+    },
+    chipTextActive: {
+      color: colors.surface,
+      fontWeight: '600',
+    },
+    customRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      flexWrap: 'wrap',
+      gap: spacing.sm,
+      marginTop: spacing.sm,
+    },
+    dateInput: {
+      width: 150,
+      borderWidth: 1,
+      borderColor: colors.border,
+      borderRadius: borderRadius.sm,
+      backgroundColor: colors.surface,
+      paddingHorizontal: spacing.sm,
+      paddingVertical: spacing.xs,
+      fontSize: fontSizes.sm,
+      color: colors.text,
+      ...(Platform.OS === 'web'
+        ? ({ outlineStyle: 'none', boxShadow: 'none' } as any)
+        : {}),
+    },
+    customSep: {
+      fontSize: fontSizes.sm,
+      color: colors.textSecondary,
+    },
+    dateError: {
+      fontSize: fontSizes.xs,
+      color: colors.danger,
+      fontWeight: '600',
     },
     tableScroll: {
       marginTop: spacing.md,
