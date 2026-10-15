@@ -3,10 +3,12 @@ import { Order } from '../types';
 /**
  * Post a newly placed order to the shop's Telegram group via the
  * telegram-order-notify Edge Function. Best-effort: any failure (offline,
- * function misconfigured) is swallowed so it never affects order placement.
+ * function misconfigured) is swallowed so it never affects order placement —
+ * but it IS logged to the console so a broken pipeline shows up in devtools
+ * instead of failing silently (as it did in the Oct 2026 outage).
  *
- * The function itself is gated by the anon key header; the bot token and
- * group chat id live only in Supabase secrets.
+ * The function itself is gated by the anon/publishable key header; the bot
+ * token and group chat id live only in Supabase secrets.
  */
 export function notifyTelegramOrder(
   order: Order,
@@ -32,6 +34,8 @@ export function notifyTelegramOrder(
       phone_number: order.phoneNumber,
       telegram_id: order.telegramId ?? null,
       created_at: order.createdAt,
+      payment_proofs: order.paymentProofs ?? {},
+      shipping_fees: order.shippingFees ?? {},
       telegram_user: telegramUser
         ? {
             first_name: telegramUser.firstName,
@@ -41,6 +45,23 @@ export function notifyTelegramOrder(
         : undefined,
     }),
   })
-    .then(() => {})
-    .catch(() => {});
+    .then(async (res) => {
+      if (!res.ok) {
+        console.warn(
+          `[telegramOrderNotify] notify failed: HTTP ${res.status}`,
+          await res.text().catch(() => '')
+        );
+        return;
+      }
+      // The function reports per-shop delivery in its body; surface skips so
+      // a misconfigured tenant (missing chat id, Telegram rejection) is
+      // visible without opening the Supabase logs.
+      const body = await res.json().catch(() => null);
+      if (body && Array.isArray(body.skipped) && body.skipped.length > 0) {
+        console.warn('[telegramOrderNotify] some shops were not notified:', body.skipped);
+      }
+    })
+    .catch((error) => {
+      console.warn('[telegramOrderNotify] notify request failed:', error);
+    });
 }

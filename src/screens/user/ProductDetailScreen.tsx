@@ -19,16 +19,59 @@ import { Button } from '../../components/Button';
 import { EmptyState } from '../../components/EmptyState';
 import { ProductImage } from '../../components/ProductImage';
 import { ImageViewerModal } from '../../components/ImageViewerModal';
+import { TelegramChatButton } from '../../components/TelegramChatButton';
 import { useApp } from '../../context/AppContext';
 import { useResponsive } from '../../hooks/useResponsive';
 import { getProductGalleryImages } from '../../utils/images';
-import { isTelegramMiniApp } from '../../lib/telegram';
+import { hasUnselectedGroups, resolveVariantPrice } from '../../utils/variants';
+import { VariantGroup, VariantOption } from '../../types';
+import { isTelegramMiniApp, openTelegramChat } from '../../lib/telegram';
 import { formatPrice, getDiscountPercent } from '../../utils/format';
 import { RootStackParamList } from '../../types/navigation';
 import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../../constants/theme';
 
 const PHONE_IMAGE_HEIGHT_RATIO = 0.65;
 const MAX_WIDTH = 1200;
+
+/** One detail image sized to its natural aspect ratio (fully visible, never
+ *  cropped). Before the dimensions are known a 3:4 placeholder box is shown;
+ *  it snaps to the real ratio once expo-image reports the source size. No
+ *  height cap: the width always fills the display area and tall images just
+ *  extend the scroll. */
+function DetailImageItem({
+  uri,
+  category,
+  name,
+}: {
+  uri: string;
+  category: string;
+  name: string;
+}) {
+  const { width: windowWidth } = useWindowDimensions();
+  const colors = useThemeColors();
+  const styles = makeStyles(colors);
+  const [natural, setNatural] = useState<{ w: number; h: number } | null>(null);
+  const boxWidth = Math.min(windowWidth, MAX_WIDTH) - spacing.lg * 2;
+  const height = natural ? (natural.h / natural.w) * boxWidth : boxWidth * 0.75;
+
+  return (
+    <View style={[styles.detailImageContainer, { height }]}>
+      <ProductImage
+        uri={uri}
+        category={category}
+        name={name}
+        style={styles.detailImage}
+        contentFit="contain"
+        onLoad={(event) => {
+          const source = event.source;
+          if (source.width && source.height) {
+            setNatural({ w: source.width, h: source.height });
+          }
+        }}
+      />
+    </View>
+  );
+}
 
 export function ProductDetailScreen() {
   const route = useRoute();
@@ -43,6 +86,11 @@ export function ProductDetailScreen() {
   const [justAdded, setJustAdded] = useState(false);
   const [viewerVisible, setViewerVisible] = useState(false);
   const [viewerIndex, setViewerIndex] = useState(0);
+  /** Chosen variant options: group name → option name. */
+  const [selected, setSelected] = useState<Record<string, string>>({});
+  /** Set when the shopper tries to add/buy without picking every group. */
+  const [variantError, setVariantError] = useState(false);
+  const galleryRef = useRef<FlatList>(null);
   const addResetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isTMA = isTelegramMiniApp();
 
@@ -57,8 +105,52 @@ export function ProductDetailScreen() {
   }
 
   const galleryImages = useMemo(() => getProductGalleryImages(product), [product]);
-  const discount = getDiscountPercent(product.price, product.compareAtPrice);
+  const variantGroups = product.variantGroups ?? [];
+  const priceGroup = variantGroups.find((g) => g.affectsPrice);
+  /** Set once the shopper has picked an option in the price group. */
+  const variantPriceChosen = !!priceGroup && !!selected[priceGroup.name];
+  const displayPrice = variantPriceChosen
+    ? resolveVariantPrice(product, selected)
+    : product.price;
+  // Discount badges compare against the product's base price — hide them once
+  // a variant price takes over.
+  const discount = variantPriceChosen
+    ? null
+    : getDiscountPercent(product.price, product.compareAtPrice);
   const isWebDesktop = Platform.OS === 'web' && isDesktop;
+
+  /** Record a picked option; jump the gallery to its photo when it has one. */
+  const pickOption = (group: VariantGroup, option: VariantOption) => {
+    const next = { ...selected, [group.name]: option.name };
+    setSelected(next);
+    if (variantError && !hasUnselectedGroups(product, next)) setVariantError(false);
+    if (
+      option.imageIndex !== undefined &&
+      option.imageIndex >= 0 &&
+      option.imageIndex < galleryImages.length
+    ) {
+      setActiveIndex(option.imageIndex);
+      galleryRef.current?.scrollToOffset({
+        offset: option.imageIndex * windowWidth,
+        animated: true,
+      });
+    }
+  };
+
+  /** Build the add-to-cart payload, or null when a group is still unpicked. */
+  const buildSelection = ():
+    | { selectedOptions: { group: string; option: string }[]; unitPrice: number }
+    | null => {
+    if (variantGroups.length === 0) return null;
+    if (hasUnselectedGroups(product, selected)) {
+      setVariantError(true);
+      return null;
+    }
+    return {
+      selectedOptions: variantGroups.map((g) => ({ group: g.name, option: selected[g.name] })),
+      unitPrice: resolveVariantPrice(product, selected),
+    };
+  };
 
   useEffect(
     () => () => {
@@ -69,7 +161,9 @@ export function ProductDetailScreen() {
 
   function handleAddToCart() {
     if (!product) return;
-    addToCart(product, activeIndex);
+    const selection = buildSelection();
+    if (variantGroups.length > 0 && !selection) return;
+    addToCart(product, activeIndex, selection?.selectedOptions, selection?.unitPrice);
     if (isTMA) {
       // Same confirmation mark the card's quick-add shows: a brief check
       // state on the button instead of leaving the page.
@@ -83,7 +177,9 @@ export function ProductDetailScreen() {
 
   function handleBuy() {
     if (!product) return;
-    addToCart(product, activeIndex);
+    const selection = buildSelection();
+    if (variantGroups.length > 0 && !selection) return;
+    addToCart(product, activeIndex, selection?.selectedOptions, selection?.unitPrice);
     navigation.navigate('Checkout');
   }
 
@@ -99,8 +195,7 @@ export function ProductDetailScreen() {
     setActiveIndex((prev) => (prev === clamped ? prev : clamped));
   }
 
-  const infoSection = (
-    <View style={styles.info}>
+  const infoSection = (    <View style={styles.info}>
       {isTMA ? (
         // Mini App: clean stacked layout — smaller, lighter product name on
         // its own line, then a single price row.
@@ -109,12 +204,18 @@ export function ProductDetailScreen() {
             {product.name}
           </Text>
           <View style={styles.tmaPriceRow}>
-            <Text style={styles.tmaPrice}>{formatPrice(product.price)}</Text>
-            {discount !== null && product.compareAtPrice && (
-              <Text style={styles.compareAt}>{formatPrice(product.compareAtPrice)}</Text>
-            )}
-            {discount !== null && (
-              <Text style={styles.discountTag}>Save {discount}%</Text>
+            {product.priceHidden ? (
+              <Text style={styles.priceOnRequest}>Price on request</Text>
+            ) : (
+              <>
+                <Text style={styles.tmaPrice}>{formatPrice(displayPrice)}</Text>
+                {discount !== null && product.compareAtPrice && (
+                  <Text style={styles.compareAt}>{formatPrice(product.compareAtPrice)}</Text>
+                )}
+                {discount !== null && (
+                  <Text style={styles.discountTag}>Save {discount}%</Text>
+                )}
+              </>
             )}
           </View>
         </>
@@ -124,12 +225,18 @@ export function ProductDetailScreen() {
             {product.name}
           </Text>
           <View style={styles.priceBlock}>
-            {discount !== null && product.compareAtPrice && (
-              <Text style={styles.compareAt}>{formatPrice(product.compareAtPrice)}</Text>
-            )}
-            <Text style={styles.price}>{formatPrice(product.price)}</Text>
-            {discount !== null && (
-              <Text style={styles.discountTag}>Save {discount}%</Text>
+            {product.priceHidden ? (
+              <Text style={styles.priceOnRequest}>Price on request</Text>
+            ) : (
+              <>
+                {discount !== null && product.compareAtPrice && (
+                  <Text style={styles.compareAt}>{formatPrice(product.compareAtPrice)}</Text>
+                )}
+                <Text style={styles.price}>{formatPrice(displayPrice)}</Text>
+                {discount !== null && (
+                  <Text style={styles.discountTag}>Save {discount}%</Text>
+                )}
+              </>
             )}
           </View>
         </View>
@@ -145,27 +252,119 @@ export function ProductDetailScreen() {
         <Text style={styles.category}>{product.category}</Text>
       </View>
 
-      <View style={styles.divider} />
+      {!product.priceHidden &&
+        variantGroups.map((group) => {
+          const missing = variantError && !selected[group.name];
+          return (
+            <View key={group.name} style={styles.variantGroup}>
+              <Text style={[styles.variantGroupTitle, missing && styles.variantGroupTitleError]}>
+                {group.name}
+              </Text>
+              {group.affectsPrice ? (
+                // Price group: one row per option, optional photo + its price.
+                group.options.map((option) => {
+                  const isSelected = selected[group.name] === option.name;
+                  const thumbUri =
+                    option.imageIndex !== undefined
+                      ? galleryImages[option.imageIndex] ?? null
+                      : null;
+                  return (
+                    <TouchableOpacity
+                      key={option.name}
+                      style={[styles.variantRow, isSelected && styles.variantRowSelected]}
+                      onPress={() => pickOption(group, option)}
+                    >
+                      {thumbUri ? (
+                        <ProductImage
+                          uri={thumbUri}
+                          category={product.category}
+                          name={product.name}
+                          style={styles.variantThumb}
+                          contentFit="cover"
+                        />
+                      ) : null}
+                      <Text
+                        style={[styles.variantOptionName, isSelected && styles.variantTextSelected]}
+                        numberOfLines={2}
+                      >
+                        {option.name}
+                      </Text>
+                      <Text style={[styles.variantOptionPrice, isSelected && styles.variantTextSelected]}>
+                        {formatPrice(option.price ?? product.price)}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })
+              ) : (
+                // Non-price group: simple chips.
+                <View style={styles.variantChips}>
+                  {group.options.map((option) => {
+                    const isSelected = selected[group.name] === option.name;
+                    return (
+                      <TouchableOpacity
+                        key={option.name}
+                        style={[styles.variantChip, isSelected && styles.variantChipSelected]}
+                        onPress={() => pickOption(group, option)}
+                      >
+                        <Text style={[styles.variantChipText, isSelected && styles.variantTextSelected]}>
+                          {option.name}
+                        </Text>
+                      </TouchableOpacity>
+                    );
+                  })}
+                </View>
+              )}
+              {missing && (
+                <Text style={styles.variantErrorText}>
+                  Please choose a {group.name.toLowerCase()}
+                </Text>
+              )}
+            </View>
+          );
+        })}
 
       {!isTMA && (
         <View style={styles.actions}>
-          <Button
-            title="Add to Cart"
-            onPress={handleAddToCart}
-            style={styles.actionButton}
+          <TelegramChatButton
+            username={product.ownerTelegramUsername}
+            style={styles.chatIconButton}
           />
+          {!product.priceHidden && (
+            <Button
+              title="Add to Cart"
+              onPress={handleAddToCart}
+              style={styles.actionButton}
+            />
+          )}
         </View>
       )}
 
       {product.description.length > 0 && (
         <>
-          <View style={styles.divider} />
           <Text style={styles.sectionTitle}>Description</Text>
           <Text style={styles.description}>{product.description}</Text>
         </>
       )}
     </View>
   );
+
+  // Extra tenant-uploaded photos (size charts, close-ups), listed under the
+  // description; the shopper reaches them by scrolling. Not part of the
+  // swipeable main gallery.
+  const detailImagesSection =
+    product.detailImages && product.detailImages.length > 0 ? (
+      <View style={[styles.detailSection, isWebDesktop && styles.detailSectionDesktop]}>
+        <Text style={styles.sectionTitle}>Details</Text>
+        {product.detailImages.map((uri, index) => (
+          <DetailImageItem
+            key={`detail-${index}`}
+            uri={uri}
+            category={product.category}
+            name={product.name}
+          />
+        ))}
+      </View>
+    ) : null;
 
   if (isWebDesktop) {
     return (
@@ -206,6 +405,7 @@ export function ProductDetailScreen() {
             </View>
             {infoSection}
           </View>
+          {detailImagesSection}
         </ScrollView>
       </Screen>
     );
@@ -214,6 +414,7 @@ export function ProductDetailScreen() {
   const gallerySection = (
     <View style={[styles.galleryContainer, { height: phoneImageHeight }]}>
       <FlatList
+        ref={galleryRef}
         data={galleryImages}
         horizontal
         pagingEnabled
@@ -280,15 +481,35 @@ export function ProductDetailScreen() {
           >
             {gallerySection}
             {infoSection}
+            {detailImagesSection}
           </ScrollView>
           <View style={styles.tmaBottomBar}>
-            <Button
-              title={justAdded ? '✓ Added to Cart' : 'Add to Cart'}
-              variant="outline"
-              onPress={handleAddToCart}
-              style={styles.tmaBarButton}
-            />
-            <Button title="Buy" onPress={handleBuy} style={styles.tmaBarButton} />
+            {product.priceHidden ? (
+              product.ownerTelegramUsername?.trim() ? (
+                <Button
+                  title="Chat to Order"
+                  onPress={() => openTelegramChat(product.ownerTelegramUsername!.trim())}
+                  style={styles.tmaBarButton}
+                />
+              ) : (
+                <Text style={styles.priceOnRequest}>Chat with the shop to order</Text>
+              )
+            ) : (
+              <>
+                <TelegramChatButton
+                  username={product.ownerTelegramUsername}
+                  size={24}
+                  style={styles.tmaChatButton}
+                />
+                <Button
+                  title={justAdded ? '✓ Added to Cart' : 'Add to Cart'}
+                  variant="outline"
+                  onPress={handleAddToCart}
+                  style={styles.tmaBarButton}
+                />
+                <Button title="Buy" onPress={handleBuy} style={styles.tmaBarButton} />
+              </>
+            )}
           </View>
         </View>
       </Screen>
@@ -299,6 +520,7 @@ export function ProductDetailScreen() {
     <Screen scroll noPadding edges={['top', 'left', 'right']}>
       {gallerySection}
       {infoSection}
+      {detailImagesSection}
     </Screen>
   );
 }
@@ -467,6 +689,25 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
     color: colors.textSecondary,
     lineHeight: 24,
   },
+  detailSection: {
+    paddingHorizontal: spacing.lg,
+    paddingBottom: spacing.lg,
+  },
+  detailSectionDesktop: {
+    maxWidth: MAX_WIDTH,
+    width: '100%',
+    alignSelf: 'center',
+  },
+  detailImageContainer: {
+    borderRadius: borderRadius.md,
+    overflow: 'hidden',
+    backgroundColor: colors.surface,
+    marginBottom: spacing.md,
+  },
+  detailImage: {
+    width: '100%',
+    height: '100%',
+  },
   actions: {
     flexDirection: 'row',
     gap: spacing.md,
@@ -496,6 +737,12 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
     fontWeight: '700',
     color: colors.price,
   },
+  priceOnRequest: {
+    fontSize: fontSizes.md,
+    fontWeight: '600',
+    color: colors.textSecondary,
+    alignSelf: 'center',
+  },
   tmaScroll: {
     flex: 1,
   },
@@ -514,5 +761,99 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
   },
   tmaBarButton: {
     flex: 1,
+  },
+  // Bordered circle at the left of the Mini App bottom bar; matches the
+  // height of the neighbouring buttons so the bar stays even.
+  tmaChatButton: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: colors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    alignSelf: 'center',
+  },
+  chatIconButton: {
+    width: 48,
+    height: 48,
+    borderRadius: 24,
+    borderWidth: 1,
+    borderColor: colors.primary,
+    alignItems: 'center',
+    justifyContent: 'center',
+    alignSelf: 'center',
+  },
+  variantGroup: {
+    marginBottom: spacing.md,
+  },
+  variantGroupTitle: {
+    fontSize: fontSizes.md,
+    fontWeight: '700',
+    color: colors.text,
+    marginBottom: spacing.sm,
+  },
+  variantGroupTitleError: {
+    color: colors.danger,
+  },
+  variantChips: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.sm,
+  },
+  variantChip: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: borderRadius.sm,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    backgroundColor: colors.background,
+  },
+  variantChipSelected: {
+    borderColor: colors.primary,
+    borderWidth: 2,
+  },
+  variantChipText: {
+    fontSize: fontSizes.sm,
+    color: colors.text,
+  },
+  variantRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: borderRadius.sm,
+    backgroundColor: colors.background,
+    padding: spacing.sm,
+    marginBottom: spacing.sm,
+  },
+  variantRowSelected: {
+    borderColor: colors.primary,
+    borderWidth: 2,
+  },
+  variantThumb: {
+    width: 40,
+    height: 40,
+    borderRadius: borderRadius.sm,
+    backgroundColor: colors.surface,
+  },
+  variantOptionName: {
+    flex: 1,
+    fontSize: fontSizes.sm,
+    color: colors.text,
+  },
+  variantOptionPrice: {
+    fontSize: fontSizes.sm,
+    fontWeight: '700',
+    color: colors.price,
+  },
+  variantTextSelected: {
+    color: colors.primary,
+  },
+  variantErrorText: {
+    fontSize: fontSizes.sm,
+    color: colors.danger,
+    marginTop: spacing.xs,
   },
 });

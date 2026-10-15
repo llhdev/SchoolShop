@@ -83,6 +83,17 @@ export interface TelegramWebApp {
   contentSafeAreaInset: TelegramInsets;
   MainButton: TelegramMainButton;
   BackButton: TelegramBackButton;
+  /** Native popup dialog; absent on the stub WebApp (SDK failed to load). */
+  showPopup?(
+    params: {
+      title?: string;
+      message: string;
+      buttons?: { id?: string; type?: 'default' | 'ok' | 'close' | 'destructive'; text: string }[];
+    },
+    callback?: (buttonId: string) => void
+  ): void;
+  /** Open a t.me link inside Telegram (e.g. a DM with a user). */
+  openTelegramLink?(url: string): void;
   onEvent(eventType: string, eventHandler: () => void): void;
   offEvent(eventType: string, eventHandler: () => void): void;
 }
@@ -356,6 +367,44 @@ export function configureTelegramMainButton(
   mainButtonHandler = config.onPress;
   button.onClick(config.onPress);
   button.show();
+}
+
+/**
+ * Open the DM with a Telegram user/handle. Inside the Mini App this goes
+ * through Telegram's own link handler (opens the chat in the app); elsewhere
+ * it falls back to a regular t.me deep link in a new browser tab.
+ */
+export function openTelegramChat(username: string): void {
+  const handle = username.trim().replace(/^@/, '');
+  if (!handle) return;
+  const url = `https://t.me/${handle}`;
+  if (webApp?.openTelegramLink) {
+    try {
+      webApp.openTelegramLink(url);
+      return;
+    } catch {
+      // Fall through to the browser path.
+    }
+  }
+  if (Platform.OS === 'web') {
+    const win = (globalThis as unknown as { window?: { open(url: string, target: string): void } }).window;
+    win?.open(url, '_blank');
+  }
+}
+
+/**
+ * Show a native Telegram popup (single OK button). Returns false when there is
+ * no usable popup — stub WebApp (SDK failed to load) or plain browser — so the
+ * caller can fall back to RN's Alert.
+ */
+export function showTelegramPopup(title: string, message: string): boolean {
+  if (!webApp?.showPopup) return false;
+  try {
+    webApp.showPopup({ title, message, buttons: [{ type: 'ok', text: 'OK' }] });
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 /** Show/hide the native loading spinner on the Telegram MainButton. */

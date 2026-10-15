@@ -17,10 +17,30 @@ import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '
 interface CategoryFilterProps {
   selected: Category | null;
   onSelect: (category: Category | null) => void;
+  /** Optional "Store" chip rendered right after "All" (tenant shop filter). */
+  storeLabel?: string;
+  storeActive?: boolean;
+  storePanelOpen?: boolean;
+  onStorePress?: () => void;
+  /** Active sort for the second (sort) chip row. */
+  sort: SortOption;
+  onSortChange: (sort: SortOption) => void;
 }
+
+/** Product listing sorts. `featured` is the session-stable random scramble. */
+export type SortOption = 'featured' | 'latest' | 'popular' | 'price_asc' | 'price_desc';
+
+const SORT_OPTIONS: { value: SortOption; label: string }[] = [
+  { value: 'featured', label: 'Featured' },
+  { value: 'latest', label: 'Latest' },
+  { value: 'popular', label: 'Popular' },
+  { value: 'price_asc', label: 'Price ↑' },
+  { value: 'price_desc', label: 'Price ↓' },
+];
 
 interface MeasuredWidths {
   all: number;
+  store?: number;
   more: number;
   categories: Record<string, number>;
 }
@@ -28,11 +48,18 @@ interface MeasuredWidths {
 export function CategoryFilter({
   selected,
   onSelect,
+  storeLabel,
+  storeActive = false,
+  storePanelOpen = false,
+  onStorePress,
+  sort,
+  onSortChange,
 }: CategoryFilterProps) {
   const colors = useThemeColors();
   const styles = makeStyles(colors);
   const { categories } = useApp();
   const { isPhone } = useResponsive();
+  const hasStore = Boolean(onStorePress);
   const [dropdownVisible, setDropdownVisible] = useState(false);
   const [moreLayout, setMoreLayout] = useState<{
     x: number;
@@ -42,7 +69,7 @@ export function CategoryFilter({
   } | null>(null);
   const [containerWidth, setContainerWidth] = useState(0);
   const [measured, setMeasured] = useState<MeasuredWidths | null>(null);
-  const pendingRef = useRef<{ all?: number; more?: number; categories: Record<string, number> }>({
+  const pendingRef = useRef<{ all?: number; store?: number; more?: number; categories: Record<string, number> }>({
     categories: {},
   });
   const moreButtonRef = useRef<View>(null);
@@ -50,18 +77,19 @@ export function CategoryFilter({
   const gap = isPhone ? 2 : spacing.sm;
   const categoriesKey = categories.join('\n');
 
-  // Categories can change at runtime; re-measure when the list changes.
+  // Categories (and the store chip label) can change at runtime; re-measure
+  // when the inputs change.
   useEffect(() => {
     setMeasured(null);
     pendingRef.current = { categories: {} };
-  }, [categoriesKey]);
+  }, [categoriesKey, hasStore, storeLabel]);
 
   const visibleCount = useMemo(() => {
     if (!measured || containerWidth <= 0) return categories.length;
 
     const fitCount = (reserveMore: boolean): number => {
       const moreReserve = reserveMore ? gap + measured.more : 0;
-      let used = measured.all;
+      let used = measured.all + (hasStore ? gap + (measured.store ?? 0) : 0);
       let count = 0;
       for (const category of categories) {
         const width = measured.categories[category] ?? 0;
@@ -75,7 +103,7 @@ export function CategoryFilter({
 
     if (fitCount(false) >= categories.length) return categories.length;
     return fitCount(true);
-  }, [measured, containerWidth, categories, gap]);
+  }, [measured, containerWidth, categories, gap, hasStore]);
 
   const visibleCategories = categories.slice(0, visibleCount);
   const hiddenCategories = categories.slice(visibleCount);
@@ -86,22 +114,25 @@ export function CategoryFilter({
   }
 
   function recordMeasurement(
-    key: 'all' | 'more' | string,
+    key: 'all' | 'store' | 'more' | string,
     event: LayoutChangeEvent,
   ) {
     const width = event.nativeEvent.layout.width;
     const pending = pendingRef.current;
     if (key === 'all') pending.all = width;
+    else if (key === 'store') pending.store = width;
     else if (key === 'more') pending.more = width;
     else pending.categories[key] = width;
 
     if (
       pending.all !== undefined &&
+      (!hasStore || pending.store !== undefined) &&
       pending.more !== undefined &&
       categories.every((c) => pending.categories[c] !== undefined)
     ) {
       setMeasured({
         all: pending.all,
+        store: pending.store,
         more: pending.more,
         categories: { ...pending.categories },
       });
@@ -121,6 +152,7 @@ export function CategoryFilter({
           active && styles.activeText,
           more && styles.moreText,
         ]}
+        numberOfLines={1}
       >
         {label}
       </Text>
@@ -136,7 +168,7 @@ export function CategoryFilter({
         <TouchableOpacity
           style={[
             styles.chip,
-            isPhone && styles.chipCompact,
+            
             selected === null && styles.activeChip,
           ]}
           onPress={() => onSelect(null)}
@@ -144,12 +176,24 @@ export function CategoryFilter({
           {renderChipContent('All', selected === null, false)}
         </TouchableOpacity>
 
+        {hasStore && (
+          <TouchableOpacity
+            style={[
+              styles.chip,
+              styles.storeChip,
+              storeActive && styles.activeChip,
+            ]}
+            onPress={onStorePress}
+          >
+            {renderChipContent(storeLabel ?? 'Store', storeActive, false)}
+          </TouchableOpacity>
+        )}
+
         {visibleCategories.map((category) => (
           <TouchableOpacity
             key={category}
             style={[
               styles.chip,
-              isPhone && styles.chipCompact,
               selected === category && styles.activeChip,
             ]}
             onPress={() => onSelect(category)}
@@ -161,7 +205,7 @@ export function CategoryFilter({
         {hiddenCategories.length > 0 && (
           <View ref={moreButtonRef} collapsable={false}>
             <TouchableOpacity
-              style={[styles.chip, isPhone && styles.chipCompact, styles.moreChip]}
+              style={styles.chip}
               onPress={() => {
                 moreButtonRef.current?.measure((x, y, width, height, pageX, pageY) => {
                   setMoreLayout({ x: pageX, y: pageY, width, height });
@@ -175,23 +219,47 @@ export function CategoryFilter({
         )}
       </View>
 
+      {/* Second row: listing sort. Compact chips so both rows together take
+          roughly the space the single category row used to occupy. */}
+      <View style={[styles.container, styles.sortRow, isPhone && styles.containerCompact]}>
+        {SORT_OPTIONS.map(({ value, label }) => (
+          <TouchableOpacity
+            key={value}
+            style={[
+              styles.chip,
+              sort === value && styles.activeChip,
+            ]}
+            onPress={() => onSortChange(value)}
+          >
+            {renderChipContent(label, sort === value, false)}
+          </TouchableOpacity>
+        ))}
+      </View>
+
       {/* Offscreen pass to measure chip widths before deciding the split */}
       {!measured && (
         <View style={styles.measureRow} pointerEvents="none">
           <View onLayout={(e) => recordMeasurement('all', e)}>
-            <View style={[styles.chip, isPhone && styles.chipCompact]}>
+            <View style={[styles.chip]}>
               {renderChipContent('All', false, false)}
             </View>
           </View>
+          {hasStore && (
+            <View onLayout={(e) => recordMeasurement('store', e)}>
+              <View style={[styles.chip, styles.storeChip]}>
+                {renderChipContent(storeLabel ?? 'Store', false, false)}
+              </View>
+            </View>
+          )}
           {categories.map((category) => (
             <View key={category} onLayout={(e) => recordMeasurement(category, e)}>
-              <View style={[styles.chip, isPhone && styles.chipCompact]}>
+              <View style={[styles.chip]}>
                 {renderChipContent(category, false, false)}
               </View>
             </View>
           ))}
           <View onLayout={(e) => recordMeasurement('more', e)}>
-            <View style={[styles.chip, isPhone && styles.chipCompact, styles.moreChip]}>
+            <View style={styles.chip}>
               {renderChipContent('More ▼', false, true)}
             </View>
           </View>
@@ -248,8 +316,8 @@ export function CategoryFilter({
 
 const makeStyles = (colors: ColorPalette) => StyleSheet.create({
   wrapper: {
-    marginTop: spacing.sm,
-    marginBottom: spacing.md,
+    marginTop: 2,
+    marginBottom: spacing.sm,
   },
   container: {
     flexDirection: 'row',
@@ -257,7 +325,10 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
     alignItems: 'center',
   },
   containerCompact: {
-    gap: 2,
+    gap: spacing.sm,
+  },
+  sortRow: {
+    marginTop: spacing.xs,
   },
   measureRow: {
     position: 'absolute',
@@ -266,38 +337,33 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
     flexDirection: 'row',
     opacity: 0,
   },
+  // Plain-text filter: no pill box or border, just the label with enough
+  // padding that neighbouring filters read as separate items. The active
+  // state is shown on the text itself (brand color + underline via
+  // activeText), so the chip wrapper only centers its label for the width
+  // measurement pass.
   chip: {
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.sm,
-    borderRadius: borderRadius.xl,
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.border,
-    height: 34,
     justifyContent: 'center',
-  },
-  chipCompact: {
     paddingHorizontal: spacing.sm,
     paddingVertical: 4,
-    height: 36,
   },
-  activeChip: {
-    backgroundColor: colors.primary,
-    borderColor: colors.primary,
-  },
-  moreChip: {
-    borderColor: colors.primary,
+  // Active-state marker lives on the text (see activeText); kept as an empty
+  // style so existing conditional style arrays keep working.
+  activeChip: {},
+  storeChip: {
+    maxWidth: 160,
   },
   text: {
     fontSize: fontSizes.sm,
     color: colors.text,
   },
   textCompact: {
-    fontSize: fontSizes.sm,
+    fontSize: fontSizes.xs,
   },
   activeText: {
-    color: colors.surface,
-    fontWeight: '600',
+    color: colors.primary,
+    fontWeight: '700',
+    textDecorationLine: 'underline',
   },
   moreText: {
     color: colors.primary,

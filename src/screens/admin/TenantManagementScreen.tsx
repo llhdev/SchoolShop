@@ -5,9 +5,11 @@ import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import {
   Alert,
   FlatList,
+  Image,
   KeyboardAvoidingView,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   TouchableOpacity,
@@ -17,9 +19,13 @@ import { Ionicons } from '@expo/vector-icons';
 import { Screen } from '../../components/Screen';
 import { EmptyState } from '../../components/EmptyState';
 import { AdminHeader } from '../../components/AdminHeader';
+import { BankAccountsEditor } from '../../components/BankAccountsEditor';
 import { Button } from '../../components/Button';
-import { fetchTenants, createTenant, Tenant } from '../../services/tenants';
+import { fetchTenants, createTenant, adminSetTenantActive, Tenant } from '../../services/tenants';
+import { uploadShopLogo } from '../../services/images';
+import { confirmAction } from '../../utils/confirm';
 import { AdminStackParamList } from '../../types/navigation';
+import { BankAccount } from '../../types';
 import { useResponsive } from '../../hooks/useResponsive';
 import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../../constants/theme';
 
@@ -39,7 +45,14 @@ export function TenantManagementScreen() {
 
   const [username, setUsername] = useState('');
   const [shopName, setShopName] = useState('');
+  const [shopDescription, setShopDescription] = useState('');
+  const [shopLogoUrl, setShopLogoUrl] = useState('');
+  const [logoUploading, setLogoUploading] = useState(false);
   const [email, setEmail] = useState('');
+  const [telegramChatId, setTelegramChatId] = useState('');
+  const [telegramUsername, setTelegramUsername] = useState('');
+  const [bankAccounts, setBankAccounts] = useState<BankAccount[]>([{ accountNumber: '' }]);
+  const [shippingFee, setShippingFee] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
@@ -66,14 +79,58 @@ export function TenantManagementScreen() {
   function resetForm() {
     setUsername('');
     setShopName('');
+    setShopDescription('');
+    setShopLogoUrl('');
+    setLogoUploading(false);
     setEmail('');
+    setTelegramChatId('');
+    setTelegramUsername('');
+    setBankAccounts([{ accountNumber: '' }]);
+    setShippingFee('');
     setPassword('');
     setConfirmPassword('');
     setShowPassword(false);
   }
 
+  /** Pick the tenant's mandatory shop logo and upload it to the public
+   *  shop-logos bucket right away (resized to 400px), so tenant creation
+   *  doesn't wait on it. */
+  async function pickShopLogo() {
+    let localUri: string | null = null;
+    if (Platform.OS === 'web') {
+      const { pickImagesWeb } = await import('../../lib/image-web');
+      const uris = await pickImagesWeb();
+      localUri = uris[0] ?? null;
+    } else {
+      const ImagePicker = await import('expo-image-picker');
+      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permission needed', 'Please allow access to your photo library.');
+        return;
+      }
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        allowsEditing: false,
+        quality: 0.9,
+      });
+      localUri = !result.canceled ? (result.assets[0]?.uri ?? null) : null;
+    }
+    if (!localUri) return;
+
+    setLogoUploading(true);
+    try {
+      const url = await uploadShopLogo(localUri);
+      setShopLogoUrl(url);
+    } catch {
+      Alert.alert('Upload Failed', 'Could not upload the logo. Please try again.');
+    } finally {
+      setLogoUploading(false);
+    }
+  }
+
   async function handleCreate() {
     const cleanUsername = username.trim().toLowerCase();
+    const accounts = bankAccounts.filter((a) => a.accountNumber.trim());
 
     if (!cleanUsername) {
       Alert.alert('Error', 'Please enter a username.');
@@ -81,6 +138,19 @@ export function TenantManagementScreen() {
     }
     if (!shopName.trim()) {
       Alert.alert('Error', 'Please enter a shop name.');
+      return;
+    }
+    if (!shopLogoUrl) {
+      Alert.alert('Error', 'Please upload a shop logo. Every store needs one to appear in the Store filter.');
+      return;
+    }
+    if (accounts.length === 0) {
+      Alert.alert('Error', 'Please add at least one bank account with an account number.');
+      return;
+    }
+    const fee = shippingFee.trim() === '' ? null : Number(shippingFee.trim());
+    if (fee !== null && (!Number.isFinite(fee) || fee < 0)) {
+      Alert.alert('Error', 'Enter a valid shipping fee in Birr (or leave it empty for free delivery).');
       return;
     }
     if (password.length < 6) {
@@ -94,7 +164,18 @@ export function TenantManagementScreen() {
 
     setIsCreating(true);
     try {
-      const tenant = await createTenant(cleanUsername, password, shopName.trim(), email);
+      const tenant = await createTenant(
+        cleanUsername,
+        password,
+        shopName.trim(),
+        email,
+        telegramChatId,
+        accounts,
+        fee,
+        shopLogoUrl,
+        shopDescription,
+        telegramUsername
+      );
       setTenants((prev) => [tenant, ...prev]);
       resetForm();
       Alert.alert('Success', `Tenant @${tenant.username} created.`);
@@ -108,6 +189,33 @@ export function TenantManagementScreen() {
 
   function handleView(tenant: Tenant) {
     navigation.navigate('TenantDetail', { tenantId: tenant.id });
+  }
+
+  async function setTenantActive(tenant: Tenant, next: boolean) {
+    const previous = tenants;
+    setTenants((prev) =>
+      prev.map((t) => (t.id === tenant.id ? { ...t, isActive: next } : t))
+    );
+    try {
+      await adminSetTenantActive(tenant.id, next);
+    } catch (error) {
+      setTenants(previous);
+      const message = error instanceof Error ? error.message : 'Failed to update shop status.';
+      Alert.alert('Error', message);
+    }
+  }
+
+  function handleToggleActive(tenant: Tenant, next: boolean) {
+    if (next) {
+      void setTenantActive(tenant, true);
+      return;
+    }
+    confirmAction(
+      'Switch off shop?',
+      `"${tenant.shopName ?? 'Untitled Shop'}" will disappear from the shop and @${tenant.username ?? 'unknown'} will lose access until you switch it back on.`,
+      'Switch Off',
+      () => setTenantActive(tenant, false)
+    );
   }
 
   const isWeb = Platform.OS === 'web';
@@ -146,6 +254,33 @@ export function TenantManagementScreen() {
                 </View>
 
                 <View style={styles.field}>
+                  <Text style={styles.label}>Shop Logo (required)</Text>
+                  {shopLogoUrl ? (
+                    <View style={styles.qrPreviewRow}>
+                      <Image source={{ uri: shopLogoUrl }} style={styles.logoPreview} resizeMode="cover" />
+                      <TouchableOpacity onPress={() => setShopLogoUrl('')}>
+                        <Ionicons name="close-circle-outline" size={22} color={colors.danger} />
+                      </TouchableOpacity>
+                    </View>
+                  ) : (
+                    <TouchableOpacity
+                      style={[styles.qrPickButton, logoUploading && styles.qrPickButtonDisabled]}
+                      onPress={() => pickShopLogo().catch(() => {})}
+                      disabled={logoUploading}
+                    >
+                      <Ionicons
+                        name={logoUploading ? 'hourglass-outline' : 'image-outline'}
+                        size={16}
+                        color={colors.primary}
+                      />
+                      <Text style={styles.qrPickButtonText}>
+                        {logoUploading ? 'Uploading logo…' : 'Upload shop logo'}
+                      </Text>
+                    </TouchableOpacity>
+                  )}
+                </View>
+
+                <View style={styles.field}>
                   <Text style={styles.label}>Username</Text>
                   <TextInput
                     style={styles.input}
@@ -155,6 +290,21 @@ export function TenantManagementScreen() {
                     placeholderTextColor={colors.textSecondary}
                     autoCapitalize="none"
                     autoCorrect={false}
+                  />
+                </View>
+
+                <View style={styles.field}>
+                  <Text style={styles.label}>Shop Description (optional)</Text>
+                  <TextInput
+                    style={[styles.input, styles.multilineInput]}
+                    value={shopDescription}
+                    onChangeText={setShopDescription}
+                    placeholder="Short line about the shop, shown in the Store list"
+                    placeholderTextColor={colors.textSecondary}
+                    autoCapitalize="sentences"
+                    multiline
+                    numberOfLines={2}
+                    maxLength={200}
                   />
                 </View>
 
@@ -169,6 +319,52 @@ export function TenantManagementScreen() {
                     autoCapitalize="none"
                     autoCorrect={false}
                     keyboardType="email-address"
+                  />
+                </View>
+
+                <View style={styles.field}>
+                  <Text style={styles.label}>Telegram Group Chat ID (optional)</Text>
+                  <TextInput
+                    style={styles.input}
+                    value={telegramChatId}
+                    onChangeText={setTelegramChatId}
+                    placeholder="e.g. -1001234567890 — orders for this shop are posted here"
+                    placeholderTextColor={colors.textSecondary}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    keyboardType="numbers-and-punctuation"
+                  />
+                </View>
+
+                <View style={styles.field}>
+                  <Text style={styles.label}>Telegram Username (optional)</Text>
+                  <TextInput
+                    style={styles.input}
+                    value={telegramUsername}
+                    onChangeText={setTelegramUsername}
+                    placeholder="e.g. shopname — shoppers chat with this account"
+                    placeholderTextColor={colors.textSecondary}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                  />
+                </View>
+
+                <View style={styles.field}>
+                  <Text style={styles.label}>Bank Accounts</Text>
+                  <BankAccountsEditor value={bankAccounts} onChange={setBankAccounts} />
+                </View>
+
+                <View style={styles.field}>
+                  <Text style={styles.label}>Shipping Fee (optional)</Text>
+                  <TextInput
+                    style={styles.input}
+                    value={shippingFee}
+                    onChangeText={setShippingFee}
+                    placeholder="Flat delivery fee in Birr — empty = free"
+                    placeholderTextColor={colors.textSecondary}
+                    autoCapitalize="none"
+                    autoCorrect={false}
+                    keyboardType="number-pad"
                   />
                 </View>
 
@@ -242,8 +438,16 @@ export function TenantManagementScreen() {
                           @{item.username ?? 'unknown'}
                           {item.code ? ` · ${item.code}` : ''} · Added {new Date(item.createdAt).toLocaleDateString()}
                         </Text>
+                        {!item.isActive && (
+                          <Text style={styles.inactiveLabel}>Inactive — hidden from the shop</Text>
+                        )}
                       </View>
                       <View style={styles.cardActions}>
+                        <Switch
+                          value={item.isActive}
+                          onValueChange={(value) => handleToggleActive(item, value)}
+                          trackColor={{ false: colors.border, true: colors.primary }}
+                        />
                         <TouchableOpacity
                           style={styles.actionButton}
                           onPress={() => handleView(item)}
@@ -360,6 +564,51 @@ const makeStyles = (colors: ColorPalette) =>
     eyeButton: {
       padding: spacing.sm,
     },
+    qrPreviewRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: spacing.sm,
+    },
+    qrPreview: {
+      width: 96,
+      height: 96,
+      borderRadius: borderRadius.sm,
+      backgroundColor: colors.background,
+      borderWidth: 1,
+      borderColor: colors.border,
+    },
+    logoPreview: {
+      width: 72,
+      height: 72,
+      borderRadius: borderRadius.md,
+      backgroundColor: colors.background,
+      borderWidth: 1,
+      borderColor: colors.border,
+    },
+    multilineInput: {
+      minHeight: 64,
+      textAlignVertical: 'top',
+    },
+    qrPickButton: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: spacing.xs,
+      borderWidth: 1,
+      borderStyle: 'dashed',
+      borderColor: colors.primary,
+      borderRadius: borderRadius.sm,
+      paddingVertical: spacing.md,
+      backgroundColor: colors.background,
+    },
+    qrPickButtonDisabled: {
+      opacity: 0.6,
+    },
+    qrPickButtonText: {
+      fontSize: fontSizes.sm,
+      fontWeight: '600',
+      color: colors.primary,
+    },
     sectionTitle: {
       fontSize: fontSizes.lg,
       fontWeight: '700',
@@ -393,6 +642,12 @@ const makeStyles = (colors: ColorPalette) =>
     meta: {
       fontSize: fontSizes.sm,
       color: colors.textSecondary,
+    },
+    inactiveLabel: {
+      fontSize: fontSizes.sm,
+      fontWeight: '600',
+      color: colors.danger,
+      marginTop: spacing.xs,
     },
     cardActions: {
       flexDirection: 'row',

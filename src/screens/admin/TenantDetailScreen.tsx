@@ -4,8 +4,10 @@ import { useNavigation, useRoute } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import {
   Alert,
+  Image,
   ScrollView,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   TouchableOpacity,
@@ -14,16 +16,26 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { Screen } from '../../components/Screen';
 import { AdminHeader } from '../../components/AdminHeader';
+import { BankAccountsEditor } from '../../components/BankAccountsEditor';
 import { Button } from '../../components/Button';
 import {
   fetchTenantById,
   deleteTenant,
   adminUpdateTenant,
   adminSetTenantPassword,
+  adminSetTenantTelegramChat,
+  adminSetTenantTelegramUsername,
+  adminSetTenantBankAccounts,
+  adminSetTenantShippingFee,
+  adminSetTenantShopLogo,
+  adminSetTenantShopDescription,
+  adminSetTenantActive,
   Tenant,
 } from '../../services/tenants';
+import { uploadShopLogo } from '../../services/images';
 import { confirmAction } from '../../utils/confirm';
 import { AdminStackParamList } from '../../types/navigation';
+import { BankAccount } from '../../types';
 import { useResponsive } from '../../hooks/useResponsive';
 import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../../constants/theme';
 
@@ -46,6 +58,13 @@ export function TenantDetailScreen() {
   const [editUsername, setEditUsername] = useState('');
   const [editEmail, setEditEmail] = useState('');
   const [editShopName, setEditShopName] = useState('');
+  const [editShopDescription, setEditShopDescription] = useState('');
+  const [editShopLogoUrl, setEditShopLogoUrl] = useState('');
+  const [logoUploading, setLogoUploading] = useState(false);
+  const [editTelegramChatId, setEditTelegramChatId] = useState('');
+  const [editTelegramUsername, setEditTelegramUsername] = useState('');
+  const [editBankAccounts, setEditBankAccounts] = useState<BankAccount[]>([]);
+  const [editShippingFee, setEditShippingFee] = useState('');
   const [editPassword, setEditPassword] = useState('');
   const [editMessage, setEditMessage] = useState<{
     kind: 'success' | 'error';
@@ -58,13 +77,71 @@ export function TenantDetailScreen() {
     setEditUsername(tenant.username ?? '');
     setEditEmail(tenant.email ?? '');
     setEditShopName(tenant.shopName ?? '');
+    setEditShopDescription(tenant.shopDescription ?? '');
+    setEditShopLogoUrl(tenant.shopLogoUrl ?? '');
+    setLogoUploading(false);
+    setEditTelegramChatId(tenant.telegramChatId ?? '');
+    setEditTelegramUsername(tenant.telegramUsername ?? '');
+    setEditBankAccounts(
+      tenant.bankAccounts.length > 0 ? tenant.bankAccounts : [{ accountNumber: '' }]
+    );
+    setEditShippingFee(tenant.shippingFee ? String(Math.round(tenant.shippingFee)) : '');
     setEditPassword('');
     setEditMessage(null);
     setEditing(true);
   }
 
+  /** Replace the tenant's shop logo; resized to 400px for the store filter. */
+  async function pickEditShopLogo() {
+    let localUri: string | null = null;
+    if (Platform.OS === 'web') {
+      const { pickImagesWeb } = await import('../../lib/image-web');
+      const uris = await pickImagesWeb();
+      localUri = uris[0] ?? null;
+    } else {
+      const ImagePicker = await import('expo-image-picker');
+      const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
+      if (status !== 'granted') {
+        Alert.alert('Permission needed', 'Please allow access to your photo library.');
+        return;
+      }
+      const result = await ImagePicker.launchImageLibraryAsync({
+        mediaTypes: ['images'],
+        allowsEditing: false,
+        quality: 0.9,
+      });
+      localUri = !result.canceled ? (result.assets[0]?.uri ?? null) : null;
+    }
+    if (!localUri) return;
+
+    setLogoUploading(true);
+    try {
+      const url = await uploadShopLogo(localUri);
+      setEditShopLogoUrl(url);
+    } catch {
+      Alert.alert('Upload Failed', 'Could not upload the logo. Please try again.');
+    } finally {
+      setLogoUploading(false);
+    }
+  }
+
   async function handleSave() {
     if (!tenant) return;
+    if (!editShopLogoUrl.trim()) {
+      setEditMessage({ kind: 'error', text: 'Shop logo is required.' });
+      return;
+    }
+    const accounts = editBankAccounts.filter((a) => a.accountNumber.trim());
+    if (accounts.length === 0) {
+      setEditMessage({ kind: 'error', text: 'Add at least one bank account with an account number.' });
+      return;
+    }
+    const feeText = editShippingFee.trim();
+    const fee = feeText === '' ? null : Number(feeText);
+    if (fee !== null && (!Number.isFinite(fee) || fee < 0)) {
+      setEditMessage({ kind: 'error', text: 'Enter a valid shipping fee in Birr.' });
+      return;
+    }
     setSaving(true);
     setEditMessage(null);
     try {
@@ -74,6 +151,43 @@ export function TenantDetailScreen() {
         editEmail,
         editShopName
       );
+      if (editShopLogoUrl.trim() !== (tenant.shopLogoUrl ?? '').trim()) {
+        await adminSetTenantShopLogo(tenant.id, editShopLogoUrl);
+      }
+      if (
+        editShopDescription.trim() !== (tenant.shopDescription ?? '').trim()
+      ) {
+        await adminSetTenantShopDescription(tenant.id, editShopDescription);
+      }
+      if (
+        editTelegramChatId.trim() !== (tenant.telegramChatId ?? '').trim()
+      ) {
+        await adminSetTenantTelegramChat(tenant.id, editTelegramChatId);
+      }
+      if (
+        editTelegramUsername.trim().replace(/^@/, '') !==
+        (tenant.telegramUsername ?? '').trim().replace(/^@/, '')
+      ) {
+        await adminSetTenantTelegramUsername(tenant.id, editTelegramUsername);
+      }
+      const sameAccounts =
+        accounts.length === tenant.bankAccounts.length &&
+        accounts.every((a, i) => {
+          const current = tenant.bankAccounts[i];
+          return (
+            current &&
+            a.accountNumber.trim() === current.accountNumber &&
+            (a.bankName ?? '').trim() === (current.bankName ?? '').trim() &&
+            (a.qrImageUrl ?? '').trim() === (current.qrImageUrl ?? '').trim()
+          );
+        });
+      if (!sameAccounts) {
+        await adminSetTenantBankAccounts(tenant.id, accounts);
+      }
+      const newFee = fee && fee > 0 ? fee : null;
+      if (newFee !== tenant.shippingFee) {
+        await adminSetTenantShippingFee(tenant.id, newFee);
+      }
       if (editPassword.trim()) {
         await adminSetTenantPassword(tenant.id, editPassword.trim());
       }
@@ -133,6 +247,33 @@ export function TenantDetailScreen() {
     );
   }
 
+  async function setActive(next: boolean) {
+    if (!tenant) return;
+    const previous = tenant;
+    setTenant({ ...tenant, isActive: next });
+    try {
+      await adminSetTenantActive(tenant.id, next);
+    } catch (error) {
+      setTenant(previous);
+      const message = error instanceof Error ? error.message : 'Failed to update shop status.';
+      Alert.alert('Error', message);
+    }
+  }
+
+  function handleToggleActive(next: boolean) {
+    if (!tenant) return;
+    if (next) {
+      void setActive(true);
+      return;
+    }
+    confirmAction(
+      'Switch off shop?',
+      `"${tenant.shopName ?? 'Untitled Shop'}" will disappear from the shop and @${tenant.username ?? 'unknown'} will lose access until you switch it back on.`,
+      'Switch Off',
+      () => setActive(false)
+    );
+  }
+
   const isWeb = Platform.OS === 'web';
 
   if (loading) {
@@ -167,6 +308,21 @@ export function TenantDetailScreen() {
     { label: 'Shop Name', value: tenant.shopName ?? 'Untitled Shop' },
     { label: 'Username', value: tenant.username ?? '—' },
     { label: 'Email', value: tenant.email ?? '—' },
+    { label: 'Telegram Group Chat ID', value: tenant.telegramChatId ?? 'Not set' },
+    { label: 'Telegram Username', value: tenant.telegramUsername ? `@${tenant.telegramUsername}` : 'Not set' },
+    {
+      label: 'Bank Accounts',
+      value:
+        tenant.bankAccounts.length > 0
+          ? tenant.bankAccounts
+              .map((a) => (a.bankName ? `${a.bankName} — ${a.accountNumber}` : a.accountNumber))
+              .join('\n')
+          : 'Not set',
+    },
+    {
+      label: 'Shipping Fee',
+      value: tenant.shippingFee ? `${Math.round(tenant.shippingFee).toLocaleString('en-US')} ETB per order` : 'Free',
+    },
     { label: 'Role', value: tenant.role },
     { label: 'Added On', value: new Date(tenant.createdAt).toLocaleString() },
     { label: 'Tenant Code', value: tenant.code ?? '—' },
@@ -225,6 +381,80 @@ export function TenantDetailScreen() {
                   placeholder="Shop name"
                   placeholderTextColor={colors.textSecondary}
                 />
+                <Text style={styles.editLabel}>Shop description</Text>
+                <TextInput
+                  style={[styles.editInput, styles.multilineInput]}
+                  value={editShopDescription}
+                  onChangeText={setEditShopDescription}
+                  placeholder="Short line about the shop, shown in the Store list"
+                  placeholderTextColor={colors.textSecondary}
+                  autoCapitalize="sentences"
+                  multiline
+                  numberOfLines={2}
+                  maxLength={200}
+                />
+                <Text style={styles.editLabel}>Shop logo</Text>
+                {editShopLogoUrl ? (
+                  <View style={styles.qrPreviewRow}>
+                    <Image
+                      source={{ uri: editShopLogoUrl }}
+                      style={styles.logoPreview}
+                      resizeMode="cover"
+                    />
+                    <TouchableOpacity onPress={() => setEditShopLogoUrl('')}>
+                      <Ionicons name="close-circle-outline" size={22} color={colors.danger} />
+                    </TouchableOpacity>
+                  </View>
+                ) : (
+                  <TouchableOpacity
+                    style={[styles.qrPickButton, logoUploading && styles.qrPickButtonDisabled]}
+                    onPress={() => pickEditShopLogo().catch(() => {})}
+                    disabled={logoUploading}
+                  >
+                    <Ionicons
+                      name={logoUploading ? 'hourglass-outline' : 'image-outline'}
+                      size={16}
+                      color={colors.primary}
+                    />
+                    <Text style={styles.qrPickButtonText}>
+                      {logoUploading ? 'Uploading logo…' : 'Upload shop logo'}
+                    </Text>
+                  </TouchableOpacity>
+                )}
+                <Text style={styles.editLabel}>Telegram group chat ID</Text>
+                <TextInput
+                  style={styles.editInput}
+                  value={editTelegramChatId}
+                  onChangeText={setEditTelegramChatId}
+                  placeholder="e.g. -1001234567890 — orders for this shop are posted here"
+                  placeholderTextColor={colors.textSecondary}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  keyboardType="numbers-and-punctuation"
+                />
+                <Text style={styles.editLabel}>Telegram username</Text>
+                <TextInput
+                  style={styles.editInput}
+                  value={editTelegramUsername}
+                  onChangeText={setEditTelegramUsername}
+                  placeholder="e.g. shopname — shoppers chat with this account"
+                  placeholderTextColor={colors.textSecondary}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+                <Text style={styles.editLabel}>Bank accounts</Text>
+                <BankAccountsEditor value={editBankAccounts} onChange={setEditBankAccounts} />
+                <Text style={styles.editLabel}>Shipping fee (Birr — empty = free delivery)</Text>
+                <TextInput
+                  style={styles.editInput}
+                  value={editShippingFee}
+                  onChangeText={setEditShippingFee}
+                  placeholder="e.g. 100"
+                  placeholderTextColor={colors.textSecondary}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                  keyboardType="number-pad"
+                />
                 <Text style={styles.editLabel}>New password</Text>
                 <TextInput
                   style={styles.editInput}
@@ -261,6 +491,24 @@ export function TenantDetailScreen() {
                 </View>
               </View>
             ) : (
+              <>
+              <View style={styles.card}>
+                <View style={[styles.row, styles.rowLast]}>
+                  <View style={styles.statusText}>
+                    <Text style={styles.rowLabel}>Shop active</Text>
+                    <Text style={styles.statusHint}>
+                      {tenant.isActive
+                        ? 'Visible in the shop'
+                        : 'Hidden from the shop — tenant is locked out'}
+                    </Text>
+                  </View>
+                  <Switch
+                    value={tenant.isActive}
+                    onValueChange={handleToggleActive}
+                    trackColor={{ false: colors.border, true: colors.primary }}
+                  />
+                </View>
+              </View>
               <View style={styles.card}>
                 {detailItems.map((item, index) => (
                   <View
@@ -275,6 +523,30 @@ export function TenantDetailScreen() {
                   </View>
                 ))}
               </View>
+              {tenant.bankAccounts.some((a) => a.qrImageUrl) && (
+                <View style={styles.card}>
+                  {tenant.bankAccounts
+                    .filter((a) => a.qrImageUrl)
+                    .map((account) => (
+                      <View
+                        key={account.accountNumber}
+                        style={[styles.row, styles.rowLast]}
+                      >
+                        <View>
+                          <Text style={styles.rowLabel}>
+                            QR Code{account.bankName ? ` (${account.bankName})` : ''}
+                          </Text>
+                          <Image
+                            source={{ uri: account.qrImageUrl! }}
+                            style={styles.qrDisplay}
+                            resizeMode="contain"
+                          />
+                        </View>
+                      </View>
+                    ))}
+                </View>
+              )}
+              </>
             )}
 
             <View style={styles.actions}>
@@ -385,6 +657,14 @@ const makeStyles = (colors: ColorPalette) =>
       color: colors.textSecondary,
       marginLeft: spacing.md,
     },
+    statusText: {
+      flex: 1,
+    },
+    statusHint: {
+      fontSize: fontSizes.sm,
+      color: colors.textSecondary,
+      marginTop: spacing.xs,
+    },
     actions: {
       gap: spacing.md,
     },
@@ -417,6 +697,10 @@ const makeStyles = (colors: ColorPalette) =>
         ? ({ outlineStyle: 'none', boxShadow: 'none' } as any)
         : {}),
     },
+    multilineInput: {
+      minHeight: 64,
+      textAlignVertical: 'top',
+    },
     editMessage: {
       fontSize: fontSizes.sm,
       fontWeight: '600',
@@ -433,6 +717,48 @@ const makeStyles = (colors: ColorPalette) =>
     },
     editSaveButton: {
       marginBottom: spacing.md,
+    },
+    qrPreviewRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: spacing.sm,
+      marginBottom: spacing.sm,
+    },
+    logoPreview: {
+      width: 72,
+      height: 72,
+      borderRadius: borderRadius.md,
+      backgroundColor: colors.background,
+      borderWidth: 1,
+      borderColor: colors.border,
+    },
+    qrPickButton: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'center',
+      gap: spacing.xs,
+      borderWidth: 1,
+      borderStyle: 'dashed',
+      borderColor: colors.primary,
+      borderRadius: borderRadius.sm,
+      paddingVertical: spacing.md,
+      backgroundColor: colors.background,
+      marginBottom: spacing.sm,
+    },
+    qrPickButtonDisabled: {
+      opacity: 0.6,
+    },
+    qrPickButtonText: {
+      fontSize: fontSizes.sm,
+      fontWeight: '600',
+      color: colors.primary,
+    },
+    qrDisplay: {
+      width: 160,
+      height: 160,
+      marginTop: spacing.sm,
+      borderRadius: borderRadius.sm,
+      backgroundColor: colors.background,
     },
     deleteButton: {
       marginBottom: spacing.md,

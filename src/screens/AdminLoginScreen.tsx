@@ -77,7 +77,7 @@ export function AdminLoginScreen() {
     // Confirm the signed-in user is marked as admin or super admin.
     const { data: profile, error: profileError } = await supabase
       .from('profiles')
-      .select('role')
+      .select('role, is_active')
       .eq('id', data.user.id)
       .single();
 
@@ -85,6 +85,18 @@ export function AdminLoginScreen() {
     if (profileError || !allowedRoles.includes(profile?.role ?? '')) {
       await supabase.auth.signOut();
       Alert.alert('Access denied', 'This account does not have admin privileges.');
+      setPassword('');
+      return;
+    }
+
+    // A tenant whose shop was switched off by the super admin cannot log in
+    // until it is switched back on (migration 037).
+    if (profile!.role === 'admin' && profile!.is_active === false) {
+      await supabase.auth.signOut();
+      Alert.alert(
+        'Shop switched off',
+        'This shop has been switched off. Please contact the administrator.'
+      );
       setPassword('');
       return;
     }

@@ -9,6 +9,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { Product } from '../types';
 import { ProductImage } from './ProductImage';
 import { getProductCoverImage } from '../utils/images';
+import { variantKeyOf } from '../utils/variants';
 import { formatPrice, getDiscountPercent } from '../utils/format';
 import { useApp } from '../context/AppContext';
 import { isTelegramMiniApp } from '../lib/telegram';
@@ -28,7 +29,7 @@ export function ProductCard({ product, onPress }: ProductCardProps) {
   const isTMA = isTelegramMiniApp();
 
   const coverIndex = product.coverImageIndex ?? 0;
-  const discount = getDiscountPercent(product.price, product.compareAtPrice);
+  const discount = product.priceHidden ? null : getDiscountPercent(product.price, product.compareAtPrice);
 
   const cartQuantity = cart
     .filter((item) => item.product.id === product.id)
@@ -39,13 +40,22 @@ export function ProductCard({ product, onPress }: ProductCardProps) {
       item.product.id === product.id && item.selectedImageIndex === coverIndex
   );
 
+  // Products with variant groups can't be quick-added — the shopper must pick
+  // options on the product page first. The "+" button opens the page instead,
+  // and the decrease button is hidden (ambiguous which variant line to reduce).
+  const hasVariants = (product.variantGroups?.length ?? 0) > 0;
+
   function handleAdd() {
+    if (hasVariants) {
+      onPress();
+      return;
+    }
     addToCart(product, coverIndex);
   }
 
   function handleDecrease() {
     if (coverItem) {
-      updateCartQuantity(product.id, coverIndex, coverItem.quantity - 1);
+      updateCartQuantity(product.id, coverIndex, variantKeyOf(coverItem), coverItem.quantity - 1);
     }
   }
 
@@ -79,40 +89,46 @@ export function ProductCard({ product, onPress }: ProductCardProps) {
           </Text>
         ) : null}
         <View style={styles.footer}>
-          <View style={styles.priceBlock}>
-            {discount !== null && product.compareAtPrice && (
-              <Text style={styles.compareAt} numberOfLines={1}>
-                {formatPrice(product.compareAtPrice)}
-              </Text>
-            )}
-            <Text style={styles.price}>{formatPrice(product.price)}</Text>
-          </View>
-          {!isTMA && (
-            <View style={styles.actions}>
-              {cartQuantity > 0 && (
-                <TouchableOpacity
-                  style={styles.qtyButton}
-                  onPress={handleDecrease}
-                  activeOpacity={0.8}
-                >
-                  <Ionicons name="remove" size={16} color={colors.primary} />
-                </TouchableOpacity>
-              )}
-              <TouchableOpacity
-                style={styles.addButton}
-                onPress={handleAdd}
-                activeOpacity={0.8}
-              >
-                <Ionicons name="add" size={18} color={colors.primary} />
-                {cartQuantity > 0 && (
-                  <View style={styles.badge}>
-                    <Text style={styles.badgeText}>
-                      {cartQuantity > 99 ? '99+' : cartQuantity}
-                    </Text>
-                  </View>
+          {product.priceHidden ? (
+            <Text style={styles.chatToOrder}>Chat to order</Text>
+          ) : (
+            <>
+              <View style={styles.priceBlock}>
+                {discount !== null && product.compareAtPrice && (
+                  <Text style={styles.compareAt} numberOfLines={1}>
+                    {formatPrice(product.compareAtPrice)}
+                  </Text>
                 )}
-              </TouchableOpacity>
-            </View>
+                <Text style={styles.price}>{formatPrice(product.price)}</Text>
+              </View>
+              {!isTMA && (
+                <View style={styles.actions}>
+                  {cartQuantity > 0 && !hasVariants && (
+                    <TouchableOpacity
+                      style={styles.qtyButton}
+                      onPress={handleDecrease}
+                      activeOpacity={0.8}
+                    >
+                      <Ionicons name="remove" size={16} color={colors.primary} />
+                    </TouchableOpacity>
+                  )}
+                  <TouchableOpacity
+                    style={styles.addButton}
+                    onPress={handleAdd}
+                    activeOpacity={0.8}
+                  >
+                    <Ionicons name="add" size={18} color={colors.primary} />
+                    {cartQuantity > 0 && (
+                      <View style={styles.badge}>
+                        <Text style={styles.badgeText}>
+                          {cartQuantity > 99 ? '99+' : cartQuantity}
+                        </Text>
+                      </View>
+                    )}
+                  </TouchableOpacity>
+                </View>
+              )}
+            </>
           )}
         </View>
       </View>
@@ -189,6 +205,11 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
     fontSize: fontSizes.xs,
     color: colors.textSecondary,
     textDecorationLine: 'line-through',
+  },
+  chatToOrder: {
+    fontSize: fontSizes.sm,
+    fontWeight: '600',
+    color: colors.textSecondary,
   },
   price: {
     fontSize: fontSizes.sm,

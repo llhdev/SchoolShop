@@ -6,7 +6,9 @@ import {
   useReducer,
   useState,
 } from 'react';
+import { Alert } from 'react-native';
 import { AppAction, AppState, CartItem, Order, Product, Role, Shopper, Theme } from '../types';
+import { getUnitPrice, variantKeyOf } from '../utils/variants';
 import { loadTheme, saveTheme } from '../utils/storage';
 import { supabase } from '../lib/supabase';
 import {
@@ -27,6 +29,7 @@ import {
   saveOrdersToCache,
   subscribeToOrders,
   subscribeToShopperOrders,
+  updateOrderItemStatus,
   updateOrderStatus,
 } from '../services/orders';
 import {
@@ -38,6 +41,7 @@ import {
   subscribeToCategories,
 } from '../services/categories';
 import { deleteProductImages } from '../services/images';
+import { fetchOwnProfile } from '../services/account';
 import { getProductCoverImage, getThumbnailUrl } from '../utils/images';
 import { Image as ExpoImage } from 'expo-image';
 import {
@@ -93,20 +97,17 @@ function reducer(state: AppState, action: AppAction): AppState {
       };
 
     case 'ADD_TO_CART': {
-      const { product, selectedImageIndex } = action.payload;
-      const existing = state.cart.find(
-        (item) =>
-          item.product.id === product.id &&
-          item.selectedImageIndex === selectedImageIndex
-      );
+      const { product, selectedImageIndex, variantKey = '', selectedOptions, unitPrice } = action.payload;
+      const matchesAdd = (item: (typeof state.cart)[number]) =>
+        item.product.id === product.id &&
+        item.selectedImageIndex === selectedImageIndex &&
+        variantKeyOf(item) === variantKey;
+      const existing = state.cart.find(matchesAdd);
       if (existing) {
         return {
           ...state,
           cart: state.cart.map((item) =>
-            item.product.id === product.id &&
-            item.selectedImageIndex === selectedImageIndex
-              ? { ...item, quantity: item.quantity + 1 }
-              : item
+            matchesAdd(item) ? { ...item, quantity: item.quantity + 1 } : item
           ),
         };
       }
@@ -114,7 +115,7 @@ function reducer(state: AppState, action: AppAction): AppState {
         ...state,
         cart: [
           ...state.cart,
-          { product, quantity: 1, selectedImageIndex },
+          { product, quantity: 1, selectedImageIndex, selectedOptions, unitPrice },
         ],
       };
     }
@@ -129,32 +130,28 @@ function reducer(state: AppState, action: AppAction): AppState {
           (item) =>
             !(
               item.product.id === action.payload.productId &&
-              item.selectedImageIndex === action.payload.selectedImageIndex
+              item.selectedImageIndex === action.payload.selectedImageIndex &&
+              variantKeyOf(item) === (action.payload.variantKey ?? '')
             )
         ),
       };
 
     case 'UPDATE_CART_QUANTITY': {
-      const { productId, selectedImageIndex, quantity } = action.payload;
+      const { productId, selectedImageIndex, variantKey = '', quantity } = action.payload;
+      const matchesQty = (item: (typeof state.cart)[number]) =>
+        item.product.id === productId &&
+        item.selectedImageIndex === selectedImageIndex &&
+        variantKeyOf(item) === variantKey;
       if (quantity <= 0) {
         return {
           ...state,
-          cart: state.cart.filter(
-            (item) =>
-              !(
-                item.product.id === productId &&
-                item.selectedImageIndex === selectedImageIndex
-              )
-          ),
+          cart: state.cart.filter((item) => !matchesQty(item)),
         };
       }
       return {
         ...state,
         cart: state.cart.map((item) =>
-          item.product.id === productId &&
-          item.selectedImageIndex === selectedImageIndex
-            ? { ...item, quantity }
-            : item
+          matchesQty(item) ? { ...item, quantity } : item
         ),
       };
     }
@@ -223,16 +220,23 @@ interface AppContextValue extends AppState {
   addProduct: (product: Product) => Promise<void>;
   updateProduct: (product: Product) => Promise<void>;
   deleteProduct: (id: string) => Promise<void>;
-  addToCart: (product: Product, selectedImageIndex?: number) => void;
-  removeFromCart: (productId: string, selectedImageIndex: number) => void;
+  addToCart: (
+    product: Product,
+    selectedImageIndex?: number,
+    selectedOptions?: CartItem['selectedOptions'],
+    unitPrice?: number
+  ) => void;
+  removeFromCart: (productId: string, selectedImageIndex: number, variantKey?: string) => void;
   updateCartQuantity: (
     productId: string,
     selectedImageIndex: number,
+    variantKey: string | undefined,
     quantity: number
   ) => void;
   clearCart: () => void;
   addOrder: (order: Order) => Promise<void>;
   updateOrderStatus: (orderId: string, status: Order['status']) => Promise<void>;
+  updateOrderItemStatus: (orderId: string, itemKey: string, status: Order['status']) => Promise<void>;
   setCategories: (categories: string[]) => void;
   addCategory: (category: string) => Promise<void>;
   removeCategory: (category: string) => Promise<void>;
@@ -281,14 +285,20 @@ export function AppProvider({ children }: { children: ReactNode }) {
           data: { session },
         } = await supabase.auth.getSession();
         if (session?.user) {
-          setCurrentUserId(session.user.id);
           const { data: profile } = await supabase
             .from('profiles')
-            .select('role')
+            .select('role, is_active')
             .eq('id', session.user.id)
             .single();
-          if (profile?.role === 'super_admin' || profile?.role === 'admin') {
+          // A switched-off tenant keeps no session: sign them out instead of
+          // restoring the admin role (migration 037).
+          if (profile?.role === 'admin' && profile.is_active === false) {
+            await supabase.auth.signOut();
+          } else if (profile?.role === 'super_admin' || profile?.role === 'admin') {
+            setCurrentUserId(session.user.id);
             dispatch({ type: 'SET_ROLE', payload: profile.role });
+          } else {
+            setCurrentUserId(session.user.id);
           }
         }
       } catch (error) {
@@ -332,6 +342,54 @@ export function AppProvider({ children }: { children: ReactNode }) {
     };
   }, []);
 
+  // Shared sign-out routine — also used by the shop on/off realtime kick below.
+  async function signOutAdmin() {
+    try {
+      await supabase.auth.signOut();
+    } catch (error) {
+      console.error('Failed to sign out admin:', error);
+    }
+    setCurrentUserId(null);
+    dispatch({ type: 'SET_ROLE', payload: 'user' });
+    // Drop the admin order list so it does not leak into shopper mode.
+    dispatch({ type: 'SET_ORDERS', payload: [] });
+    await saveOrdersToCache([]);
+  }
+
+  // Live kick: if the super admin switches this tenant's shop off while they
+  // are signed in, their own profile row flips is_active to false — sign them
+  // out immediately (migration 037). Only tenants (role 'admin') can be
+  // switched off; the super admin is never affected.
+  useEffect(() => {
+    if (!isHydrated || state.role !== 'admin' || !currentUserId) return;
+    const channel = supabase
+      .channel(`own-profile-active:${currentUserId}`)
+      .on(
+        'postgres_changes',
+        {
+          event: 'UPDATE',
+          schema: 'public',
+          table: 'profiles',
+          filter: `id=eq.${currentUserId}`,
+        },
+        (payload) => {
+          if ((payload.new as { is_active?: boolean }).is_active === false) {
+            Alert.alert(
+              'Shop switched off',
+              'This shop has been switched off. Please contact the administrator.'
+            );
+            void signOutAdmin();
+          }
+        }
+      )
+      .subscribe();
+    return () => {
+      void supabase.removeChannel(channel);
+    };
+    // signOutAdmin only touches stable references (dispatch, supabase).
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isHydrated, state.role, currentUserId]);
+
   // Persist cart changes so the cart survives app restarts.
   useEffect(() => {
     if (!isHydrated) return;
@@ -360,17 +418,23 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // Orders are admin-only: fetch once and subscribe to realtime changes only
   // while the role is admin/super_admin. Shoppers keep device-local history
   // (their own placed orders) and never download the global order list.
+  // Tenant admins are scoped to orders containing their products (tenant_ids,
+  // filled by the stamp_order_tenants trigger); the super admin sees all.
   useEffect(() => {
     if (!isHydrated) return;
     const isAdmin = state.role === 'admin' || state.role === 'super_admin';
     if (!isAdmin) return;
+    const tenantFilter = state.role === 'admin' ? currentUserId : undefined;
+    // A tenant admin's id comes from the auth session; wait for it so the
+    // first fetch is already scoped rather than briefly leaking all orders.
+    if (state.role === 'admin' && !tenantFilter) return;
 
     let unsubscribeOrders: (() => void) | undefined;
     let cancelled = false;
 
     (async () => {
       try {
-        const orders = await fetchOrders();
+        const orders = await fetchOrders(tenantFilter ?? undefined);
         if (cancelled) return;
         dispatch({ type: 'SET_ORDERS', payload: orders });
         await saveOrdersToCache(orders);
@@ -381,7 +445,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         unsubscribeOrders = subscribeToOrders(async (orders) => {
           dispatch({ type: 'SET_ORDERS', payload: orders });
           await saveOrdersToCache(orders);
-        });
+        }, tenantFilter ?? undefined);
       }
     })();
 
@@ -389,7 +453,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       cancelled = true;
       unsubscribeOrders?.();
     };
-  }, [isHydrated, state.role]);
+  }, [isHydrated, state.role, currentUserId]);
 
   // Telegram Mini App identity: show any cached shopper immediately, then
   // exchange the signed initData for the verified record (works offline on
@@ -518,7 +582,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   }, [state.theme, isHydrated]);
 
   const cartTotal = state.cart.reduce(
-    (sum, item) => sum + item.product.price * item.quantity,
+    (sum, item) => sum + getUnitPrice(item) * item.quantity,
     0
   );
   const cartCount = state.cart.reduce((sum, item) => sum + item.quantity, 0);
@@ -528,27 +592,37 @@ export function AppProvider({ children }: { children: ReactNode }) {
     currentUserId,
     shopper,
     setRole: (role) => dispatch({ type: 'SET_ROLE', payload: role }),
-    signOutAdmin: async () => {
-      try {
-        await supabase.auth.signOut();
-      } catch (error) {
-        console.error('Failed to sign out admin:', error);
-      }
-      setCurrentUserId(null);
-      dispatch({ type: 'SET_ROLE', payload: 'user' });
-      // Drop the admin order list so it does not leak into shopper mode.
-      dispatch({ type: 'SET_ORDERS', payload: [] });
-      await saveOrdersToCache([]);
-    },
+    signOutAdmin,
     toggleTheme: () =>
       dispatch({ type: 'SET_THEME', payload: state.theme === 'dark' ? 'light' : 'dark' }),
     addProduct: async (product) => {
       const previous = state.products;
-      const optimistic = [product, ...previous];
-      dispatch({ type: 'ADD_PRODUCT', payload: product });
+      // Stamp the shop identity from the signed-in tenant's own profile so a
+      // freshly created product shows the shop name/logo immediately, without
+      // waiting for the fetch_products_with_shop refetch. Cheap single-row
+      // lookup; failures just fall back to the unstamped product.
+      let stamped = product;
+      if (state.role === 'admin' && !product.shopName) {
+        try {
+          const profile = await fetchOwnProfile();
+          if (profile) {
+            stamped = {
+              ...product,
+              shopName: profile.shopName ?? undefined,
+              ownerShopLogoUrl: profile.shopLogoUrl ?? undefined,
+              ownerShopDescription: profile.shopDescription ?? undefined,
+              ownerTelegramUsername: profile.telegramUsername ?? undefined,
+            };
+          }
+        } catch {
+          // Proceed unstamped; the background refetch fills it in.
+        }
+      }
+      const optimistic = [stamped, ...previous];
+      dispatch({ type: 'ADD_PRODUCT', payload: stamped });
       await saveProductsToCache(optimistic);
       try {
-        await createProduct(product);
+        await createProduct(stamped);
       } catch {
         dispatch({ type: 'SET_PRODUCTS', payload: previous });
         await saveProductsToCache(previous);
@@ -586,20 +660,28 @@ export function AppProvider({ children }: { children: ReactNode }) {
         deleteProductImages(product.images).catch(() => {});
       }
     },
-    addToCart: (product, selectedImageIndex = product.coverImageIndex ?? 0) =>
+    addToCart: (product, selectedImageIndex = product.coverImageIndex ?? 0, selectedOptions, unitPrice) =>
       dispatch({
         type: 'ADD_TO_CART',
-        payload: { product, selectedImageIndex },
+        payload: {
+          product,
+          selectedImageIndex,
+          variantKey: selectedOptions && selectedOptions.length > 0
+            ? variantKeyOf({ selectedOptions })
+            : '',
+          selectedOptions,
+          unitPrice,
+        },
       }),
-    removeFromCart: (productId, selectedImageIndex) =>
+    removeFromCart: (productId, selectedImageIndex, variantKey) =>
       dispatch({
         type: 'REMOVE_FROM_CART',
-        payload: { productId, selectedImageIndex },
+        payload: { productId, selectedImageIndex, variantKey },
       }),
-    updateCartQuantity: (productId, selectedImageIndex, quantity) =>
+    updateCartQuantity: (productId, selectedImageIndex, variantKey, quantity) =>
       dispatch({
         type: 'UPDATE_CART_QUANTITY',
-        payload: { productId, selectedImageIndex, quantity },
+        payload: { productId, selectedImageIndex, variantKey, quantity },
       }),
     clearCart: () => dispatch({ type: 'CLEAR_CART' }),
     addOrder: async (order) => {
@@ -640,6 +722,25 @@ export function AppProvider({ children }: { children: ReactNode }) {
         dispatch({ type: 'SET_ORDERS', payload: previous });
         await saveOrdersToCache(previous);
         throw new Error('Failed to update order status');
+      }
+    },
+    updateOrderItemStatus: async (orderId, itemKey, status) => {
+      const previous = state.orders;
+      const target = previous.find((o) => o.id === orderId);
+      if (!target) return;
+      const updated: Order = {
+        ...target,
+        itemStatuses: { ...(target.itemStatuses ?? {}), [itemKey]: status },
+      };
+      const optimistic = previous.map((o) => (o.id === orderId ? updated : o));
+      dispatch({ type: 'UPDATE_ORDER', payload: updated });
+      await saveOrdersToCache(optimistic);
+      try {
+        await updateOrderItemStatus(orderId, itemKey, status);
+      } catch {
+        dispatch({ type: 'SET_ORDERS', payload: previous });
+        await saveOrdersToCache(previous);
+        throw new Error('Failed to update item status');
       }
     },
     setCategories: (categories) =>

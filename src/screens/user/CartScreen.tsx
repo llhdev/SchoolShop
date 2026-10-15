@@ -11,6 +11,7 @@ import { WebHeader } from '../../components/WebHeader';
 import { useApp } from '../../context/AppContext';
 import { useResponsive } from '../../hooks/useResponsive';
 import { formatPrice } from '../../utils/format';
+import { getCartItemLineId, variantKeyOf } from '../../utils/variants';
 import { RootStackParamList } from '../../types/navigation';
 import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../../constants/theme';
 
@@ -58,7 +59,7 @@ export function CartScreen() {
 
         <FlatList
           data={cart}
-          keyExtractor={(item) => `${item.product.id}-${item.selectedImageIndex}`}
+          keyExtractor={(item) => getCartItemLineId(item)}
           contentContainerStyle={styles.list}
           renderItem={({ item }) => (
             <CartItemRow
@@ -67,6 +68,7 @@ export function CartScreen() {
                 updateCartQuantity(
                   item.product.id,
                   item.selectedImageIndex,
+                  variantKeyOf(item),
                   item.quantity + 1
                 )
               }
@@ -74,11 +76,12 @@ export function CartScreen() {
                 updateCartQuantity(
                   item.product.id,
                   item.selectedImageIndex,
+                  variantKeyOf(item),
                   item.quantity - 1
                 )
               }
               onRemove={() =>
-                removeFromCart(item.product.id, item.selectedImageIndex)
+                removeFromCart(item.product.id, item.selectedImageIndex, variantKeyOf(item))
               }
             />
           )}

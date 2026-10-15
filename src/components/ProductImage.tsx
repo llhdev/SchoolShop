@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react';
-import { Image } from 'expo-image';
+import { Image, ImageLoadEventData } from 'expo-image';
 import { ImageStyle, StyleProp, StyleSheet, Text, View } from 'react-native';
 import { Category } from '../types';
 import { getCategoryColor } from '../constants/categories';
@@ -14,6 +14,8 @@ interface ProductImageProps {
   thumbnail?: boolean;
   style?: StyleProp<ImageStyle>;
   contentFit?: 'cover' | 'contain' | 'fill' | 'none' | 'scale-down';
+  /** Forwarded expo-image onLoad (exposes the source's natural size). */
+  onLoad?: (event: ImageLoadEventData) => void;
 }
 
 /**
@@ -28,6 +30,7 @@ export function ProductImage({
   thumbnail = false,
   style,
   contentFit = 'contain',
+  onLoad,
 }: ProductImageProps) {
   const [thumbFailed, setThumbFailed] = useState(false);
 
@@ -55,6 +58,7 @@ export function ProductImage({
       style={style}
       contentFit={contentFit}
       transition={150}
+      onLoad={onLoad}
       onError={tryThumb ? () => setThumbFailed(true) : undefined}
     />
   );

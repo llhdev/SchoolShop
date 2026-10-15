@@ -3,6 +3,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { CartItem } from '../types';
 import { ProductImage } from './ProductImage';
 import { getProductImage } from '../utils/images';
+import { formatVariantLabel, getUnitPrice } from '../utils/variants';
 import { formatPrice } from '../utils/format';
 import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../constants/theme';
 
@@ -38,7 +39,12 @@ export function CartItemRow({
         <Text style={styles.name} numberOfLines={1}>
           {item.product.name}
         </Text>
-        <Text style={styles.price}>{formatPrice(item.product.price)}</Text>
+        {formatVariantLabel(item) ? (
+          <Text style={styles.variantLabel} numberOfLines={1}>
+            {formatVariantLabel(item)}
+          </Text>
+        ) : null}
+        <Text style={styles.price}>{formatPrice(getUnitPrice(item))}</Text>
       </View>
       <View style={styles.quantity}>
         <TouchableOpacity onPress={onDecrease} style={styles.qtyButton}>
@@ -88,6 +94,11 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
     fontSize: fontSizes.md,
     fontWeight: '600',
     color: colors.text,
+  },
+  variantLabel: {
+    fontSize: fontSizes.xs,
+    color: colors.textSecondary,
+    marginTop: 2,
   },
   price: {
     fontSize: fontSizes.sm,

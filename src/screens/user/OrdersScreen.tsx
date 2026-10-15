@@ -11,7 +11,10 @@ import { ProductImage } from '../../components/ProductImage';
 import { useApp } from '../../context/AppContext';
 import { useResponsive } from '../../hooks/useResponsive';
 import { formatPrice } from '../../utils/format';
+import { formatVariantLabel, getUnitPrice } from '../../utils/variants';
 import { getProductCoverImage } from '../../utils/images';
+import { getItemStatus } from '../../services/orders';
+import { ORDER_STATUS_LABELS } from '../../constants/orderStatus';
 import { RootStackParamList } from '../../types/navigation';
 import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../../constants/theme';
 
@@ -68,58 +71,58 @@ export function OrdersScreen() {
         </View>
 
         <FlatList
-          data={orders}
-          keyExtractor={(item) => item.id}
-          renderItem={({ item }) => (
-            <TouchableOpacity
-              style={styles.card}
-              onPress={() => navigation.navigate('OrderDetail', { orderId: item.id })}
-            >
-              <View style={styles.orderHeader}>
-                <Text style={styles.date}>
-                  {new Date(item.createdAt).toLocaleDateString()}
-                </Text>
-                <View style={styles.headerRight}>
-                  <View
-                    style={[
-                      styles.badge,
-                      item.status === 'paid' && styles.paidBadge,
-                      item.status === 'pending' && styles.pendingBadge,
-                      item.status === 'delivered' && styles.deliveredBadge,
-                      item.status === 'completed' && styles.completedBadge,
-                      item.status === 'failed' && styles.failedBadge,
-                    ]}
-                  >
-                    <Text style={styles.badgeText}>{item.status}</Text>
+          data={orders.flatMap((order) =>
+            order.items.map((item) => ({ order, item }))
+          )}
+          keyExtractor={({ order, item }) => `${order.id}:${item.product.id}:${item.selectedImageIndex}`}
+          renderItem={({ item: { order, item } }) => {
+            const itemStatus = getItemStatus(order, item);
+            return (
+              <TouchableOpacity
+                style={styles.card}
+                onPress={() => navigation.navigate('OrderDetail', { orderId: order.id })}
+              >
+                <View style={styles.orderHeader}>
+                  <Text style={styles.date}>
+                    {new Date(order.createdAt).toLocaleDateString()}
+                    <Text style={styles.orderCode}> · #{order.id.slice(0, 8)}</Text>
+                  </Text>
+                  <View style={styles.headerRight}>
+                    <View
+                      style={[
+                        styles.badge,
+                        itemStatus === 'paid' && styles.paidBadge,
+                        itemStatus === 'pending' && styles.pendingBadge,
+                        itemStatus === 'on_the_way' && styles.onTheWayBadge,
+                        itemStatus === 'completed' && styles.completedBadge,
+                      ]}
+                    >
+                      <Text style={styles.badgeText}>{ORDER_STATUS_LABELS[itemStatus]}</Text>
+                    </View>
+                    <Text style={styles.price}>
+                      {formatPrice(getUnitPrice(item) * item.quantity)}
+                    </Text>
                   </View>
-                  <Text style={styles.price}>{formatPrice(item.total)}</Text>
                 </View>
-              </View>
 
-              {item.items.map((i) => (
-                <View
-                  key={`${i.product.id}-${i.selectedImageIndex}`}
-                  style={styles.itemRow}
-                >
+                <View style={styles.itemRow}>
                   <View style={styles.itemThumb}>
                     <ProductImage
-                      uri={getProductCoverImage(i.product)}
-                      category={i.product.category}
-                      name={i.product.name}
+                      uri={getProductCoverImage(item.product)}
+                      category={item.product.category}
+                      name={item.product.name}
                       thumbnail
                       style={styles.itemThumbImage}
                     />
                   </View>
                   <Text style={styles.itemName} numberOfLines={1}>
-                    {i.quantity} × {i.product.name}
-                  </Text>
-                  <Text style={styles.itemPrice}>
-                    {formatPrice(i.product.price * i.quantity)}
+                    {item.quantity} × {item.product.name}
+                    {formatVariantLabel(item) ? ` (${formatVariantLabel(item)})` : ''}
                   </Text>
                 </View>
-              ))}
-            </TouchableOpacity>
-          )}
+              </TouchableOpacity>
+            );
+          }}
         />
       </View>
     </Screen>
@@ -218,15 +221,13 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
     fontWeight: '500',
     color: colors.text,
   },
-  itemPrice: {
-    fontSize: fontSizes.sm,
-    fontWeight: '600',
-    color: colors.text,
-  },
   price: {
     fontSize: fontSizes.md,
     fontWeight: '700',
     color: colors.primary,
+  },
+  orderCode: {
+    color: colors.textSecondary,
   },
   date: {
     fontSize: fontSizes.sm,
@@ -244,19 +245,15 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
   paidBadge: {
     backgroundColor: colors.success,
   },
-  deliveredBadge: {
+  onTheWayBadge: {
     backgroundColor: colors.primary,
   },
   completedBadge: {
     backgroundColor: colors.success,
   },
-  failedBadge: {
-    backgroundColor: colors.danger,
-  },
   badgeText: {
     fontSize: fontSizes.xs,
     fontWeight: '600',
     color: colors.surface,
-    textTransform: 'capitalize',
   },
 });

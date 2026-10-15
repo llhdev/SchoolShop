@@ -3,6 +3,9 @@ import { supabase } from '../lib/supabase';
 import { resizeImage, getThumbnailPath } from '../utils/images';
 
 const BUCKET = 'product-images';
+const PAYMENT_PROOFS_PRIVATE_BUCKET = 'payment-proofs-private';
+const BANK_QRS_BUCKET = 'bank-qrs';
+const SHOP_LOGOS_BUCKET = 'shop-logos';
 
 function base64ToArrayBuffer(base64: string): ArrayBuffer {
   const clean = base64.includes(',') ? base64.split(',')[1] : base64;
@@ -77,6 +80,63 @@ export async function uploadProductImage(uri: string): Promise<string> {
 
 export async function uploadProductImages(uris: string[]): Promise<string[]> {
   return Promise.all(uris.map((uri) => uploadProductImage(uri)));
+}
+
+/** Upload a single image to a bucket as-is (no thumbnail companion) and
+ *  return its public URL. Used for payment proofs and tenant bank QR codes,
+ *  which are viewed at full resolution by admins and the Telegram bot. */
+export async function uploadSingleImage(uri: string, bucket: string): Promise<string> {
+  const fileName = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}.jpg`;
+  const buffer = await imageToArrayBuffer(uri);
+  const { data, error } = await supabase.storage.from(bucket).upload(fileName, buffer, {
+    contentType: 'image/jpeg',
+    cacheControl: '31536000',
+    upsert: false,
+  });
+  if (error) throw error;
+  const { data: publicUrlData } = supabase.storage.from(bucket).getPublicUrl(data.path);
+  return publicUrlData.publicUrl;
+}
+
+/** Shopper's payment proof photo for one tenant, uploaded at checkout.
+ *  Goes to the PRIVATE bucket (migration 040) and returns the storage object
+ *  path — not a URL. Server-side readers (edge functions) download it with
+ *  the service role; admins view it through short-lived signed URLs. Legacy
+ *  orders hold full public payment-proofs URLs instead. */
+export async function uploadPaymentProof(uri: string): Promise<string> {
+  const fileName = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}.jpg`;
+  const buffer = await imageToArrayBuffer(uri);
+  const { data, error } = await supabase.storage
+    .from(PAYMENT_PROOFS_PRIVATE_BUCKET)
+    .upload(fileName, buffer, {
+      contentType: 'image/jpeg',
+      cacheControl: '31536000',
+      upsert: false,
+    });
+  if (error) throw error;
+  return data.path;
+}
+
+/** Tenant's bank transfer QR code, uploaded by the super admin or the tenant. */
+export async function uploadBankQr(uri: string): Promise<string> {
+  return uploadSingleImage(uri, BANK_QRS_BUCKET);
+}
+
+/** Tenant shop logo, uploaded by the super admin (migration 023). Logos are
+ *  display-only and rendered small (store filter chips/lists), so they are
+ *  resized to 400px before upload — unlike QR codes, no scannability concern. */
+export async function uploadShopLogo(uri: string): Promise<string> {
+  const fileName = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}.jpg`;
+  const resized = await resizeImage(uri, 400);
+  const buffer = await imageToArrayBuffer(resized);
+  const { data, error } = await supabase.storage.from(SHOP_LOGOS_BUCKET).upload(fileName, buffer, {
+    contentType: 'image/jpeg',
+    cacheControl: '31536000',
+    upsert: false,
+  });
+  if (error) throw error;
+  const { data: publicUrlData } = supabase.storage.from(SHOP_LOGOS_BUCKET).getPublicUrl(data.path);
+  return publicUrlData.publicUrl;
 }
 
 export async function deleteProductImage(url: string): Promise<void> {

@@ -1,9 +1,32 @@
 import { supabase } from '../lib/supabase';
 import { debounce } from '../lib/debounce';
-import { Product } from '../types';
+import { BankAccount, Product } from '../types';
+import { toDbVariantGroups, toVariantGroups } from '../utils/variants';
+import { toCheckoutFields, toDbCheckoutFields } from '../utils/checkoutFields';
 import { CACHE_KEYS, getCached, setCached } from './cache';
 
 const REFETCH_DEBOUNCE_MS = 500;
+
+interface DbBankAccount {
+  account_number?: string | null;
+  bank_name?: string | null;
+  qr_image_url?: string | null;
+}
+
+function toBankAccounts(db: unknown): BankAccount[] {
+  if (!Array.isArray(db)) return [];
+  return db
+    .map((entry): BankAccount | null => {
+      const raw = entry as DbBankAccount;
+      if (!raw?.account_number) return null;
+      return {
+        accountNumber: raw.account_number,
+        bankName: raw.bank_name ?? undefined,
+        qrImageUrl: raw.qr_image_url ?? undefined,
+      };
+    })
+    .filter((a): a is BankAccount => a !== null);
+}
 
 interface DbProduct {
   id: string;
@@ -13,10 +36,20 @@ interface DbProduct {
   compare_at_price: number | null;
   category: string;
   images: string[];
+  detail_images?: string[] | null;
   cover_image_index: number;
+  price_hidden?: boolean | null;
+  order_count?: number | null;
   created_at: string;
   owner_id?: string;
   shop_name?: string | null;
+  bank_accounts?: unknown;
+  shipping_fee?: number | null;
+  shop_logo_url?: string | null;
+  shop_description?: string | null;
+  telegram_username?: string | null;
+  variants?: unknown;
+  checkout_fields?: unknown;
 }
 
 function toProduct(db: DbProduct): Product {
@@ -28,10 +61,20 @@ function toProduct(db: DbProduct): Product {
     compareAtPrice: db.compare_at_price ?? undefined,
     category: db.category,
     images: db.images,
+    detailImages: db.detail_images ?? undefined,
     coverImageIndex: db.cover_image_index,
+    priceHidden: db.price_hidden ?? undefined,
+    orderCount: db.order_count ?? 0,
     createdAt: db.created_at,
     ownerId: db.owner_id,
     shopName: db.shop_name ?? undefined,
+    ownerBankAccounts: toBankAccounts(db.bank_accounts),
+    ownerShippingFee: db.shipping_fee ?? undefined,
+    ownerShopLogoUrl: db.shop_logo_url ?? undefined,
+    ownerShopDescription: db.shop_description ?? undefined,
+    ownerTelegramUsername: db.telegram_username ?? undefined,
+    variantGroups: toVariantGroups(db.variants),
+    checkoutFields: toCheckoutFields(db.checkout_fields),
   };
 }
 
@@ -44,9 +87,14 @@ function toDbProduct(product: Product): DbProduct {
     compare_at_price: product.compareAtPrice ?? null,
     category: product.category,
     images: product.images,
+    detail_images: product.detailImages ?? [],
     cover_image_index: product.coverImageIndex,
+    price_hidden: product.priceHidden ?? false,
+    order_count: product.orderCount ?? 0,
     created_at: product.createdAt,
     owner_id: product.ownerId,
+    variants: toDbVariantGroups(product.variantGroups),
+    checkout_fields: toDbCheckoutFields(product.checkoutFields),
   };
 }
 

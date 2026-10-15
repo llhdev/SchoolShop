@@ -7,6 +7,7 @@ import { ThemeToggle } from './ThemeToggle';
 import { AdminStackParamList } from '../types/navigation';
 import { useResponsive } from '../hooks/useResponsive';
 import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../constants/theme';
+import { MERCHANT_ACCOUNT_EDITING_ENABLED } from '../constants/featureFlags';
 
 type AdminNav = NativeStackNavigationProp<AdminStackParamList>;
 
@@ -68,20 +69,24 @@ export function AdminHeader() {
             compact={compact}
             onPress={() => navigation.navigate('AdminOrders')}
           />
-          <NavLink
-            name="AdminAccount"
-            label="Account"
-            current={current}
-            compact={compact}
-            onPress={() => navigation.navigate('AdminAccount')}
-          />
-          <NavLink
-            name="AddEditItem"
-            label="Add Item"
-            current={current}
-            compact={compact}
-            onPress={() => navigation.navigate('AddEditItem')}
-          />
+          {(isSuperAdmin || MERCHANT_ACCOUNT_EDITING_ENABLED) && (
+            <NavLink
+              name="AdminAccount"
+              label="Account"
+              current={current}
+              compact={compact}
+              onPress={() => navigation.navigate('AdminAccount')}
+            />
+          )}
+          {!isSuperAdmin && (
+            <NavLink
+              name="AddEditItem"
+              label="Add Item"
+              current={current}
+              compact={compact}
+              onPress={() => navigation.navigate('AddEditItem')}
+            />
+          )}
           {isSuperAdmin && (
             <NavLink
               name="TenantManagement"

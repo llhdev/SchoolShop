@@ -1,4 +1,4 @@
-import { ActivityIndicator, StyleSheet, Text, TouchableOpacity, View, ViewStyle } from 'react-native';
+import { ActivityIndicator, StyleProp, StyleSheet, Text, TouchableOpacity, View, ViewStyle } from 'react-native';
 import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../constants/theme';
 
 type ButtonVariant = 'primary' | 'secondary' | 'danger' | 'outline';
@@ -9,7 +9,7 @@ interface ButtonProps {
   variant?: ButtonVariant;
   disabled?: boolean;
   loading?: boolean;
-  style?: ViewStyle;
+  style?: StyleProp<ViewStyle>;
 }
 
 export function Button({

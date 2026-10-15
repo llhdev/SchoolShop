@@ -55,11 +55,10 @@ const AdminLoginScreen = lazyScreen(() =>
 
 const Stack = createNativeStackNavigator<RootStackParamList>();
 
-// GitHub Pages serves the Mini App from the /SchoolShop subpath (matches
-// app.json experiments.baseUrl). Deep links arrive with that prefix, so
-// strip it before matching routes. On a root-hosted website the replace is
-// a no-op.
-const WEB_BASE_PATH = '/SchoolShop';
+// The web build is served from the domain root (Vercel). Deep links arrive
+// at that prefix, so strip it before matching routes. The replace is a no-op
+// for paths that don't carry the prefix.
+const WEB_BASE_PATH = '/';
 
 const linking: LinkingOptions<RootStackParamList> | undefined =
   Platform.OS === 'web'

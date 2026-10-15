@@ -1,9 +1,37 @@
 import { supabase } from '../lib/supabase';
+import { BankAccount } from '../types';
 
 export interface OwnProfile {
   username: string | null;
   email: string | null;
   shopName: string | null;
+  bankAccounts: BankAccount[];
+  /** Flat shipping fee per order; null = free delivery (migration 031). */
+  shippingFee: number | null;
+  shopLogoUrl: string | null;
+  shopDescription: string | null;
+  telegramUsername: string | null;
+}
+
+interface DbBankAccount {
+  account_number?: string | null;
+  bank_name?: string | null;
+  qr_image_url?: string | null;
+}
+
+function toBankAccounts(db: unknown): BankAccount[] {
+  if (!Array.isArray(db)) return [];
+  return db
+    .map((entry): BankAccount | null => {
+      const raw = entry as DbBankAccount;
+      if (!raw?.account_number) return null;
+      return {
+        accountNumber: raw.account_number,
+        bankName: raw.bank_name ?? undefined,
+        qrImageUrl: raw.qr_image_url ?? undefined,
+      };
+    })
+    .filter((a): a is BankAccount => a !== null);
 }
 
 const USERNAME_PATTERN = /^[a-z0-9_]{3,20}$/;
@@ -17,7 +45,7 @@ export async function fetchOwnProfile(): Promise<OwnProfile | null> {
 
   const { data, error } = await supabase
     .from('profiles')
-    .select('username, email, shop_name')
+    .select('username, email, shop_name, bank_accounts, shipping_fee, shop_logo_url, shop_description, telegram_username')
     .eq('id', user.id)
     .maybeSingle();
   if (error) throw error;
@@ -26,7 +54,54 @@ export async function fetchOwnProfile(): Promise<OwnProfile | null> {
     username: data.username,
     email: data.email,
     shopName: data.shop_name,
+    bankAccounts: toBankAccounts(data.bank_accounts),
+    shippingFee: data.shipping_fee ?? null,
+    shopLogoUrl: data.shop_logo_url,
+    shopDescription: data.shop_description,
+    telegramUsername: data.telegram_username,
   };
+}
+
+/** Save the signed-in tenant admin's bank transfer accounts
+ *  (profiles.bank_accounts, migration 031). Entries without an account
+ *  number are dropped server-side. */
+export async function updateOwnBankAccounts(accounts: BankAccount[]): Promise<void> {
+  const { error } = await supabase.rpc('update_own_bank_accounts', {
+    p_accounts: accounts,
+  });
+  if (error) throw new Error(error.message || 'Failed to save bank accounts.');
+}
+
+/** Save the signed-in tenant admin's flat shipping fee per order
+ *  (profiles.shipping_fee, migration 031). 0/empty = free delivery. */
+export async function updateOwnShippingFee(fee: number | null): Promise<void> {
+  const { error } = await supabase.rpc('update_own_shipping_fee', {
+    p_fee: fee,
+  });
+  if (error) throw new Error(error.message || 'Failed to save shipping fee.');
+}
+
+/** Save the signed-in tenant admin's own shop description
+ *  (profiles.shop_description, migration 024). Empty string clears it. */
+export async function updateOwnShopDescription(
+  shopDescription: string
+): Promise<void> {
+  const { error } = await supabase.rpc('update_own_shop_description', {
+    p_description: shopDescription,
+  });
+  if (error) throw new Error(error.message || 'Failed to save shop description.');
+}
+
+/** Save the signed-in tenant admin's own public Telegram username
+ *  (profiles.telegram_username, migration 025). Empty string clears it.
+ *  Stored without the leading "@". */
+export async function updateOwnTelegramUsername(
+  telegramUsername: string
+): Promise<void> {
+  const { error } = await supabase.rpc('update_own_telegram_username', {
+    p_username: telegramUsername,
+  });
+  if (error) throw new Error(error.message || 'Failed to save Telegram username.');
 }
 
 /** Change the signed-in admin's own login username (gateway). */

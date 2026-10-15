@@ -21,24 +21,28 @@ import { useApp } from '../../context/AppContext';
 import { useResponsive } from '../../hooks/useResponsive';
 import { AdminStackParamList } from '../../types/navigation';
 import { getProductCoverImage } from '../../utils/images';
+import { confirmAction } from '../../utils/confirm';
 import { formatPrice } from '../../utils/format';
 import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../../constants/theme';
+import { MERCHANT_ACCOUNT_EDITING_ENABLED } from '../../constants/featureFlags';
 
 const MAX_WIDTH = 1200;
 
 function AdminHeaderRight() {
   const navigation = useNavigation<NativeStackNavigationProp<AdminStackParamList>>();
-  const { signOutAdmin } = useApp();
+  const { signOutAdmin, role } = useApp();
   const colors = useThemeColors();
 
   return (
     <View style={headerRightStyles.container}>
-      <TouchableOpacity
-        onPress={() => navigation.navigate('AdminAccount')}
-        accessibilityLabel="Account and security"
-      >
-        <Ionicons name="person-circle-outline" size={24} color={colors.primary} />
-      </TouchableOpacity>
+      {(role === 'super_admin' || MERCHANT_ACCOUNT_EDITING_ENABLED) && (
+        <TouchableOpacity
+          onPress={() => navigation.navigate('AdminAccount')}
+          accessibilityLabel="Account and security"
+        >
+          <Ionicons name="person-circle-outline" size={24} color={colors.primary} />
+        </TouchableOpacity>
+      )}
       <ThemeToggle />
       <TouchableOpacity onPress={signOutAdmin}>
         <Text style={[headerRightStyles.text, { color: colors.danger }]}>
@@ -145,13 +149,15 @@ export function AdminDashboardScreen() {
             <Text style={styles.statValue}>{visibleProducts.length}</Text>
             <Text style={styles.statLabel}>Products</Text>
           </View>
-          <View style={styles.actionButtonWrapper}>
-            <Button
-              title="Add New Item"
-              onPress={() => navigation.navigate('AddEditItem')}
-              style={styles.actionButton}
-            />
-          </View>
+          {!isSuperAdmin && (
+            <View style={styles.actionButtonWrapper}>
+              <Button
+                title="Add New Item"
+                onPress={() => navigation.navigate('AddEditItem')}
+                style={styles.actionButton}
+              />
+            </View>
+          )}
           {isSuperAdmin && (
             <View style={styles.actionButtonWrapper}>
               <Button
@@ -201,7 +207,9 @@ export function AdminDashboardScreen() {
           <View style={[styles.column, styles.productsColumn, !isSuperAdmin && styles.productsColumnFullWidth]}>
             <Text style={styles.sectionTitle}>Manage Items</Text>
             {visibleProducts.length === 0 ? (
-              <EmptyState message="No products yet. Add your first item." />
+              <EmptyState
+                message={isSuperAdmin ? 'No products yet.' : 'No products yet. Add your first item.'}
+              />
             ) : (
               <>
                 {isDesktop && (
@@ -279,7 +287,14 @@ export function AdminDashboardScreen() {
                       <View style={[styles.productActions, isDesktop && styles.colActions]}>
                         <TouchableOpacity
                           style={[styles.iconButton, styles.deleteButton]}
-                          onPress={() => handleDelete(item.id)}
+                          onPress={() =>
+                            confirmAction(
+                              'Delete item?',
+                              `Are you sure you want to delete "${item.name}"? This cannot be undone.`,
+                              'Delete',
+                              () => handleDelete(item.id)
+                            )
+                          }
                         >
                           <Ionicons name="trash-outline" size={18} color={colors.danger} />
                         </TouchableOpacity>

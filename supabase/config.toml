@@ -422,3 +422,12 @@ verify_jwt = false
 # key header instead of a JWT so shoppers without accounts can trigger it.
 [functions.telegram-order-notify]
 verify_jwt = false
+
+# Called only by the database (orders trigger / retry RPC); gated by the
+# x-internal-token shared secret, so the platform JWT check stays off.
+[functions.verify-order-payment]
+verify_jwt = false
+
+# Called by verify.et's servers; gated by the webhook signing secret.
+[functions.verify-et-webhook]
+verify_jwt = false

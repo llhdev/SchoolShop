@@ -1,11 +1,12 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { Platform } from 'react-native';
 import { FlatList, StyleSheet, Text, View } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Screen } from '../../components/Screen';
 import { SearchBar } from '../../components/SearchBar';
-import { CategoryFilter } from '../../components/CategoryFilter';
+import { CategoryFilter, SortOption } from '../../components/CategoryFilter';
+import { StoreList, StoreSummary } from '../../components/StoreList';
 import { ProductCard } from '../../components/ProductCard';
 import { ProductViewerModal } from '../../components/ProductViewerModal';
 import { EmptyState } from '../../components/EmptyState';
@@ -34,7 +35,15 @@ export function HomeScreen() {
 
   const [query, setQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<Category | null>(null);
+  const [selectedOwnerId, setSelectedOwnerId] = useState<string | null>(null);
+  const [storePanelOpen, setStorePanelOpen] = useState(false);
   const [viewerProductId, setViewerProductId] = useState<string | null>(null);
+  const [sortBy, setSortBy] = useState<SortOption>('featured');
+
+  // "Featured" order: a random scramble built once per app session and kept
+  // stable afterwards, so realtime updates don't make the grid jump around.
+  // Products added later get no rank and append at the end.
+  const featuredRankRef = useRef<Map<string, number> | null>(null);
 
   useEffect(() => {
     const trimmed = query.trim().toLowerCase();
@@ -66,29 +75,109 @@ export function HomeScreen() {
     };
   }, [query, navigation]);
 
+  // One store entry per tenant owner, derived from the (cached, realtime)
+  // product catalog — a tenant only appears here once they have products.
+  const stores = useMemo<StoreSummary[]>(() => {
+    const map = new Map<string, StoreSummary>();
+    for (const product of products) {
+      if (!product.ownerId || !product.shopName) continue;
+      const existing = map.get(product.ownerId);
+      if (!existing) {
+        map.set(product.ownerId, {
+          ownerId: product.ownerId,
+          shopName: product.shopName,
+          logoUrl: product.ownerShopLogoUrl,
+          description: product.ownerShopDescription,
+        });
+      } else {
+        if (!existing.logoUrl && product.ownerShopLogoUrl) {
+          existing.logoUrl = product.ownerShopLogoUrl;
+        }
+        if (!existing.description && product.ownerShopDescription) {
+          existing.description = product.ownerShopDescription;
+        }
+      }
+    }
+    return [...map.values()].sort((a, b) => a.shopName.localeCompare(b.shopName));
+  }, [products]);
+
+  // If the selected store disappears from the catalog (tenant/products
+  // removed), drop the filter instead of showing an empty grid.
+  const activeOwnerId =
+    selectedOwnerId && stores.some((s) => s.ownerId === selectedOwnerId)
+      ? selectedOwnerId
+      : null;
+  const activeStore = stores.find((s) => s.ownerId === activeOwnerId) ?? null;
+
   const filtered = useMemo(() => {
     return products.filter((product) => {
       const matchesCategory = selectedCategory
         ? product.category === selectedCategory
         : true;
+      const matchesStore = activeOwnerId
+        ? product.ownerId === activeOwnerId
+        : true;
       const matchesSearch =
         query.trim() === '' ||
         product.name.toLowerCase().includes(query.toLowerCase());
-      return matchesCategory && matchesSearch;
+      return matchesCategory && matchesStore && matchesSearch;
     });
-  }, [products, selectedCategory, query]);
+  }, [products, selectedCategory, activeOwnerId, query]);
+
+  const sorted = useMemo(() => {
+    if (sortBy === 'featured') {
+      if (!featuredRankRef.current) {
+        const ids = filtered.map((p) => p.id);
+        // Fisher–Yates shuffle.
+        for (let i = ids.length - 1; i > 0; i--) {
+          const j = Math.floor(Math.random() * (i + 1));
+          [ids[i], ids[j]] = [ids[j], ids[i]];
+        }
+        featuredRankRef.current = new Map(ids.map((id, index) => [id, index]));
+      }
+      const rank = featuredRankRef.current;
+      return [...filtered].sort(
+        (a, b) =>
+          (rank.get(a.id) ?? Number.MAX_SAFE_INTEGER) -
+          (rank.get(b.id) ?? Number.MAX_SAFE_INTEGER)
+      );
+    }
+
+    const list = [...filtered];
+    switch (sortBy) {
+      case 'latest':
+        list.sort((a, b) => b.createdAt.localeCompare(a.createdAt));
+        break;
+      case 'popular':
+        list.sort((a, b) => (b.orderCount ?? 0) - (a.orderCount ?? 0));
+        break;
+      case 'price_asc':
+      case 'price_desc': {
+        // Price-on-request products (priceHidden) always sort last in both
+        // directions; they have no meaningful price.
+        const direction = sortBy === 'price_asc' ? 1 : -1;
+        list.sort(
+          (a, b) =>
+            (a.priceHidden ? 1 : 0) - (b.priceHidden ? 1 : 0) ||
+            (a.price - b.price) * direction
+        );
+        break;
+      }
+    }
+    return list;
+  }, [filtered, sortBy]);
 
   const numColumns = breakpoint === 'lg' ? 4 : breakpoint === 'md' ? 3 : 2;
 
   const listData = useMemo<ListItem[]>(() => {
-    const remainder = filtered.length % numColumns;
-    if (remainder === 0) return filtered;
+    const remainder = sorted.length % numColumns;
+    if (remainder === 0) return sorted;
     const fillers: ListItem[] = Array.from({ length: numColumns - remainder }, (_, i) => ({
       id: `filler-${i}`,
       filler: true as const,
     }));
-    return [...filtered, ...fillers];
-  }, [filtered, numColumns]);
+    return [...sorted, ...fillers];
+  }, [sorted, numColumns]);
 
   const isWeb = Platform.OS === 'web';
   const showInlineSearch = !isWeb || !isDesktop;
@@ -101,7 +190,20 @@ export function HomeScreen() {
           <View style={styles.filterSection}>
             <CategoryFilter
               selected={selectedCategory}
-              onSelect={setSelectedCategory}
+              onSelect={(category) => {
+                setSelectedCategory(category);
+                setStorePanelOpen(false);
+              }}
+              storeLabel={activeStore?.shopName ?? 'Store'}
+              storeActive={activeOwnerId !== null}
+              storePanelOpen={storePanelOpen}
+              onStorePress={
+                stores.length > 0
+                  ? () => setStorePanelOpen((open) => !open)
+                  : undefined
+              }
+              sort={sortBy}
+              onSortChange={setSortBy}
             />
 
             {showInlineSearch && (
@@ -114,6 +216,16 @@ export function HomeScreen() {
             )}
           </View>
 
+          {storePanelOpen && stores.length > 0 ? (
+            <StoreList
+              stores={stores}
+              selectedOwnerId={activeOwnerId}
+              onSelect={(ownerId) => {
+                setSelectedOwnerId(ownerId);
+                setStorePanelOpen(false);
+              }}
+            />
+          ) : (
           <FlatList
             key={numColumns}
             data={listData}
@@ -121,7 +233,7 @@ export function HomeScreen() {
             numColumns={numColumns}
             contentContainerStyle={styles.list}
             ListEmptyComponent={
-              <EmptyState message="No items found. Try a different search or category." />
+              <EmptyState message="No items found. Try a different search, category, or store." />
             }
             renderItem={({ item }) => {
               if ('filler' in item) {
@@ -142,6 +254,7 @@ export function HomeScreen() {
               );
             }}
           />
+          )}
         </View>
 
         <ProductViewerModal
