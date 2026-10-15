@@ -1,3 +1,4 @@
+import { supabase } from '../lib/supabase';
 import { Shopper } from '../types';
 
 /**
@@ -44,4 +45,27 @@ export async function authenticateTelegramShopper(
     // Offline or unreachable: the caller keeps any cached shopper.
     return null;
   }
+}
+
+/** Look up Telegram shopper records by id. The shoppers table is public-read
+ *  (migration 011); used by the admin analysis table to show Telegram names. */
+export async function fetchShoppersByTelegramIds(
+  ids: number[]
+): Promise<Map<number, Shopper>> {
+  const map = new Map<number, Shopper>();
+  if (ids.length === 0) return map;
+  const { data, error } = await supabase
+    .from('shoppers')
+    .select('telegram_id, first_name, last_name, username')
+    .in('telegram_id', ids);
+  if (error) throw error;
+  for (const row of data ?? []) {
+    map.set(row.telegram_id, {
+      telegramId: row.telegram_id,
+      firstName: row.first_name,
+      lastName: row.last_name ?? undefined,
+      username: row.username ?? undefined,
+    });
+  }
+  return map;
 }

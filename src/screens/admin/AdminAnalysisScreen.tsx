@@ -1,7 +1,7 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import {
-  FlatList,
   Platform,
+  ScrollView,
   StyleSheet,
   Text,
   TouchableOpacity,
@@ -16,50 +16,53 @@ import { SearchBar } from '../../components/SearchBar';
 import { useApp } from '../../context/AppContext';
 import { useResponsive } from '../../hooks/useResponsive';
 import { formatPrice } from '../../utils/format';
-import { getUnitPrice } from '../../utils/variants';
+import { formatVariantLabel, getUnitPrice } from '../../utils/variants';
 import { getOrderItemsForTenant } from '../../services/orders';
-import { Order } from '../../types';
-import { AdminStackParamList } from '../../types/navigation';
+import { fetchShoppersByTelegramIds } from '../../services/telegramAuth';
+import { Shopper } from '../../types';
+import { RootStackParamList } from '../../types/navigation';
 import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../../constants/theme';
 
-const MAX_WIDTH = 1000;
+const MAX_WIDTH = 1200;
+const NAME_LABEL = /name/i;
 
-interface ShopperRow {
-  phoneNumber: string;
-  name: string | null;
+/** One row per merchant line item: checkout answers live on the cart line. */
+interface AnalysisRow {
+  key: string;
+  orderId: string;
+  createdAt: string;
   location: string;
-  orderCount: number;
-  itemCount: number;
-  totalSpent: number;
-  lastOrderAt: string;
+  phoneNumber: string;
+  telegramId?: number;
+  productLabel: string;
+  studentName: string;
+  /** Checkout-question answers, excluding the name-like one. */
+  answers: Record<string, string>;
 }
 
-/** Best-effort shopper name: a checkout-question answer whose label mentions
- *  "name" (migration 036), else the legacy student_name field. */
-function shopperName(order: Order): string | null {
-  for (const item of order.items) {
-    const hit = item.fieldAnswers?.find(
-      (a) => /name/i.test(a.label) && a.value.trim()
-    );
-    if (hit) return hit.value.trim();
-  }
-  return order.studentName ?? null;
+function telegramName(shopper: Shopper | undefined): string {
+  if (!shopper) return '—';
+  const full = [shopper.firstName, shopper.lastName].filter(Boolean).join(' ').trim();
+  if (full) return full;
+  return shopper.username ? `@${shopper.username}` : '—';
 }
 
 export function AdminAnalysisScreen() {
-  const navigation = useNavigation<NativeStackNavigationProp<AdminStackParamList>>();
+  const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const { orders, role, currentUserId } = useApp();
   const { isPhone } = useResponsive();
   const colors = useThemeColors();
   const styles = makeStyles(colors);
   const [query, setQuery] = useState('');
+  const [telegramNames, setTelegramNames] = useState<Map<number, Shopper>>(new Map());
 
   // Tenant admins are scoped to their own line items (mixed orders included);
   // the super admin sees every shop's items.
   const scopedTenantId = role === 'admin' ? currentUserId : null;
 
-  const shoppers = useMemo<ShopperRow[]>(() => {
-    const byPhone = new Map<string, ShopperRow>();
+  const { rows, questionLabels } = useMemo(() => {
+    const rows: AnalysisRow[] = [];
+    const questionLabels: string[] = [];
     const sorted = [...orders].sort(
       (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
     );
@@ -67,7 +70,68 @@ export function AdminAnalysisScreen() {
       const items = scopedTenantId
         ? getOrderItemsForTenant(order, scopedTenantId)
         : order.items;
+      items.forEach((item, index) => {
+        const variant = formatVariantLabel(item);
+        const answers: Record<string, string> = {};
+        let studentName = '';
+        for (const answer of item.fieldAnswers ?? []) {
+          if (!answer.value.trim()) continue;
+          if (NAME_LABEL.test(answer.label)) {
+            if (!studentName) studentName = answer.value.trim();
+            continue;
+          }
+          answers[answer.label] = answer.value.trim();
+          if (!questionLabels.includes(answer.label)) questionLabels.push(answer.label);
+        }
+        if (!studentName && order.studentName) studentName = order.studentName;
+        rows.push({
+          key: `${order.id}:${index}`,
+          orderId: order.id,
+          createdAt: order.createdAt,
+          location: order.location,
+          phoneNumber: order.phoneNumber,
+          telegramId: order.telegramId,
+          productLabel: `${item.product.name}${variant ? ` (${variant})` : ''} × ${item.quantity}`,
+          studentName,
+          answers,
+        });
+      });
+    }
+    return { rows, questionLabels };
+  }, [orders, scopedTenantId]);
+
+  // Resolve Telegram usernames/names for Mini App orders (public-read table).
+  const telegramIdsKey = useMemo(
+    () =>
+      [...new Set(rows.map((r) => r.telegramId).filter((id): id is number => id != null))]
+        .sort((a, b) => a - b)
+        .join(','),
+    [rows]
+  );
+  useEffect(() => {
+    if (!telegramIdsKey) return;
+    let cancelled = false;
+    fetchShoppersByTelegramIds(telegramIdsKey.split(',').map(Number))
+      .then((map) => {
+        if (!cancelled) setTelegramNames(map);
+      })
+      .catch(() => {});
+    return () => {
+      cancelled = true;
+    };
+  }, [telegramIdsKey]);
+
+  const summary = useMemo(() => {
+    const phones = new Set<string>();
+    let orderCount = 0;
+    let revenue = 0;
+    for (const order of orders) {
+      const items = scopedTenantId
+        ? getOrderItemsForTenant(order, scopedTenantId)
+        : order.items;
       if (items.length === 0) continue;
+      orderCount += 1;
+      phones.add(order.phoneNumber);
       const itemTotal = items.reduce(
         (sum, item) => sum + getUnitPrice(item) * item.quantity,
         0
@@ -76,124 +140,96 @@ export function AdminAnalysisScreen() {
       const fee = scopedTenantId
         ? order.shippingFees?.[scopedTenantId] ?? 0
         : order.total - itemTotal;
-      const units = items.reduce((sum, item) => sum + item.quantity, 0);
-
-      const existing = byPhone.get(order.phoneNumber);
-      if (existing) {
-        existing.orderCount += 1;
-        existing.itemCount += units;
-        existing.totalSpent += itemTotal + fee;
-        if (!existing.name) existing.name = shopperName(order);
-        if (!existing.location && order.location) existing.location = order.location;
-      } else {
-        // Orders are newest-first, so the first sighting carries the latest
-        // name/location and is the last-order date.
-        byPhone.set(order.phoneNumber, {
-          phoneNumber: order.phoneNumber,
-          name: shopperName(order),
-          location: order.location,
-          orderCount: 1,
-          itemCount: units,
-          totalSpent: itemTotal + fee,
-          lastOrderAt: order.createdAt,
-        });
-      }
+      revenue += itemTotal + fee;
     }
-    return [...byPhone.values()];
+    return { shoppers: phones.size, orders: orderCount, revenue };
   }, [orders, scopedTenantId]);
 
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
-    if (!q) return shoppers;
-    return shoppers.filter(
-      (s) =>
-        s.phoneNumber.toLowerCase().includes(q) ||
-        (s.name ?? '').toLowerCase().includes(q)
-    );
-  }, [shoppers, query]);
-
-  const totalRevenue = shoppers.reduce((sum, s) => sum + s.totalSpent, 0);
-  const totalOrders = shoppers.reduce((sum, s) => sum + s.orderCount, 0);
+    if (!q) return rows;
+    return rows.filter((r) => {
+      const haystack = [
+        r.orderId,
+        r.phoneNumber,
+        r.location,
+        r.productLabel,
+        r.studentName,
+        telegramName(r.telegramId != null ? telegramNames.get(r.telegramId) : undefined),
+        ...Object.values(r.answers),
+      ]
+        .join(' ')
+        .toLowerCase();
+      return haystack.includes(q);
+    });
+  }, [rows, query, telegramNames]);
 
   const isWeb = Platform.OS === 'web';
 
-  function renderRow({ item }: { item: ShopperRow }) {
-    const open = () =>
-      navigation.navigate('AdminUserOrders', { phoneNumber: item.phoneNumber });
-
-    if (isPhone) {
-      return (
-        <TouchableOpacity style={styles.card} onPress={open}>
-          <View style={styles.cardTop}>
-            <View style={styles.cardIdentity}>
-              <Text style={styles.cardName} numberOfLines={1}>
-                {item.name ?? '—'}
-              </Text>
-              <Text style={styles.cardPhone}>{item.phoneNumber}</Text>
-            </View>
-            <Text style={styles.cardTotal}>{formatPrice(item.totalSpent)}</Text>
-          </View>
-          {!!item.location && (
-            <Text style={styles.cardLocation} numberOfLines={1}>
-              {item.location}
-            </Text>
-          )}
-          <Text style={styles.cardMeta}>
-            {item.orderCount} order(s) · {item.itemCount} item(s) · last{' '}
-            {new Date(item.lastOrderAt).toLocaleDateString()}
-          </Text>
-        </TouchableOpacity>
-      );
-    }
-
+  function renderCard(row: AnalysisRow) {
+    const fields: [string, string][] = [
+      ['Order #', row.orderId],
+      ['Date & time', new Date(row.createdAt).toLocaleString()],
+      ['Location', row.location || '—'],
+      ['Phone', row.phoneNumber],
+      ['Name', telegramName(row.telegramId != null ? telegramNames.get(row.telegramId) : undefined)],
+      ['Student name', row.studentName || '—'],
+      ['Product', row.productLabel],
+      ...questionLabels.map(
+        (label): [string, string] => [label, row.answers[label] ?? '—']
+      ),
+    ];
     return (
-      <TouchableOpacity style={styles.row} onPress={open}>
-        <View style={styles.cellShopper}>
-          <Text style={styles.shopperName} numberOfLines={1}>
-            {item.name ?? '—'}
-          </Text>
-          <Text style={styles.shopperPhone}>{item.phoneNumber}</Text>
-        </View>
-        <Text style={[styles.cellText, styles.cellLocation]} numberOfLines={1}>
-          {item.location || '—'}
-        </Text>
-        <Text style={[styles.cellText, styles.cellNum]}>{item.orderCount}</Text>
-        <Text style={[styles.cellText, styles.cellNum]}>{item.itemCount}</Text>
-        <Text style={[styles.cellText, styles.cellNum, styles.cellTotal]}>
-          {formatPrice(item.totalSpent)}
-        </Text>
-        <Text style={[styles.cellText, styles.cellNum]}>
-          {new Date(item.lastOrderAt).toLocaleDateString()}
-        </Text>
+      <TouchableOpacity
+        key={row.key}
+        style={styles.card}
+        onPress={() => navigation.navigate('OrderDetail', { orderId: row.orderId })}
+      >
+        {fields.map(([label, value]) => (
+          <View key={label} style={styles.cardField}>
+            <Text style={styles.cardLabel}>{label}</Text>
+            <Text style={styles.cardValue}>{value}</Text>
+          </View>
+        ))}
       </TouchableOpacity>
     );
   }
 
+  function cell(text: string, width: { width: number }, key: string, bold = false) {
+    return (
+      <Text key={key} style={[styles.cell, width, bold && styles.cellBold]} numberOfLines={2}>
+        {text}
+      </Text>
+    );
+  }
+
+  const isEmpty = rows.length === 0;
+
   return (
     <>
       {isWeb && <AdminHeader />}
-      <Screen noPadding edges={['top', 'left', 'right']}>
+      <Screen scroll noPadding edges={['left', 'right']}>
         <View style={styles.container}>
           <Text style={[styles.title, isPhone && styles.titleCompact]}>
             Shopper Analysis
           </Text>
           <Text style={styles.subtitle}>
             {role === 'admin'
-              ? "Customers who ordered from your shop."
-              : 'Every shopper on the platform, across all shops.'}
+              ? 'Every item ordered from your shop, one row per item.'
+              : 'Every item ordered on the platform, across all shops.'}
           </Text>
 
           <View style={styles.statsRow}>
             <View style={styles.statCard}>
-              <Text style={styles.statValue}>{shoppers.length}</Text>
+              <Text style={styles.statValue}>{summary.shoppers}</Text>
               <Text style={styles.statLabel}>Shoppers</Text>
             </View>
             <View style={styles.statCard}>
-              <Text style={styles.statValue}>{totalOrders}</Text>
+              <Text style={styles.statValue}>{summary.orders}</Text>
               <Text style={styles.statLabel}>Orders</Text>
             </View>
             <View style={styles.statCard}>
-              <Text style={styles.statValue}>{formatPrice(totalRevenue)}</Text>
+              <Text style={styles.statValue}>{formatPrice(summary.revenue)}</Text>
               <Text style={styles.statLabel}>Revenue</Text>
             </View>
           </View>
@@ -201,39 +237,55 @@ export function AdminAnalysisScreen() {
           <SearchBar
             value={query}
             onChangeText={setQuery}
-            placeholder="Search by name or phone..."
+            placeholder="Search orders, shoppers, products..."
           />
 
-          {shoppers.length === 0 ? (
+          {isEmpty ? (
             <EmptyState
-              message="No shoppers yet — customers appear here once they place an order."
-              icon="people-outline"
+              message="No orders yet — they appear here once customers buy something."
+              icon="receipt-outline"
             />
+          ) : filtered.length === 0 ? (
+            <EmptyState message="No rows match your search." icon="search-outline" />
+          ) : isPhone ? (
+            <View style={styles.cardList}>{filtered.map(renderCard)}</View>
           ) : (
-            <>
-              {!isPhone && (
-                <View style={[styles.row, styles.headerRow]}>
-                  <Text style={[styles.headerText, styles.cellShopper]}>Shopper</Text>
-                  <Text style={[styles.headerText, styles.cellLocation]}>Location</Text>
-                  <Text style={[styles.headerText, styles.cellNum]}>Orders</Text>
-                  <Text style={[styles.headerText, styles.cellNum]}>Items</Text>
-                  <Text style={[styles.headerText, styles.cellNum]}>Total spent</Text>
-                  <Text style={[styles.headerText, styles.cellNum]}>Last order</Text>
+            <ScrollView horizontal style={styles.tableScroll}>
+              <View style={styles.table}>
+                <View style={[styles.trow, styles.thead]}>
+                  {cell('Order #', styles.wOrder, 'h-order', true)}
+                  {cell('Date & time', styles.wDate, 'h-date', true)}
+                  {cell('Location', styles.wLocation, 'h-location', true)}
+                  {cell('Phone', styles.wPhone, 'h-phone', true)}
+                  {cell('Name', styles.wName, 'h-name', true)}
+                  {cell('Student name', styles.wName, 'h-student', true)}
+                  {cell('Product', styles.wProduct, 'h-product', true)}
+                  {questionLabels.map((label) => cell(label, styles.wQuestion, `h-${label}`, true))}
                 </View>
-              )}
-              <FlatList
-                data={filtered}
-                keyExtractor={(item) => item.phoneNumber}
-                renderItem={renderRow}
-                contentContainerStyle={styles.listContent}
-                ListEmptyComponent={
-                  <EmptyState
-                    message="No shoppers match your search."
-                    icon="search-outline"
-                  />
-                }
-              />
-            </>
+                {filtered.map((row) => (
+                  <TouchableOpacity
+                    key={row.key}
+                    style={styles.trow}
+                    onPress={() => navigation.navigate('OrderDetail', { orderId: row.orderId })}
+                  >
+                    {cell(row.orderId, styles.wOrder, `${row.key}-order`)}
+                    {cell(new Date(row.createdAt).toLocaleString(), styles.wDate, `${row.key}-date`)}
+                    {cell(row.location || '—', styles.wLocation, `${row.key}-location`)}
+                    {cell(row.phoneNumber, styles.wPhone, `${row.key}-phone`)}
+                    {cell(
+                      telegramName(row.telegramId != null ? telegramNames.get(row.telegramId) : undefined),
+                      styles.wName,
+                      `${row.key}-name`
+                    )}
+                    {cell(row.studentName || '—', styles.wName, `${row.key}-student`)}
+                    {cell(row.productLabel, styles.wProduct, `${row.key}-product`)}
+                    {questionLabels.map((label) =>
+                      cell(row.answers[label] ?? '—', styles.wQuestion, `${row.key}-${label}`)
+                    )}
+                  </TouchableOpacity>
+                ))}
+              </View>
+            </ScrollView>
           )}
         </View>
       </Screen>
@@ -250,6 +302,7 @@ const makeStyles = (colors: ColorPalette) =>
       alignSelf: 'center',
       paddingHorizontal: spacing.lg,
       paddingVertical: spacing.md,
+      paddingBottom: spacing.xxl,
     },
     title: {
       fontSize: fontSizes.xxl,
@@ -290,59 +343,47 @@ const makeStyles = (colors: ColorPalette) =>
       color: colors.textSecondary,
       marginTop: spacing.xs,
     },
-    listContent: {
-      paddingBottom: spacing.xxl,
+    tableScroll: {
+      marginTop: spacing.md,
     },
-    row: {
-      flexDirection: 'row',
-      alignItems: 'center',
+    table: {
       backgroundColor: colors.surface,
-      borderRadius: borderRadius.sm,
+      borderRadius: borderRadius.md,
       borderWidth: 1,
       borderColor: colors.border,
-      paddingHorizontal: spacing.md,
-      paddingVertical: spacing.sm,
-      marginTop: spacing.sm,
-      gap: spacing.md,
+      overflow: 'hidden',
+    },
+    trow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      borderTopWidth: 1,
+      borderColor: colors.border,
       ...(Platform.OS === 'web' ? ({ cursor: 'pointer' } as any) : {}),
     },
-    headerRow: {
-      backgroundColor: 'transparent',
-      borderWidth: 0,
-      paddingVertical: 0,
+    thead: {
+      borderTopWidth: 0,
+      backgroundColor: colors.background,
     },
-    headerText: {
-      fontSize: fontSizes.xs,
-      fontWeight: '700',
-      color: colors.textSecondary,
-      textTransform: 'uppercase',
-    },
-    cellShopper: {
-      flex: 2,
-    },
-    shopperName: {
-      fontSize: fontSizes.md,
-      fontWeight: '600',
-      color: colors.text,
-    },
-    shopperPhone: {
-      fontSize: fontSizes.sm,
-      color: colors.textSecondary,
-    },
-    cellLocation: {
-      flex: 2,
-    },
-    cellNum: {
-      flex: 1,
-      textAlign: 'right',
-    },
-    cellText: {
+    cell: {
+      paddingHorizontal: spacing.sm,
+      paddingVertical: spacing.sm,
       fontSize: fontSizes.sm,
       color: colors.text,
     },
-    cellTotal: {
+    cellBold: {
       fontWeight: '700',
-      color: colors.primary,
+      color: colors.textSecondary,
+    },
+    wOrder: { width: 100 },
+    wDate: { width: 170 },
+    wLocation: { width: 170 },
+    wPhone: { width: 120 },
+    wName: { width: 150 },
+    wProduct: { width: 220 },
+    wQuestion: { width: 150 },
+    cardList: {
+      marginTop: spacing.sm,
+      gap: spacing.sm,
     },
     card: {
       backgroundColor: colors.surface,
@@ -350,38 +391,22 @@ const makeStyles = (colors: ColorPalette) =>
       borderWidth: 1,
       borderColor: colors.border,
       padding: spacing.md,
-      marginTop: spacing.sm,
       gap: spacing.xs,
     },
-    cardTop: {
+    cardField: {
       flexDirection: 'row',
-      justifyContent: 'space-between',
-      alignItems: 'center',
       gap: spacing.sm,
     },
-    cardIdentity: {
-      flex: 1,
-    },
-    cardName: {
-      fontSize: fontSizes.md,
-      fontWeight: '600',
-      color: colors.text,
-    },
-    cardPhone: {
-      fontSize: fontSizes.sm,
-      color: colors.textSecondary,
-    },
-    cardTotal: {
-      fontSize: fontSizes.md,
-      fontWeight: '700',
-      color: colors.primary,
-    },
-    cardLocation: {
-      fontSize: fontSizes.sm,
-      color: colors.textSecondary,
-    },
-    cardMeta: {
+    cardLabel: {
+      width: 110,
       fontSize: fontSizes.xs,
+      fontWeight: '700',
       color: colors.textSecondary,
+      textTransform: 'uppercase',
+    },
+    cardValue: {
+      flex: 1,
+      fontSize: fontSizes.sm,
+      color: colors.text,
     },
   });
