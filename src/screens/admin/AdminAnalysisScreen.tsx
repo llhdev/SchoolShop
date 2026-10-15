@@ -30,6 +30,14 @@ const MAX_WIDTH = 1200;
 const NAME_LABEL = /name/i;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
+/**
+ * Merge question labels that differ only by separators/casing
+ * ("Grade Section", "Grade & Section", "Grade - Section") into one column.
+ */
+function canonicalQuestionLabel(label: string): string {
+  return label.trim().toLowerCase().replace(/[&-]+/g, ' ').replace(/\s+/g, ' ');
+}
+
 /** One row per merchant line item: checkout answers live on the cart line. */
 interface AnalysisRow {
   key: string;
@@ -39,10 +47,11 @@ interface AnalysisRow {
   phoneNumber: string;
   telegramId?: number;
   productLabel: string;
+  quantity: number;
   studentName: string;
   /** Effective per-item status (falls back to the order-level status). */
   status: OrderStatus;
-  /** Checkout-question answers, excluding the name-like one. */
+  /** Checkout-question answers keyed by canonical label, excluding the name-like one. */
   answers: Record<string, string>;
 }
 
@@ -138,9 +147,11 @@ export function AdminAnalysisScreen() {
     return t >= dateRange[0] && t <= dateRange[1];
   };
 
-  const { rows, questionLabels } = useMemo(() => {
+  const { rows, questionLabels, questionDisplay } = useMemo(() => {
     const rows: AnalysisRow[] = [];
     const questionLabels: string[] = [];
+    // First-seen original label per canonical key, used as the column header.
+    const questionDisplay = new Map<string, string>();
     const sorted = [...orders].sort(
       (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
     );
@@ -158,8 +169,12 @@ export function AdminAnalysisScreen() {
             if (!studentName) studentName = answer.value.trim();
             continue;
           }
-          answers[answer.label] = answer.value.trim();
-          if (!questionLabels.includes(answer.label)) questionLabels.push(answer.label);
+          const key = canonicalQuestionLabel(answer.label);
+          if (!questionDisplay.has(key)) {
+            questionDisplay.set(key, answer.label.trim());
+            questionLabels.push(key);
+          }
+          if (!answers[key]) answers[key] = answer.value.trim();
         }
         if (!studentName && order.studentName) studentName = order.studentName;
         rows.push({
@@ -169,14 +184,15 @@ export function AdminAnalysisScreen() {
           location: order.location,
           phoneNumber: order.phoneNumber,
           telegramId: order.telegramId,
-          productLabel: `${item.product.name}${variant ? ` (${variant})` : ''} × ${item.quantity}`,
+          productLabel: `${item.product.name}${variant ? ` (${variant})` : ''}`,
+          quantity: item.quantity,
           studentName,
           status: getItemStatus(order, item),
           answers,
         });
       });
     }
-    return { rows, questionLabels };
+    return { rows, questionLabels, questionDisplay };
   }, [orders, scopedTenantId]);
 
   // Resolve Telegram usernames/names for Mini App orders (public-read table).
@@ -261,6 +277,7 @@ export function AdminAnalysisScreen() {
         case 'name': return telegramNameFor(r);
         case 'student': return r.studentName;
         case 'product': return r.productLabel;
+        case 'quantity': return String(r.quantity).padStart(8, '0');
         case 'status': return String(ORDER_STATUSES.indexOf(r.status));
         default: return r.answers[sort.key] ?? '';
       }
@@ -289,15 +306,16 @@ export function AdminAnalysisScreen() {
     const fields: [string, string][] = [
       ['Order #', row.orderId],
       ['Date & time', new Date(row.createdAt).toLocaleString()],
-      ['Location', row.location || '—'],
       ['Phone', row.phoneNumber],
-      ['Name', telegramNameFor(row)],
+      ['Telegram Name', telegramNameFor(row)],
       ['Student name', row.studentName || '—'],
       ['Product', row.productLabel],
+      ['Quantity', String(row.quantity)],
       ['Status', ORDER_STATUS_LABELS[row.status]],
       ...questionLabels.map(
-        (label): [string, string] => [label, row.answers[label] ?? '—']
+        (label): [string, string] => [questionDisplay.get(label) ?? label, row.answers[label] ?? '—']
       ),
+      ['Location', row.location || '—'],
     ];
     return (
       <TouchableOpacity
@@ -373,10 +391,13 @@ export function AdminAnalysisScreen() {
               <Text style={styles.statValue}>{summary.orders}</Text>
               <Text style={styles.statLabel}>Orders</Text>
             </View>
-            <View style={styles.statCard}>
-              <Text style={styles.statValue}>{formatPrice(summary.revenue)}</Text>
-              <Text style={styles.statLabel}>Revenue</Text>
-            </View>
+            {/* Revenue is super-admin-only for now; merchants see Shoppers + Orders. */}
+            {role === 'super_admin' && (
+              <View style={styles.statCard}>
+                <Text style={styles.statValue}>{formatPrice(summary.revenue)}</Text>
+                <Text style={styles.statLabel}>Revenue</Text>
+              </View>
+            )}
           </View>
 
           <SearchBar
@@ -440,13 +461,16 @@ export function AdminAnalysisScreen() {
                 <View style={[styles.trow, styles.thead]}>
                   {headerCell('Order #', 'order', styles.wOrder)}
                   {headerCell('Date & time', 'date', styles.wDate)}
-                  {headerCell('Location', 'location', styles.wLocation)}
                   {headerCell('Phone', 'phone', styles.wPhone)}
-                  {headerCell('Name', 'name', styles.wName)}
+                  {headerCell('Telegram Name', 'name', styles.wName)}
                   {headerCell('Student name', 'student', styles.wName)}
                   {headerCell('Product', 'product', styles.wProduct)}
+                  {headerCell('Quantity', 'quantity', styles.wQty)}
                   {headerCell('Status', 'status', styles.wStatus)}
-                  {questionLabels.map((label) => headerCell(label, label, styles.wQuestion))}
+                  {questionLabels.map((label) =>
+                    headerCell(questionDisplay.get(label) ?? label, label, styles.wQuestion)
+                  )}
+                  {headerCell('Location', 'location', styles.wLocation)}
                 </View>
                 {filtered.map((row) => (
                   <TouchableOpacity
@@ -456,15 +480,16 @@ export function AdminAnalysisScreen() {
                   >
                     {cell(row.orderId, styles.wOrder, `${row.key}-order`)}
                     {cell(new Date(row.createdAt).toLocaleString(), styles.wDate, `${row.key}-date`)}
-                    {cell(row.location || '—', styles.wLocation, `${row.key}-location`)}
                     {cell(row.phoneNumber, styles.wPhone, `${row.key}-phone`)}
                     {cell(telegramNameFor(row), styles.wName, `${row.key}-name`)}
                     {cell(row.studentName || '—', styles.wName, `${row.key}-student`)}
                     {cell(row.productLabel, styles.wProduct, `${row.key}-product`)}
+                    {cell(String(row.quantity), styles.wQty, `${row.key}-qty`)}
                     {cell(ORDER_STATUS_LABELS[row.status], styles.wStatus, `${row.key}-status`)}
                     {questionLabels.map((label) =>
                       cell(row.answers[label] ?? '—', styles.wQuestion, `${row.key}-${label}`)
                     )}
+                    {cell(row.location || '—', styles.wLocation, `${row.key}-location`)}
                   </TouchableOpacity>
                 ))}
               </View>
@@ -631,6 +656,7 @@ const makeStyles = (colors: ColorPalette) =>
     wPhone: { width: 120 },
     wName: { width: 150 },
     wProduct: { width: 220 },
+    wQty: { width: 90 },
     wStatus: { width: 130 },
     wQuestion: { width: 150 },
     cardList: {
