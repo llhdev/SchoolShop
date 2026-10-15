@@ -4,6 +4,7 @@ import { AdminStackParamList } from '../types/navigation';
 import { AdminDashboardScreen } from '../screens/admin/AdminDashboardScreen';
 import { AddEditItemScreen } from '../screens/admin/AddEditItemScreen';
 import { AdminOrdersScreen } from '../screens/admin/AdminOrdersScreen';
+import { AdminAnalysisScreen } from '../screens/admin/AdminAnalysisScreen';
 import { AdminUserOrdersScreen } from '../screens/admin/AdminUserOrdersScreen';
 import { TenantManagementScreen } from '../screens/admin/TenantManagementScreen';
 import { TenantDetailScreen } from '../screens/admin/TenantDetailScreen';
@@ -43,6 +44,11 @@ export function AdminStackNavigator() {
         name="AdminOrders"
         component={AdminOrdersScreen}
         options={{ title: 'All Orders' }}
+      />
+      <Stack.Screen
+        name="AdminAnalysis"
+        component={AdminAnalysisScreen}
+        options={{ title: 'Shopper Analysis' }}
       />
       <Stack.Screen
         name="AdminUserOrders"

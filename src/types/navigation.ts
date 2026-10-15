@@ -11,6 +11,7 @@ export type AdminStackParamList = {
   AdminProducts: undefined;
   AddEditItem: { productId?: string } | undefined;
   AdminOrders: undefined;
+  AdminAnalysis: undefined;
   AdminUserOrders: { phoneNumber: string; tenantId?: string };
   AdminAccount: undefined;
   TenantManagement: undefined;

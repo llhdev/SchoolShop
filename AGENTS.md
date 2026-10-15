@@ -63,20 +63,7 @@ Docs: <https://docs.expo.dev/versions/v54.0.0/>
 │   │   ├── telegram-order-notify/   # Routes each order to the Telegram group of every shop in it
 │   │   ├── verify-order-payment/    # DB-triggered verify.et check of each merchant's payment proof
 │   │   └── verify-et-webhook/       # Completes queued verifications (signed, idempotent)
-│   └── migrations/                  # 001–040, applied in order; header comments document each.
-│                                    # Highlights: profiles/roles (002–003), username login (004),
-│                                    # tenant lifecycle (005–007, 014, 026), compare-at price (008),
-│                                    # Telegram shoppers + per-tenant order routing (011, 018–019),
-│                                    # order statuses (012, 020, 022), account management (013),
-│                                    # fetch_products_with_shop RPC (017, 021, 023–025, 028),
-│                                    # payment proofs + bank details (020–021), detail images (027),
-│                                    # price-on-request (029), order count + Popular sort (030),
-│                                    # shipping fee + multiple bank accounts (031),
-│                                    # student name + optional location (034), variant groups (035),
-│                                    # tenant checkout questions (036), shop on/off switch (037),
-│                                    # variant-aware item status keys (038), order status
-│                                    # recomputed from item statuses (039), verify.et payment
-│                                    # verification + claims + private proofs bucket (040)
+│   └── migrations/                  # 001–040, applied in order; header comments document each
 ├── docs/
 │   └── telegram-mini-app.md         # TMA runbook: architecture, deploy, bot setup, testing
 ├── .github/workflows/deploy-web.yml # CI: web export -> gh-pages on push to main
@@ -125,6 +112,7 @@ Docs: <https://docs.expo.dev/versions/v54.0.0/>
     │   ├── admin/
     │   │   ├── AdminDashboardScreen.tsx   # Product/category management and stats
     │   │   ├── AdminOrdersScreen.tsx      # Orders grouped by customer phone
+    │   │   ├── AdminAnalysisScreen.tsx    # Shopper table aggregated from orders (per-shop for tenants)
     │   │   ├── AdminUserOrdersScreen.tsx  # All orders for one phone number
     │   │   ├── AddEditItemScreen.tsx      # Create/edit product, multi-image upload, variant editor, checkout questions
     │   │   └── TenantManagementScreen.tsx # Super admin tenant management
@@ -192,6 +180,7 @@ All shared state lives in `src/context/AppContext.tsx`:
 - Mutations are optimistic: the reducer updates local state, the cache is updated, then the change is sent to Supabase; failures roll back.
 - Supabase Realtime subscriptions listen for product, order, and category changes and refresh state + cache (refetches are debounced so bursts trigger a single fetch).
 - Orders are admin-only: shoppers never fetch the global order list — their history is the orders placed on that device (cached locally). The super admin fetches all orders; tenant admins fetch only orders whose `tenant_ids` include them (migration 018) and see only their shop's line items within mixed orders. Signing out clears the order list from memory and cache.
+- The Shopper Analysis screen (`AdminAnalysisScreen`) aggregates the same tenant-scoped order list client-side into one row per shopper phone number (orders, units, spend incl. the shop's shipping fee, last order); no extra fetch or migration. Tapping a row opens `AdminUserOrders` for that phone.
 - Inside the Telegram Mini App, a validated `shopper` (from the `telegram-auth` Edge Function, cached at `@schoolshop_shopper`) gives server-side order history: orders are fetched and subscribed by `telegram_id` and follow the Telegram account across devices. Skipped while an admin is signed in.
 - The Supabase client persists auth sessions via AsyncStorage, so admin sign-in survives restarts.
 - Derived values (`cartTotal`, `cartCount`) are computed at render time.
@@ -245,7 +234,7 @@ Param lists are in `src/types/navigation.ts`. On web the `NavigationContainer` h
 - Phone numbers are validated with `isValidEthiopianPhoneNumber` in `src/utils/validation.ts`.
 - The only payment method is **direct bank transfer**. Checkout groups the cart by tenant and shows, per shop: name, every bank account (number + bank name + QR, via `fetch_products_with_shop`), the shop's subtotal plus its flat shipping fee. The shopper uploads **one payment-proof photo per shop** (`uploadPaymentProof`, resized to 800px); every shop needs a proof before the order can be placed.
 - Orders start at `pending` with proofs on `orders.payment_proofs`. The `telegram-order-notify` Edge Function sends each tenant their order summary **plus their payment-proof photo** to their Telegram chat; each item's checkout-question answers are listed under it.
-- **Payment verification (verify.et, migration 040).** An AFTER INSERT trigger on orders (`trg_orders_verify_payment`) calls the `verify-order-payment` Edge Function over `pg_net` with a shared internal token (Vault `verify_function_secret`) — the client never triggers verification. For each merchant independently, their proof image is submitted to verify.et (idempotency key per attempt+proof, so retries replay free) and evaluated on five checks: payment completed, correct recipient (exact account match only — masked digits always force review), exact amount (items + shipping fee; underpaid fails, overpaid needs review), not previously claimed (`payment_claims` PK on provider+reference, claimed atomically and only for fully passing payments), and receipt recency (`RECEIPT_MAX_AGE_HOURS`, default 24). Every attempt is a row in `payment_verifications` (full history, `is_current` flags the active one); the merchant gets a ✅/⚠️/❌ breakdown in their Telegram group. Queued verifications complete via the signed `verify-et-webhook`. Tenants retry with `retry_payment_verification` and approve review-flagged payments with `approve_payment_verification` (which also claims the reference atomically) — both exposed in the admin UI: the order detail screen shows a Payment Verification card per merchant (status badge, per-check breakdown, paid vs expected amount, Retry/Approve buttons) and `AdminUserOrdersScreen` carries a verification chip per order; reads are RLS-scoped so tenants only see their own shop's attempt. Order approval stays fully manual — verification never changes order status.
+- **Payment verification (verify.et, migration 040).** An AFTER INSERT orders trigger calls the `verify-order-payment` Edge Function (client never triggers it). Each merchant's proof is checked for completion, exact recipient account, exact amount (items + fee), prior claim (`payment_claims`), and receipt age (`RECEIPT_MAX_AGE_HOURS`, default 24). Attempts are logged in `payment_verifications` (`is_current` = active); queued ones complete via the signed `verify-et-webhook`. Tenants retry/approve via `retry_payment_verification` / `approve_payment_verification`, surfaced on the order detail screen and as chips in `AdminUserOrdersScreen`. Verification never changes order status — approval stays manual.
 - Tenant bank details live on `profiles.bank_accounts` and the fee on `profiles.shipping_fee`: the super admin sets them at tenant creation/edit; tenants maintain their own via `update_own_bank_accounts` / `update_own_shipping_fee` in Account & Security. Each fee is charged once per order, added to that shop's transfer amount, stored on `orders.shipping_fees`, and included in `orders.total`.
   Merchant account editing is temporarily disabled: `MERCHANT_ACCOUNT_EDITING_ENABLED = false` in `src/constants/featureFlags.ts` hides the tenant's Account & Security editing (gateway, password, shop description, Telegram username, bank details, shipping fee — including the shipping-fee field on Add/Edit Item) and its entry points; flip to `true` to re-enable. The super admin and the RPCs are unaffected.
 - A checkout creates a single `Order` containing all cart line items, sharing one location and phone number.
@@ -305,19 +294,11 @@ No ESLint or Prettier config exists; if you add one, keep rules aligned with the
 ## Security considerations
 
 - **Admin authentication.** Admins sign in through Supabase Auth. Roles: `super_admin` (full access) and `admin` (tenant; can only edit/delete products they uploaded). `get_admin_by_username` only returns data for an exact username match.
-  Credential management (013): any admin can change their own username/password from Account & Security (`change_own_username` RPC + `auth.updateUser`). The super admin can also edit a tenant's username, email, shop name, and password (`admin_update_tenant` / `admin_set_tenant_password` RPCs, SECURITY DEFINER with a super-admin check). A guard trigger blocks non-super-admins from changing any profile's `role` or `email`.
-  Tenant codes (014): every profile gets a short `XXXX-XXXX` code from the `fill_tenant_code` trigger — the auth UUID is never shown in the UI. Tenant creation accepts an optional custom email (blank derives `<username>@tenant.schoolshop.app`); the signup trigger detects tenants by the `shop_name` metadata field, not the email domain.
+  Credential management (013): admins change their own username/password from Account & Security; the super admin edits tenant username/email/shop name/password via SECURITY DEFINER RPCs. A guard trigger blocks non-super-admins from changing any profile's `role` or `email`.
+  Tenant codes (014): every profile gets a short `XXXX-XXXX` code from the `fill_tenant_code` trigger — the auth UUID is never shown in the UI. Tenant creation accepts an optional custom email (blank derives `<username>@tenant.schoolshop.app`); the signup trigger detects tenants by the `shop_name` metadata field.
   `SUPABASE_ADMIN_EMAIL`/`SUPABASE_ADMIN_PASSWORD` must NOT use the `EXPO_PUBLIC_` prefix — that inlines values into the client bundle. Anyone who discovers the tenant email pattern can create a tenant account in this MVP; lock this down with an invitation flow beyond the MVP.
 - **Public reads, authenticated writes.** Products and categories are publicly readable; orders can be placed without auth. Order SELECT is public (016) so Telegram shoppers can read their history by `telegram_id` — order rows (phone, location) are readable by anyone with the anon key. Harden with per-shopper JWT claims beyond the MVP.
 - **Local cache.** AsyncStorage is unencrypted. Never store real payment data, passwords, or PII.
 - **Telegram shopper identity.** `telegram-auth` validates Telegram's signed initData, so the shopper record is trustworthy — but orders are inserted by the client with that `telegram_id` under public-insert RLS, so a crafted client could forge another user's id (see `docs/telegram-mini-app.md` for the hardening option).
   initData HMAC gotcha: `secret_key = HMAC(key="WebAppData", message=bot_token)` — swapping key/message silently rejects every real initData. The client SDK script can fail on slow networks; `initTelegram()` then falls back to a stub WebApp built from the `tgWebAppData` URL parameter (callers check `hasTelegramChrome()` to fall back to in-app UI).
 - Storage objects are not auto-deleted when a product is removed (best-effort deletion).
-
----
-
-## Useful references
-
-- Expo SDK 54 docs: <https://docs.expo.dev/versions/v54.0.0/>
-- React Navigation v7: <https://reactnavigation.org/docs/getting-started/>
-- Supabase JavaScript client: <https://supabase.com/docs/reference/javascript/>

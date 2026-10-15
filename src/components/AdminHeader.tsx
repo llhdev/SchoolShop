@@ -69,6 +69,13 @@ export function AdminHeader() {
             compact={compact}
             onPress={() => navigation.navigate('AdminOrders')}
           />
+          <NavLink
+            name="AdminAnalysis"
+            label="Analysis"
+            current={current}
+            compact={compact}
+            onPress={() => navigation.navigate('AdminAnalysis')}
+          />
           {(isSuperAdmin || MERCHANT_ACCOUNT_EDITING_ENABLED) && (
             <NavLink
               name="AdminAccount"
