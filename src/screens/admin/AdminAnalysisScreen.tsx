@@ -18,6 +18,7 @@ import { SearchBar } from '../../components/SearchBar';
 import { useApp } from '../../context/AppContext';
 import { useResponsive } from '../../hooks/useResponsive';
 import { formatPrice } from '../../utils/format';
+import { downloadAnalysisExcel } from '../../utils/exportAnalysis';
 import { formatVariantLabel, getUnitPrice } from '../../utils/variants';
 import { getItemStatus, getOrderItemsForTenant } from '../../services/orders';
 import { fetchShoppersByTelegramIds } from '../../services/telegramAuth';
@@ -39,7 +40,7 @@ function canonicalQuestionLabel(label: string): string {
 }
 
 /** One row per merchant line item: checkout answers live on the cart line. */
-interface AnalysisRow {
+export interface AnalysisRow {
   key: string;
   orderId: string;
   createdAt: string;
@@ -302,6 +303,16 @@ export function AdminAnalysisScreen() {
     );
   }
 
+  const [downloading, setDownloading] = useState(false);
+  async function handleDownload() {
+    setDownloading(true);
+    try {
+      await downloadAnalysisExcel(filtered, questionLabels, questionDisplay, telegramNameFor);
+    } finally {
+      setDownloading(false);
+    }
+  }
+
   function renderCard(row: AnalysisRow) {
     const fields: [string, string][] = [
       ['Order #', row.orderId],
@@ -444,6 +455,19 @@ export function AdminAnalysisScreen() {
                 <Text style={styles.dateError}>Use YYYY-MM-DD for both dates.</Text>
               )}
             </View>
+          )}
+
+          {isWeb && filtered.length > 0 && (
+            <TouchableOpacity
+              style={styles.downloadButton}
+              onPress={handleDownload}
+              disabled={downloading}
+            >
+              <Ionicons name="download-outline" size={16} color={colors.primary} />
+              <Text style={styles.downloadText}>
+                {downloading ? 'Preparing…' : `Download Excel (${filtered.length} rows)`}
+              </Text>
+            </TouchableOpacity>
           )}
 
           {isEmpty ? (
@@ -607,6 +631,25 @@ const makeStyles = (colors: ColorPalette) =>
       fontSize: fontSizes.xs,
       color: colors.danger,
       fontWeight: '600',
+    },
+    downloadButton: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      alignSelf: 'flex-start',
+      gap: spacing.xs,
+      marginTop: spacing.md,
+      paddingHorizontal: spacing.md,
+      paddingVertical: spacing.sm,
+      borderRadius: borderRadius.sm,
+      borderWidth: 1,
+      borderColor: colors.primary,
+      backgroundColor: colors.surface,
+      ...(Platform.OS === 'web' ? ({ cursor: 'pointer' } as any) : {}),
+    },
+    downloadText: {
+      fontSize: fontSizes.sm,
+      fontWeight: '600',
+      color: colors.primary,
     },
     tableScroll: {
       marginTop: spacing.md,
