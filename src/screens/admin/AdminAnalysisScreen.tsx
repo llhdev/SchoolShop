@@ -51,6 +51,8 @@ export interface AnalysisRow {
   shopName: string;
   productLabel: string;
   quantity: number;
+  /** unitPrice × quantity, for per-store revenue on the super-admin store list. */
+  lineTotal: number;
   studentName: string;
   /** Effective per-item status (falls back to the order-level status). */
   status: OrderStatus;
@@ -131,6 +133,7 @@ export function AdminAnalysisScreen() {
   const [customStart, setCustomStart] = useState('');
   const [customEnd, setCustomEnd] = useState('');
   const [groupByStore, setGroupByStore] = useState(false);
+  const [selectedStore, setSelectedStore] = useState<string | null>(null);
   const [telegramNames, setTelegramNames] = useState<Map<number, Shopper>>(new Map());
 
   // Tenant admins are scoped to their own line items (mixed orders included);
@@ -192,6 +195,7 @@ export function AdminAnalysisScreen() {
           shopName: product.shop_name ?? product.shopName ?? 'Unknown store',
           productLabel: `${item.product.name}${variant ? ` (${variant})` : ''}`,
           quantity: item.quantity,
+          lineTotal: getUnitPrice(item) * item.quantity,
           studentName,
           status: getItemStatus(order, item),
           answers,
@@ -298,20 +302,32 @@ export function AdminAnalysisScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows, query, sort, telegramNames, dateRange]);
 
-  // Super admin only: group the filtered rows by store, shops A→Z, keeping the
-  // current sort order within each shop.
-  const grouped = useMemo(() => {
+  // Super admin only: "Group by store" is a drill-down — first a list of stores,
+  // then the analysis table of the selected store only.
+  const storeSummaries = useMemo(() => {
     if (role !== 'super_admin' || !groupByStore) return null;
-    const byShop = new Map<string, AnalysisRow[]>();
+    const byShop = new Map<
+      string,
+      { shopName: string; items: number; orderIds: Set<string>; revenue: number }
+    >();
     for (const row of filtered) {
-      const list = byShop.get(row.shopName);
-      if (list) list.push(row);
-      else byShop.set(row.shopName, [row]);
+      let entry = byShop.get(row.shopName);
+      if (!entry) {
+        entry = { shopName: row.shopName, items: 0, orderIds: new Set(), revenue: 0 };
+        byShop.set(row.shopName, entry);
+      }
+      entry.items += 1;
+      entry.orderIds.add(row.orderId);
+      entry.revenue += row.lineTotal;
     }
-    return [...byShop.entries()]
-      .sort((a, b) => a[0].localeCompare(b[0]))
-      .map(([shopName, shopRows]) => ({ shopName, rows: shopRows }));
+    return [...byShop.values()].sort((a, b) => a.shopName.localeCompare(b.shopName));
   }, [role, groupByStore, filtered]);
+
+  const displayedRows = useMemo(
+    () =>
+      selectedStore ? filtered.filter((r) => r.shopName === selectedStore) : filtered,
+    [filtered, selectedStore]
+  );
 
   const isWeb = Platform.OS === 'web';
 
@@ -327,7 +343,7 @@ export function AdminAnalysisScreen() {
   async function handleDownload() {
     setDownloading(true);
     try {
-      await downloadAnalysisExcel(filtered, questionLabels, questionDisplay, telegramNameFor);
+      await downloadAnalysisExcel(displayedRows, questionLabels, questionDisplay, telegramNameFor);
     } finally {
       setDownloading(false);
     }
@@ -398,6 +414,7 @@ export function AdminAnalysisScreen() {
   }
 
   const isEmpty = rows.length === 0;
+  const showStoreList = storeSummaries !== null && selectedStore === null;
 
   return (
     <>
@@ -452,7 +469,10 @@ export function AdminAnalysisScreen() {
             {role === 'super_admin' && (
               <TouchableOpacity
                 style={[styles.chip, groupByStore && styles.chipActive]}
-                onPress={() => setGroupByStore((v) => !v)}
+                onPress={() => {
+                  setGroupByStore((v) => !v);
+                  setSelectedStore(null);
+                }}
               >
                 <Ionicons
                   name="storefront-outline"
@@ -492,7 +512,7 @@ export function AdminAnalysisScreen() {
             </View>
           )}
 
-          {isWeb && filtered.length > 0 && (
+          {isWeb && !showStoreList && displayedRows.length > 0 && (
             <TouchableOpacity
               style={styles.downloadButton}
               onPress={handleDownload}
@@ -500,7 +520,7 @@ export function AdminAnalysisScreen() {
             >
               <Ionicons name="download-outline" size={16} color={colors.primary} />
               <Text style={styles.downloadText}>
-                {downloading ? 'Preparing…' : `Download Excel (${filtered.length} rows)`}
+                {downloading ? 'Preparing…' : `Download Excel (${displayedRows.length} rows)`}
               </Text>
             </TouchableOpacity>
           )}
@@ -512,24 +532,44 @@ export function AdminAnalysisScreen() {
             />
           ) : filtered.length === 0 ? (
             <EmptyState message="No rows match your filters." icon="search-outline" />
-          ) : isPhone ? (
-            grouped ? (
-              <View style={styles.cardList}>
-                {grouped.map((group) => (
-                  <View key={group.shopName} style={styles.groupSection}>
-                    <View style={styles.groupHeader}>
-                      <Ionicons name="storefront-outline" size={16} color={colors.primary} />
-                      <Text style={styles.groupTitle}>{group.shopName}</Text>
-                      <Text style={styles.groupCount}>{group.rows.length} items</Text>
-                    </View>
-                    {group.rows.map(renderCard)}
+          ) : showStoreList && storeSummaries ? (
+            <View style={styles.storeList}>
+              {storeSummaries.map((store) => (
+                <TouchableOpacity
+                  key={store.shopName}
+                  style={styles.storeCard}
+                  onPress={() => setSelectedStore(store.shopName)}
+                >
+                  <View style={styles.storeCardIcon}>
+                    <Ionicons name="storefront-outline" size={22} color={colors.primary} />
                   </View>
-                ))}
-              </View>
-            ) : (
-              <View style={styles.cardList}>{filtered.map(renderCard)}</View>
-            )
+                  <View style={styles.storeCardBody}>
+                    <Text style={styles.storeCardName}>{store.shopName}</Text>
+                    <Text style={styles.storeCardMeta}>
+                      {store.items} items · {store.orderIds.size} orders · {formatPrice(store.revenue)}
+                    </Text>
+                  </View>
+                  <Ionicons name="chevron-forward" size={18} color={colors.textSecondary} />
+                </TouchableOpacity>
+              ))}
+            </View>
           ) : (
+            <>
+              {selectedStore && (
+                <View style={styles.storeHeader}>
+                  <TouchableOpacity
+                    style={styles.backButton}
+                    onPress={() => setSelectedStore(null)}
+                  >
+                    <Ionicons name="chevron-back" size={16} color={colors.primary} />
+                    <Text style={styles.backButtonText}>All stores</Text>
+                  </TouchableOpacity>
+                  <Text style={styles.storeHeaderName}>{selectedStore}</Text>
+                </View>
+              )}
+              {isPhone ? (
+                <View style={styles.cardList}>{displayedRows.map(renderCard)}</View>
+              ) : (
             <ScrollView horizontal style={styles.tableScroll}>
               <View style={styles.table}>
                 <View style={[styles.trow, styles.thead]}>
@@ -546,17 +586,7 @@ export function AdminAnalysisScreen() {
                   )}
                   {headerCell('Location', 'location', styles.wLocation)}
                 </View>
-                {(grouped ?? [{ shopName: '', rows: filtered }]).map((group) => (
-                  <View key={group.shopName || 'all'}>
-                    {grouped && (
-                      <View style={styles.groupRow}>
-                        <Ionicons name="storefront-outline" size={14} color={colors.primary} />
-                        <Text style={styles.groupRowText}>
-                          {group.shopName} · {group.rows.length} items
-                        </Text>
-                      </View>
-                    )}
-                    {group.rows.map((row) => (
+                {displayedRows.map((row) => (
                   <TouchableOpacity
                     key={row.key}
                     style={styles.trow}
@@ -575,11 +605,11 @@ export function AdminAnalysisScreen() {
                     )}
                     {cell(row.location || '—', styles.wLocation, `${row.key}-location`)}
                   </TouchableOpacity>
-                    ))}
-                  </View>
                 ))}
               </View>
             </ScrollView>
+              )}
+            </>
           )}
         </View>
       </Screen>
@@ -716,37 +746,63 @@ const makeStyles = (colors: ColorPalette) =>
       fontWeight: '600',
       color: colors.primary,
     },
-    groupSection: {
+    storeList: {
+      marginTop: spacing.md,
       gap: spacing.sm,
     },
-    groupHeader: {
+    storeCard: {
       flexDirection: 'row',
       alignItems: 'center',
-      gap: spacing.xs,
-      marginTop: spacing.sm,
+      gap: spacing.md,
+      backgroundColor: colors.surface,
+      borderRadius: borderRadius.md,
+      borderWidth: 1,
+      borderColor: colors.border,
+      padding: spacing.md,
+      ...(Platform.OS === 'web' ? ({ cursor: 'pointer' } as any) : {}),
     },
-    groupTitle: {
+    storeCardIcon: {
+      width: 40,
+      height: 40,
+      borderRadius: borderRadius.md,
+      backgroundColor: colors.background,
+      alignItems: 'center',
+      justifyContent: 'center',
+    },
+    storeCardBody: {
+      flex: 1,
+    },
+    storeCardName: {
       fontSize: fontSizes.md,
       fontWeight: '700',
       color: colors.text,
-      flex: 1,
     },
-    groupCount: {
+    storeCardMeta: {
       fontSize: fontSizes.xs,
       color: colors.textSecondary,
+      marginTop: 2,
     },
-    groupRow: {
+    storeHeader: {
       flexDirection: 'row',
       alignItems: 'center',
-      gap: spacing.xs,
-      paddingHorizontal: spacing.sm,
-      paddingVertical: spacing.sm,
-      borderTopWidth: 1,
-      borderColor: colors.border,
-      backgroundColor: colors.background,
+      gap: spacing.sm,
+      marginTop: spacing.md,
     },
-    groupRowText: {
+    backButton: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 2,
+      paddingVertical: spacing.xs,
+      paddingRight: spacing.sm,
+      ...(Platform.OS === 'web' ? ({ cursor: 'pointer' } as any) : {}),
+    },
+    backButtonText: {
       fontSize: fontSizes.sm,
+      fontWeight: '600',
+      color: colors.primary,
+    },
+    storeHeaderName: {
+      fontSize: fontSizes.lg,
       fontWeight: '700',
       color: colors.text,
     },
