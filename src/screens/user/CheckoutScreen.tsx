@@ -54,6 +54,10 @@ interface TenantPaymentGroup {
   bankAccounts: BankAccount[];
   /** Flat fee the shop charges once per order (0 = free). */
   shippingFee: number;
+  /** The shop's own verification switch (profiles.payment_verification_enabled,
+   *  migration 043); combined with the global kill-switch (042) to decide
+   *  whether this shop's payment must be verified. */
+  paymentVerificationEnabled: boolean;
   items: CartItem[];
   subtotal: number;
   /** What the shopper transfers to this shop: subtotal + shipping fee. */
@@ -191,6 +195,7 @@ export function CheckoutScreen() {
           shopName: current.shopName ?? item.product.shopName ?? 'Shop',
           bankAccounts: current.ownerBankAccounts ?? [],
           shippingFee,
+          paymentVerificationEnabled: current.ownerPaymentVerificationEnabled ?? true,
           items: [],
           subtotal: 0,
           total: 0,
@@ -238,6 +243,12 @@ export function CheckoutScreen() {
 
   const anyProofUploading = Object.values(proofUploading).some(Boolean);
 
+  // A shop's payment must be verified only when BOTH the global kill-switch
+  // (042) and the shop's own per-tenant flag (043) are on. Excluded shops are
+  // satisfied by their proof photo alone (pre-040 behavior).
+  const isGroupVerificationRequired = (group: TenantPaymentGroup) =>
+    verificationEnabled && group.paymentVerificationEnabled;
+
   const canPlaceOrder =
     cart.length > 0 &&
     phoneValid &&
@@ -246,8 +257,10 @@ export function CheckoutScreen() {
     !anyProofUploading &&
     tenantGroups.length > 0 &&
     tenantGroups.every((group) => !!proofsByTenant[group.key]) &&
-    (!verificationEnabled ||
-      tenantGroups.every((group) => verifyStates[group.key] === 'verified'));
+    tenantGroups.every(
+      (group) =>
+        !isGroupVerificationRequired(group) || verifyStates[group.key] === 'verified'
+    );
 
   // Drop the red validation marks as soon as everything required is filled.
   useEffect(() => {
@@ -310,9 +323,11 @@ export function CheckoutScreen() {
       const url = await uploadPaymentProof(resized);
       setProofsByTenant((prev) => ({ ...prev, [groupKey]: url }));
       // A new proof means a new payment: reset this shop's verification and
-      // try to read the reference off the receipt. When the verification
-      // kill-switch is off, the proof alone satisfies the shop.
-      if (verificationEnabled) {
+      // try to read the reference off the receipt. When verification is off
+      // for this shop (global kill-switch or the shop's own flag), the proof
+      // alone satisfies it.
+      const group = tenantGroups.find((g) => g.key === groupKey);
+      if (group && isGroupVerificationRequired(group)) {
         startVerification(groupKey, url, resized);
       } else {
         resetGroupVerification(groupKey);
@@ -476,7 +491,7 @@ export function CheckoutScreen() {
       const message =
         unansweredRequired.length > 0
           ? `Please answer the shop's questions: ${unansweredRequired.join(', ')}.`
-          : allProofsUploaded && verificationEnabled
+          : allProofsUploaded && tenantGroups.some((g) => isGroupVerificationRequired(g))
             ? 'Payment verification is incomplete — verify each shop\'s payment before placing the order.'
             : 'Please fill in all required info: phone number and a payment proof for each shop.';
       if (!showTelegramPopup('Missing Information', message)) {
@@ -503,20 +518,20 @@ export function CheckoutScreen() {
       createdAt: new Date().toISOString(),
       telegramId: shopper?.telegramId,
       paymentProofs: proofsByTenant,
-      // Every group is verified at this point (canPlaceOrder), so each has a
-      // provider + reference. The post-order verification replays the same
-      // key, which verify.et does not bill. Empty when the verification
-      // kill-switch is off — those orders take the legacy (image) path.
-      paymentReferences: verificationEnabled
-        ? Object.fromEntries(
-            tenantGroups.flatMap((group): [string, { provider: 'cbe' | 'telebirr'; reference: string; key: string }][] => {
-              const ref = references[group.key];
-              return ref?.provider
-                ? [[group.key, { provider: ref.provider, reference: ref.reference.trim(), key: ref.key }]]
-                : [];
-            })
-          )
-        : {},
+      // Every required group is verified at this point (canPlaceOrder), so
+      // each has a provider + reference. The post-order verification replays
+      // the same key, which verify.et does not bill. Shops whose verification
+      // is off (global kill-switch or their own flag) get no reference — their
+      // slice is skipped by verify-order-payment (043).
+      paymentReferences: Object.fromEntries(
+        tenantGroups.flatMap((group): [string, { provider: 'cbe' | 'telebirr'; reference: string; key: string }][] => {
+          if (!isGroupVerificationRequired(group)) return [];
+          const ref = references[group.key];
+          return ref?.provider
+            ? [[group.key, { provider: ref.provider, reference: ref.reference.trim(), key: ref.key }]]
+            : [];
+        })
+      ),
       shippingFees: Object.fromEntries(
         tenantGroups
           .filter((group) => group.shippingFee > 0)
@@ -837,7 +852,7 @@ export function CheckoutScreen() {
                             </TouchableOpacity>
                           </View>
 
-                          {verificationEnabled && verifyState && verifyState !== 'reading' && (
+                          {isGroupVerificationRequired(group) && verifyState && verifyState !== 'reading' && (
                             <View style={styles.verifyBlock}>
                               {verifyState === 'unverified' && isWeb && !reference?.reference && (
                                 <Text style={styles.verifyHint}>

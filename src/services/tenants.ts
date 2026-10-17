@@ -18,6 +18,9 @@ export interface Tenant {
   /** false = super admin switched the shop off: catalog hides its products
    *  and the tenant is locked out (migration 037). */
   isActive: boolean;
+  /** false = super admin excluded this shop from payment verification:
+   *  its orders are placed with proofs only (migration 043). */
+  paymentVerificationEnabled: boolean;
   role: 'admin';
   createdAt: string;
 }
@@ -56,12 +59,13 @@ interface DbProfile {
   shop_description: string | null;
   telegram_username: string | null;
   is_active: boolean;
+  payment_verification_enabled: boolean;
   role: 'admin';
   created_at: string;
 }
 
 const TENANT_SELECT =
-  'id, tenant_code, username, email, shop_name, telegram_chat_id, bank_accounts, shipping_fee, shop_logo_url, shop_description, telegram_username, is_active, role, created_at';
+  'id, tenant_code, username, email, shop_name, telegram_chat_id, bank_accounts, shipping_fee, shop_logo_url, shop_description, telegram_username, is_active, payment_verification_enabled, role, created_at';
 
 function toTenant(db: DbProfile): Tenant {
   return {
@@ -77,6 +81,7 @@ function toTenant(db: DbProfile): Tenant {
     shopDescription: db.shop_description,
     telegramUsername: db.telegram_username,
     isActive: db.is_active,
+    paymentVerificationEnabled: db.payment_verification_enabled ?? true,
     role: db.role,
     createdAt: db.created_at,
   };
@@ -148,6 +153,21 @@ export async function adminSetTenantActive(
     new_is_active: isActive,
   });
   if (error) throw new Error(error.message || 'Failed to update shop status.');
+}
+
+/** Super admin includes/excludes a shop from payment verification
+ *  (profiles.payment_verification_enabled, migration 043). Off = the shop's
+ *  orders are placed with proofs only; the global kill-switch (042) still
+ *  gates the whole pipeline. */
+export async function adminSetTenantPaymentVerification(
+  id: string,
+  enabled: boolean
+): Promise<void> {
+  const { error } = await supabase.rpc('admin_set_tenant_payment_verification', {
+    tenant_id: id,
+    new_enabled: enabled,
+  });
+  if (error) throw new Error(error.message || 'Failed to update payment verification.');
 }
 
 /** Super admin edits a tenant's username (gateway), email, and shop name. */
@@ -313,6 +333,7 @@ export async function createTenant(
     shopDescription: cleanDescription || null,
     telegramUsername: cleanTelegramUsername || null,
     isActive: true,
+    paymentVerificationEnabled: true,
     role: 'admin',
     createdAt: new Date().toISOString(),
   };

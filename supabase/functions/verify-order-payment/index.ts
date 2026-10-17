@@ -364,7 +364,7 @@ Deno.serve(async (req) => {
 
   const { data: profiles } = await supabase
     .from('profiles')
-    .select('id, shop_name, telegram_chat_id, bank_accounts, shipping_fee')
+    .select('id, shop_name, telegram_chat_id, bank_accounts, shipping_fee, payment_verification_enabled')
     .in('id', tenantIds);
 
   // Registry sync across ALL tenants, so any receiver can be resolved.
@@ -388,7 +388,16 @@ Deno.serve(async (req) => {
       shop_name: null,
       telegram_chat_id: null,
       bank_accounts: [],
+      payment_verification_enabled: true,
     };
+    // Per-tenant switch (043): excluded shops are skipped outright — no
+    // verify.et submission, no payment_verifications row, no Telegram
+    // verification message. Their proofs still reach the tenant via
+    // telegram-order-notify.
+    if (profile.payment_verification_enabled === false) {
+      results[tenantId] = 'skipped';
+      continue;
+    }
     results[tenantId] = await verifyTenantSlice(order, tenantId, proofs[tenantId], profile);
   }
 

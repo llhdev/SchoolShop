@@ -74,6 +74,8 @@ export interface Product {
   ownerShopDescription?: string;
   /** Tenant Telegram username for shopper chat, resolved from the owner's profile (migration 025). */
   ownerTelegramUsername?: string;
+  /** Whether this shop requires pre-order payment verification (migration 043); undefined = on. */
+  ownerPaymentVerificationEnabled?: boolean;
   /** Optional variant groups ("Size", "Color"); one group may set the price (migration 035). */
   variantGroups?: VariantGroup[];
   /** Tenant-defined questions the buyer answers at checkout (migration 036). */

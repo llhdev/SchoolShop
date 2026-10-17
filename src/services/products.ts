@@ -48,6 +48,7 @@ interface DbProduct {
   shop_logo_url?: string | null;
   shop_description?: string | null;
   telegram_username?: string | null;
+  payment_verification_enabled?: boolean | null;
   variants?: unknown;
   checkout_fields?: unknown;
 }
@@ -73,6 +74,7 @@ function toProduct(db: DbProduct): Product {
     ownerShopLogoUrl: db.shop_logo_url ?? undefined,
     ownerShopDescription: db.shop_description ?? undefined,
     ownerTelegramUsername: db.telegram_username ?? undefined,
+    ownerPaymentVerificationEnabled: db.payment_verification_enabled ?? undefined,
     variantGroups: toVariantGroups(db.variants),
     checkoutFields: toCheckoutFields(db.checkout_fields),
   };

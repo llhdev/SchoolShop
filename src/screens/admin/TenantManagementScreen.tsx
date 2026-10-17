@@ -21,7 +21,7 @@ import { EmptyState } from '../../components/EmptyState';
 import { AdminHeader } from '../../components/AdminHeader';
 import { BankAccountsEditor } from '../../components/BankAccountsEditor';
 import { Button } from '../../components/Button';
-import { fetchTenants, createTenant, adminSetTenantActive, Tenant } from '../../services/tenants';
+import { fetchTenants, createTenant, adminSetTenantActive, adminSetTenantPaymentVerification, Tenant } from '../../services/tenants';
 import { fetchPaymentVerificationEnabled, setPaymentVerificationEnabled } from '../../services/settings';
 import { uploadShopLogo } from '../../services/images';
 import { confirmAction } from '../../utils/confirm';
@@ -240,6 +240,33 @@ export function TenantManagementScreen() {
     );
   }
 
+  async function setTenantPaymentVerification(tenant: Tenant, next: boolean) {
+    const previous = tenants;
+    setTenants((prev) =>
+      prev.map((t) => (t.id === tenant.id ? { ...t, paymentVerificationEnabled: next } : t))
+    );
+    try {
+      await adminSetTenantPaymentVerification(tenant.id, next);
+    } catch (error) {
+      setTenants(previous);
+      const message = error instanceof Error ? error.message : 'Failed to update payment verification.';
+      Alert.alert('Error', message);
+    }
+  }
+
+  function handleTogglePaymentVerification(tenant: Tenant, next: boolean) {
+    if (next) {
+      void setTenantPaymentVerification(tenant, true);
+      return;
+    }
+    confirmAction(
+      'Turn off payment verification?',
+      `Orders for "${tenant.shopName ?? 'Untitled Shop'}" will be placed without verifying the shopper's payment — the proof photo alone will do.`,
+      'Turn Off',
+      () => setTenantPaymentVerification(tenant, false)
+    );
+  }
+
   const isWeb = Platform.OS === 'web';
   const keyboardVerticalOffset = Platform.OS === 'ios' ? 64 : 0;
 
@@ -265,7 +292,8 @@ export function TenantManagementScreen() {
                     <Text style={styles.formTitle}>Payment verification</Text>
                     <Text style={styles.switchCaption}>
                       Verify each shop's payment before the order is placed. Off = orders are placed
-                      without verification and no verify.et credits are used.
+                      without verification and no verify.et credits are used. Each shop can also be
+                      excluded individually with its own switch below.
                     </Text>
                   </View>
                   <Switch
@@ -481,6 +509,15 @@ export function TenantManagementScreen() {
                         {!item.isActive && (
                           <Text style={styles.inactiveLabel}>Inactive — hidden from the shop</Text>
                         )}
+                        <View style={styles.verifyRow}>
+                          <Ionicons name="shield-checkmark-outline" size={14} color={colors.textSecondary} />
+                          <Text style={styles.verifyLabel}>Payment verification</Text>
+                          <Switch
+                            value={item.paymentVerificationEnabled}
+                            onValueChange={(value) => handleTogglePaymentVerification(item, value)}
+                            trackColor={{ false: colors.border, true: colors.success }}
+                          />
+                        </View>
                       </View>
                       <View style={styles.cardActions}>
                         <Switch
@@ -702,6 +739,17 @@ const makeStyles = (colors: ColorPalette) =>
       fontWeight: '600',
       color: colors.danger,
       marginTop: spacing.xs,
+    },
+    verifyRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: spacing.xs,
+      marginTop: spacing.sm,
+    },
+    verifyLabel: {
+      flex: 1,
+      fontSize: fontSizes.sm,
+      color: colors.textSecondary,
     },
     cardActions: {
       flexDirection: 'row',

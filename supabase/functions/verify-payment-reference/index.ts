@@ -22,10 +22,10 @@
 // automatically.
 //
 // NOTE: verification can be stopped at runtime — see
-// platform_settings.payment_verification_enabled (migration 042). While
-// disabled this returns a 200 {skipped} the client maps to 'unavailable';
-// the checkout screen hides the verification step entirely when the flag
-// is off.
+// platform_settings.payment_verification_enabled (migration 042) and the
+// per-tenant profiles.payment_verification_enabled (043). While disabled
+// this returns a 200 {skipped} the client maps to 'unavailable'; the
+// checkout screen hides the verification step for disabled shops.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.112.3';
 import {
@@ -35,7 +35,7 @@ import {
 } from '../_shared/verifyEvaluation.ts';
 import { syncRegistry, type RegistryAccount } from '../_shared/verifyRegistry.ts';
 import { resolveUnitPrice, type SelectedOption } from '../_shared/variantPricing.ts';
-import { isVerificationEnabled } from '../_shared/verificationToggle.ts';
+import { isVerificationEnabled, isVerificationEnabledForTenant } from '../_shared/verificationToggle.ts';
 
 const VERIFY_ET_API_KEY = Deno.env.get('VERIFY_ET_API_KEY') ?? '';
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
@@ -242,6 +242,12 @@ Deno.serve(async (req) => {
   const parsed = parseBody(rawBody);
   if (typeof parsed === 'string') return json({ error: parsed }, 400);
   const { tenantId, provider, reference, key, proofRef, items } = parsed;
+
+  // Per-tenant switch (043): shops the super admin excluded skip verification
+  // entirely — same {skipped} contract as the global kill-switch above.
+  if (!(await isVerificationEnabledForTenant(supabase, tenantId))) {
+    return json({ skipped: 'verification disabled' });
+  }
 
   // Idempotency replay: a stored verdict is returned as-is, no verify.et call.
   const { data: existing } = await supabase

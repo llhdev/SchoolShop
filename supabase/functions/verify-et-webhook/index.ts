@@ -11,8 +11,9 @@
 // SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY are provided automatically.
 //
 // NOTE: verification can be stopped at runtime — see
-// platform_settings.payment_verification_enabled (migration 042). While
-// disabled, webhook deliveries are acknowledged without completing attempts
+// platform_settings.payment_verification_enabled (migration 042) and the
+// per-tenant profiles.payment_verification_enabled (043). While disabled,
+// webhook deliveries are acknowledged without completing attempts
 // or messaging merchants.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.112.3';
@@ -165,12 +166,17 @@ Deno.serve(async (req) => {
     .maybeSingle();
   const { data: profile } = await supabase
     .from('profiles')
-    .select('id, shop_name, telegram_chat_id, bank_accounts')
+    .select('id, shop_name, telegram_chat_id, bank_accounts, payment_verification_enabled')
     .eq('id', attempt.tenant_id)
     .maybeSingle();
   if (!order || !profile) {
     console.error('webhook attempt missing order/profile:', attempt.id);
     return json({ error: 'order or profile missing' }, 500);
+  }
+  // Per-tenant switch (043): acknowledge without completing the attempt or
+  // messaging the merchant (same as the global kill-switch above).
+  if (profile.payment_verification_enabled === false) {
+    return json({ skipped: 'verification disabled' });
   }
 
   const overall = await completeAttempt({
