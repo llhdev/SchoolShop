@@ -47,6 +47,8 @@ export interface AnalysisRow {
   location: string;
   phoneNumber: string;
   telegramId?: number;
+  /** Tenant shop name stamped on the item snapshot (super-admin grouping). */
+  shopName: string;
   productLabel: string;
   quantity: number;
   studentName: string;
@@ -128,6 +130,7 @@ export function AdminAnalysisScreen() {
   const [dateFilter, setDateFilter] = useState<DateFilter>('all');
   const [customStart, setCustomStart] = useState('');
   const [customEnd, setCustomEnd] = useState('');
+  const [groupByStore, setGroupByStore] = useState(false);
   const [telegramNames, setTelegramNames] = useState<Map<number, Shopper>>(new Map());
 
   // Tenant admins are scoped to their own line items (mixed orders included);
@@ -178,6 +181,7 @@ export function AdminAnalysisScreen() {
           if (!answers[key]) answers[key] = answer.value.trim();
         }
         if (!studentName && order.studentName) studentName = order.studentName;
+        const product = item.product as { shop_name?: string; shopName?: string };
         rows.push({
           key: `${order.id}:${index}`,
           orderId: order.id,
@@ -185,6 +189,7 @@ export function AdminAnalysisScreen() {
           location: order.location,
           phoneNumber: order.phoneNumber,
           telegramId: order.telegramId,
+          shopName: product.shop_name ?? product.shopName ?? 'Unknown store',
           productLabel: `${item.product.name}${variant ? ` (${variant})` : ''}`,
           quantity: item.quantity,
           studentName,
@@ -292,6 +297,21 @@ export function AdminAnalysisScreen() {
     // telegramNameFor/inDateRange only read memo deps (telegramNames, dateRange).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [rows, query, sort, telegramNames, dateRange]);
+
+  // Super admin only: group the filtered rows by store, shops A→Z, keeping the
+  // current sort order within each shop.
+  const grouped = useMemo(() => {
+    if (role !== 'super_admin' || !groupByStore) return null;
+    const byShop = new Map<string, AnalysisRow[]>();
+    for (const row of filtered) {
+      const list = byShop.get(row.shopName);
+      if (list) list.push(row);
+      else byShop.set(row.shopName, [row]);
+    }
+    return [...byShop.entries()]
+      .sort((a, b) => a[0].localeCompare(b[0]))
+      .map(([shopName, shopRows]) => ({ shopName, rows: shopRows }));
+  }, [role, groupByStore, filtered]);
 
   const isWeb = Platform.OS === 'web';
 
@@ -429,6 +449,21 @@ export function AdminAnalysisScreen() {
                 </Text>
               </TouchableOpacity>
             ))}
+            {role === 'super_admin' && (
+              <TouchableOpacity
+                style={[styles.chip, groupByStore && styles.chipActive]}
+                onPress={() => setGroupByStore((v) => !v)}
+              >
+                <Ionicons
+                  name="storefront-outline"
+                  size={14}
+                  color={groupByStore ? colors.surface : colors.text}
+                />
+                <Text style={[styles.chipText, groupByStore && styles.chipTextActive]}>
+                  Group by store
+                </Text>
+              </TouchableOpacity>
+            )}
           </View>
           {dateFilter === 'custom' && (
             <View style={styles.customRow}>
@@ -478,7 +513,22 @@ export function AdminAnalysisScreen() {
           ) : filtered.length === 0 ? (
             <EmptyState message="No rows match your filters." icon="search-outline" />
           ) : isPhone ? (
-            <View style={styles.cardList}>{filtered.map(renderCard)}</View>
+            grouped ? (
+              <View style={styles.cardList}>
+                {grouped.map((group) => (
+                  <View key={group.shopName} style={styles.groupSection}>
+                    <View style={styles.groupHeader}>
+                      <Ionicons name="storefront-outline" size={16} color={colors.primary} />
+                      <Text style={styles.groupTitle}>{group.shopName}</Text>
+                      <Text style={styles.groupCount}>{group.rows.length} items</Text>
+                    </View>
+                    {group.rows.map(renderCard)}
+                  </View>
+                ))}
+              </View>
+            ) : (
+              <View style={styles.cardList}>{filtered.map(renderCard)}</View>
+            )
           ) : (
             <ScrollView horizontal style={styles.tableScroll}>
               <View style={styles.table}>
@@ -496,7 +546,17 @@ export function AdminAnalysisScreen() {
                   )}
                   {headerCell('Location', 'location', styles.wLocation)}
                 </View>
-                {filtered.map((row) => (
+                {(grouped ?? [{ shopName: '', rows: filtered }]).map((group) => (
+                  <View key={group.shopName || 'all'}>
+                    {grouped && (
+                      <View style={styles.groupRow}>
+                        <Ionicons name="storefront-outline" size={14} color={colors.primary} />
+                        <Text style={styles.groupRowText}>
+                          {group.shopName} · {group.rows.length} items
+                        </Text>
+                      </View>
+                    )}
+                    {group.rows.map((row) => (
                   <TouchableOpacity
                     key={row.key}
                     style={styles.trow}
@@ -515,6 +575,8 @@ export function AdminAnalysisScreen() {
                     )}
                     {cell(row.location || '—', styles.wLocation, `${row.key}-location`)}
                   </TouchableOpacity>
+                    ))}
+                  </View>
                 ))}
               </View>
             </ScrollView>
@@ -582,6 +644,9 @@ const makeStyles = (colors: ColorPalette) =>
       marginTop: spacing.md,
     },
     chip: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: spacing.xs,
       paddingHorizontal: spacing.md,
       paddingVertical: spacing.xs,
       borderRadius: borderRadius.xl,
@@ -650,6 +715,40 @@ const makeStyles = (colors: ColorPalette) =>
       fontSize: fontSizes.sm,
       fontWeight: '600',
       color: colors.primary,
+    },
+    groupSection: {
+      gap: spacing.sm,
+    },
+    groupHeader: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: spacing.xs,
+      marginTop: spacing.sm,
+    },
+    groupTitle: {
+      fontSize: fontSizes.md,
+      fontWeight: '700',
+      color: colors.text,
+      flex: 1,
+    },
+    groupCount: {
+      fontSize: fontSizes.xs,
+      color: colors.textSecondary,
+    },
+    groupRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: spacing.xs,
+      paddingHorizontal: spacing.sm,
+      paddingVertical: spacing.sm,
+      borderTopWidth: 1,
+      borderColor: colors.border,
+      backgroundColor: colors.background,
+    },
+    groupRowText: {
+      fontSize: fontSizes.sm,
+      fontWeight: '700',
+      color: colors.text,
     },
     tableScroll: {
       marginTop: spacing.md,
