@@ -22,6 +22,7 @@ import { AdminHeader } from '../../components/AdminHeader';
 import { BankAccountsEditor } from '../../components/BankAccountsEditor';
 import { Button } from '../../components/Button';
 import { fetchTenants, createTenant, adminSetTenantActive, Tenant } from '../../services/tenants';
+import { fetchPaymentVerificationEnabled, setPaymentVerificationEnabled } from '../../services/settings';
 import { uploadShopLogo } from '../../services/images';
 import { confirmAction } from '../../utils/confirm';
 import { AdminStackParamList } from '../../types/navigation';
@@ -42,6 +43,26 @@ export function TenantManagementScreen() {
   const [tenants, setTenants] = useState<Tenant[]>([]);
   const [loading, setLoading] = useState(true);
   const [isCreating, setIsCreating] = useState(false);
+  /** Runtime kill-switch for the payment verification pipeline (042). */
+  const [verificationEnabled, setVerificationEnabled] = useState<boolean | null>(null);
+  const [togglingVerification, setTogglingVerification] = useState(false);
+
+  const loadVerificationFlag = useCallback(async () => {
+    setVerificationEnabled(await fetchPaymentVerificationEnabled());
+  }, []);
+
+  async function toggleVerification(enabled: boolean) {
+    setTogglingVerification(true);
+    try {
+      await setPaymentVerificationEnabled(enabled);
+      setVerificationEnabled(enabled);
+    } catch (error) {
+      console.error('Failed to update verification flag:', error);
+      Alert.alert('Error', 'Could not update the payment verification setting. Please try again.');
+    } finally {
+      setTogglingVerification(false);
+    }
+  }
 
   const [username, setUsername] = useState('');
   const [shopName, setShopName] = useState('');
@@ -73,7 +94,8 @@ export function TenantManagementScreen() {
   useFocusEffect(
     useCallback(() => {
       loadTenants();
-    }, [loadTenants])
+      loadVerificationFlag();
+    }, [loadTenants, loadVerificationFlag])
   );
 
   function resetForm() {
@@ -236,6 +258,24 @@ export function TenantManagementScreen() {
               <Text style={styles.subtitle}>
                 Tenant admins can upload products and choose categories. They cannot manage categories or other tenants.
               </Text>
+
+              <View style={styles.formCard}>
+                <View style={styles.switchRow}>
+                  <View style={styles.switchText}>
+                    <Text style={styles.formTitle}>Payment verification</Text>
+                    <Text style={styles.switchCaption}>
+                      Verify each shop's payment before the order is placed. Off = orders are placed
+                      without verification and no verify.et credits are used.
+                    </Text>
+                  </View>
+                  <Switch
+                    value={verificationEnabled ?? false}
+                    onValueChange={toggleVerification}
+                    disabled={verificationEnabled === null || togglingVerification}
+                    trackColor={{ false: colors.border, true: colors.success }}
+                  />
+                </View>
+              </View>
 
               <View style={styles.formCard}>
                 <Text style={styles.formTitle}>Add Tenant</Text>
@@ -518,6 +558,20 @@ const makeStyles = (colors: ColorPalette) =>
       fontWeight: '700',
       color: colors.text,
       marginBottom: spacing.md,
+    },
+    switchRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      gap: spacing.md,
+    },
+    switchText: {
+      flex: 1,
+    },
+    switchCaption: {
+      fontSize: fontSizes.sm,
+      color: colors.textSecondary,
+      lineHeight: 18,
     },
     field: {
       marginBottom: spacing.md,

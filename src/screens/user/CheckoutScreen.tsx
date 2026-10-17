@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Platform } from 'react-native';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -30,6 +30,11 @@ import { formatPrice } from '../../utils/format';
 import { resizeImage } from '../../utils/images';
 import { uploadPaymentProof } from '../../services/images';
 import { fetchProducts } from '../../services/products';
+import {
+  newVerificationKey,
+  verifyPaymentReference,
+} from '../../services/paymentVerificationCheckout';
+import { fetchPaymentVerificationEnabled } from '../../services/settings';
 import { LANDMARKS } from '../../constants/landmarks';
 import {
   configureTelegramMainButton,
@@ -55,6 +60,45 @@ interface TenantPaymentGroup {
   total: number;
 }
 
+/** Per-shop verification lifecycle: reading = OCR in progress (web);
+ *  unverified = waiting for a reference / a Verify tap; the rest mirror the
+ *  verify-payment-reference verdicts. */
+type ShopVerifyState =
+  | 'reading'
+  | 'unverified'
+  | 'verifying'
+  | 'verified'
+  | 'not_found'
+  | 'wrong_recipient'
+  | 'wrong_amount'
+  | 'already_claimed'
+  | 'unavailable';
+
+interface ShopReference {
+  provider?: 'cbe' | 'telebirr';
+  reference: string;
+  /** verify.et idempotency key — stable per (proof, reference text) so a
+   *  retry of the same reference is billed for free. */
+  key: string;
+}
+
+/** Verdicts that reject the payment outright: the shop stays blocked until
+ *  the shopper pays correctly and picks a NEW proof image. */
+const HARD_FAILURES: ShopVerifyState[] = ['wrong_recipient', 'wrong_amount', 'already_claimed'];
+
+/** Status chip text per verification state. */
+const VERIFY_CHIP_LABELS: Record<ShopVerifyState, string> = {
+  reading: 'Reading…',
+  unverified: 'Not verified',
+  verifying: 'Verifying…',
+  verified: 'Verified ✓',
+  not_found: 'Not found',
+  wrong_recipient: 'Wrong recipient',
+  wrong_amount: 'Wrong amount',
+  already_claimed: 'Already used',
+  unavailable: 'Try again later',
+};
+
 export function CheckoutScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const { cart, cartTotal, cartCount, clearCart, addOrder, shopper, products } = useApp();
@@ -69,6 +113,15 @@ export function CheckoutScreen() {
   /** Payment proof photo URLs, keyed by tenant owner id (one per shop in the cart). */
   const [proofsByTenant, setProofsByTenant] = useState<Record<string, string>>({});
   const [proofUploading, setProofUploading] = useState<Record<string, boolean>>({});
+  /** Per-shop payment reference (auto-filled by OCR on web), keyed by the
+   *  same tenant group key as proofsByTenant. */
+  const [references, setReferences] = useState<Record<string, ShopReference>>({});
+  const [verifyStates, setVerifyStates] = useState<Record<string, ShopVerifyState>>({});
+  /** Amount the verifier saw on the receipt, for the wrong-amount message. */
+  const [verifyPaidAmounts, setVerifyPaidAmounts] = useState<Record<string, number | null>>({});
+  /** Latest verification key per group — a stale OCR/verify completion (from
+   *  before a re-pick or edit) discards itself by comparing keys. */
+  const verificationKeys = useRef<Record<string, string>>({});
   /** Answers to tenant-defined checkout questions, keyed by cart line id then
    *  question label. */
   const [answersByLine, setAnswersByLine] = useState<Record<string, Record<string, string>>>({});
@@ -81,6 +134,20 @@ export function CheckoutScreen() {
   /** Set when the shopper taps Place Order with required info missing: shows
    *  the guidance message once and marks every empty field in red. */
   const [showValidation, setShowValidation] = useState(false);
+  /** Runtime kill-switch (platform_settings, migration 042): when off, the
+   *  verification step is hidden and proofs alone satisfy each shop. Defaults
+   *  to true until the flag read completes (fail toward verifying). */
+  const [verificationEnabled, setVerificationEnabled] = useState(true);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetchPaymentVerificationEnabled().then((enabled) => {
+      if (!cancelled) setVerificationEnabled(enabled);
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   // A tenant can publish bank details after the shopper's catalog was cached
   // (profile changes don't fire product realtime events), so re-fetch here.
@@ -178,7 +245,9 @@ export function CheckoutScreen() {
     !placingOrder &&
     !anyProofUploading &&
     tenantGroups.length > 0 &&
-    tenantGroups.every((group) => !!proofsByTenant[group.key]);
+    tenantGroups.every((group) => !!proofsByTenant[group.key]) &&
+    (!verificationEnabled ||
+      tenantGroups.every((group) => verifyStates[group.key] === 'verified'));
 
   // Drop the red validation marks as soon as everything required is filled.
   useEffect(() => {
@@ -240,11 +309,148 @@ export function CheckoutScreen() {
       const resized = await resizeImage(localUri, 800);
       const url = await uploadPaymentProof(resized);
       setProofsByTenant((prev) => ({ ...prev, [groupKey]: url }));
+      // A new proof means a new payment: reset this shop's verification and
+      // try to read the reference off the receipt. When the verification
+      // kill-switch is off, the proof alone satisfies the shop.
+      if (verificationEnabled) {
+        startVerification(groupKey, url, resized);
+      } else {
+        resetGroupVerification(groupKey);
+      }
     } catch {
       Alert.alert('Upload Failed', 'Could not upload the payment proof. Please try again.');
     } finally {
       setProofUploading((prev) => ({ ...prev, [groupKey]: false }));
     }
+  }
+
+  /** Drop every piece of verification state for one shop (proof removed). */
+  function resetGroupVerification(groupKey: string) {
+    delete verificationKeys.current[groupKey];
+    setReferences((prev) => {
+      const next = { ...prev };
+      delete next[groupKey];
+      return next;
+    });
+    setVerifyStates((prev) => {
+      const next = { ...prev };
+      delete next[groupKey];
+      return next;
+    });
+    setVerifyPaidAmounts((prev) => {
+      const next = { ...prev };
+      delete next[groupKey];
+      return next;
+    });
+  }
+
+  /** Reset one shop's verification for a freshly uploaded proof, then read
+   *  the reference off the receipt with OCR. Web only — Tesseract.js needs a
+   *  DOM/wasm — so native shoppers get the manual input directly. When OCR
+   *  finds provider + reference, verification runs automatically. */
+  function startVerification(groupKey: string, proofRef: string, imageUri: string) {
+    const key = newVerificationKey();
+    verificationKeys.current[groupKey] = key;
+    setReferences((prev) => ({ ...prev, [groupKey]: { reference: '', key } }));
+    setVerifyPaidAmounts((prev) => {
+      const next = { ...prev };
+      delete next[groupKey];
+      return next;
+    });
+
+    if (Platform.OS !== 'web') {
+      setVerifyStates((prev) => ({ ...prev, [groupKey]: 'unverified' }));
+      return;
+    }
+    setVerifyStates((prev) => ({ ...prev, [groupKey]: 'reading' }));
+    void (async () => {
+      try {
+        const { extractReceiptReference } = await import('../../lib/ocr');
+        const ocr = await extractReceiptReference(imageUri);
+        if (verificationKeys.current[groupKey] !== key) return;
+        const next: ShopReference = {
+          provider: ocr.provider,
+          reference: ocr.reference ?? '',
+          key,
+        };
+        setReferences((prev) => ({ ...prev, [groupKey]: next }));
+        if (next.provider && next.reference) {
+          void verifyShop(groupKey, proofRef, next);
+        } else {
+          setVerifyStates((prev) => ({ ...prev, [groupKey]: 'unverified' }));
+        }
+      } catch {
+        if (verificationKeys.current[groupKey] !== key) return;
+        setVerifyStates((prev) => ({ ...prev, [groupKey]: 'unverified' }));
+      }
+    })();
+  }
+
+  /** Verify one shop's reference against verify.et (pre-order, read-only)
+   *  and map the verdict onto the shop's status chip. */
+  async function verifyShop(groupKey: string, proofRef: string, ref: ShopReference) {
+    if (!ref.provider || ref.reference.trim().length === 0) return;
+    const group = tenantGroups.find((g) => g.key === groupKey);
+    if (!group) return;
+    setVerifyStates((prev) => ({ ...prev, [groupKey]: 'verifying' }));
+    const result = await verifyPaymentReference({
+      tenantId: groupKey,
+      provider: ref.provider,
+      reference: ref.reference.trim(),
+      key: ref.key,
+      proofRef,
+      items: group.items.map((item) => ({
+        productId: item.product.id,
+        quantity: item.quantity,
+        ...(item.selectedOptions && item.selectedOptions.length > 0
+          ? { selectedOptions: item.selectedOptions }
+          : {}),
+      })),
+    });
+    // A re-pick or an edit superseded this attempt while it was in flight.
+    if (verificationKeys.current[groupKey] !== ref.key) return;
+    setVerifyStates((prev) => ({ ...prev, [groupKey]: result.verdict }));
+    if (result.verdict === 'wrong_amount') {
+      setVerifyPaidAmounts((prev) => ({ ...prev, [groupKey]: result.paidAmount }));
+    }
+  }
+
+  /** Edit the (OCR-prefilled) reference. A changed text invalidates the old
+   *  verification and gets a fresh idempotency key — verify.et bills per new
+   *  key but replays same-key retries for free. */
+  function editReference(groupKey: string, text: string) {
+    setReferences((prev) => {
+      const current = prev[groupKey];
+      if (!current) return prev;
+      if (text.trim() === current.reference) {
+        return { ...prev, [groupKey]: { ...current, reference: text } };
+      }
+      const key = newVerificationKey();
+      verificationKeys.current[groupKey] = key;
+      return { ...prev, [groupKey]: { ...current, reference: text, key } };
+    });
+    setVerifyStates((prev) =>
+      prev[groupKey] && prev[groupKey] !== 'unverified'
+        ? { ...prev, [groupKey]: 'unverified' }
+        : prev
+    );
+  }
+
+  function setReferenceProvider(groupKey: string, provider: 'cbe' | 'telebirr') {
+    setReferences((prev) => {
+      const current = prev[groupKey];
+      if (!current || current.provider === provider) return prev;
+      // The provider is part of the verify.et request, so a changed provider
+      // needs a fresh key just like a changed reference.
+      const key = newVerificationKey();
+      verificationKeys.current[groupKey] = key;
+      return { ...prev, [groupKey]: { ...current, provider, key } };
+    });
+    setVerifyStates((prev) =>
+      prev[groupKey] && prev[groupKey] !== 'unverified'
+        ? { ...prev, [groupKey]: 'unverified' }
+        : prev
+    );
   }
 
   function copyAccountNumber(accountNumber: string) {
@@ -266,10 +472,13 @@ export function CheckoutScreen() {
       // guidance can be shown.
       setPhoneTouched(true);
       setShowValidation(true);
+      const allProofsUploaded = tenantGroups.every((group) => !!proofsByTenant[group.key]);
       const message =
         unansweredRequired.length > 0
           ? `Please answer the shop's questions: ${unansweredRequired.join(', ')}.`
-          : 'Please fill in all required info: phone number and a payment proof for each shop.';
+          : allProofsUploaded && verificationEnabled
+            ? 'Payment verification is incomplete — verify each shop\'s payment before placing the order.'
+            : 'Please fill in all required info: phone number and a payment proof for each shop.';
       if (!showTelegramPopup('Missing Information', message)) {
         Alert.alert('Missing Information', message);
       }
@@ -294,6 +503,20 @@ export function CheckoutScreen() {
       createdAt: new Date().toISOString(),
       telegramId: shopper?.telegramId,
       paymentProofs: proofsByTenant,
+      // Every group is verified at this point (canPlaceOrder), so each has a
+      // provider + reference. The post-order verification replays the same
+      // key, which verify.et does not bill. Empty when the verification
+      // kill-switch is off — those orders take the legacy (image) path.
+      paymentReferences: verificationEnabled
+        ? Object.fromEntries(
+            tenantGroups.flatMap((group): [string, { provider: 'cbe' | 'telebirr'; reference: string; key: string }][] => {
+              const ref = references[group.key];
+              return ref?.provider
+                ? [[group.key, { provider: ref.provider, reference: ref.reference.trim(), key: ref.key }]]
+                : [];
+            })
+          )
+        : {},
       shippingFees: Object.fromEntries(
         tenantGroups
           .filter((group) => group.shippingFee > 0)
@@ -497,6 +720,23 @@ export function CheckoutScreen() {
                   const proofUrl = proofsByTenant[group.key];
                   const uploading = !!proofUploading[group.key];
                   const proofMissing = showValidation && !proofUrl;
+                  const reference = references[group.key];
+                  const verifyState = verifyStates[group.key];
+                  const hardFailed = !!verifyState && HARD_FAILURES.includes(verifyState);
+                  const canVerify =
+                    !!reference?.provider &&
+                    reference.reference.trim().length > 0 &&
+                    (verifyState === 'unverified' ||
+                      verifyState === 'not_found' ||
+                      verifyState === 'unavailable');
+                  const paidAmount = verifyPaidAmounts[group.key];
+                  const chip = verifyState ? VERIFY_CHIP_LABELS[verifyState] : undefined;
+                  const chipColor =
+                    verifyState === 'verified'
+                      ? colors.success
+                      : hardFailed
+                        ? colors.danger
+                        : colors.textSecondary;
                   return (
                     <View
                       key={group.key}
@@ -567,26 +807,124 @@ export function CheckoutScreen() {
                         ))}
 
                       {proofUrl ? (
-                        <View style={styles.proofRow}>
-                          <Image source={{ uri: proofUrl }} style={styles.proofThumb} resizeMode="cover" />
-                          <View style={styles.proofActions}>
-                            <Text style={styles.proofOk}>Payment proof uploaded</Text>
-                            <TouchableOpacity onPress={() => pickProof(group.key)} disabled={uploading}>
-                              <Text style={styles.proofReplace}>{uploading ? 'Uploading…' : 'Replace'}</Text>
+                        <>
+                          <View style={styles.proofRow}>
+                            <Image source={{ uri: proofUrl }} style={styles.proofThumb} resizeMode="cover" />
+                            <View style={styles.proofActions}>
+                              <Text style={styles.proofOk}>Payment proof uploaded</Text>
+                              <View style={styles.proofActionRow}>
+                                <TouchableOpacity onPress={() => pickProof(group.key)} disabled={uploading}>
+                                  <Text style={styles.proofReplace}>{uploading ? 'Uploading…' : 'Replace'}</Text>
+                                </TouchableOpacity>
+                                {chip && (
+                                  <View style={[styles.verifyChip, { borderColor: chipColor }]}>
+                                    <Text style={[styles.verifyChipText, { color: chipColor }]}>{chip}</Text>
+                                  </View>
+                                )}
+                              </View>
+                            </View>
+                            <TouchableOpacity
+                              onPress={() => {
+                                setProofsByTenant((prev) => {
+                                  const next = { ...prev };
+                                  delete next[group.key];
+                                  return next;
+                                });
+                                resetGroupVerification(group.key);
+                              }}
+                            >
+                              <Ionicons name="close-circle-outline" size={22} color={colors.danger} />
                             </TouchableOpacity>
                           </View>
-                          <TouchableOpacity
-                            onPress={() =>
-                              setProofsByTenant((prev) => {
-                                const next = { ...prev };
-                                delete next[group.key];
-                                return next;
-                              })
-                            }
-                          >
-                            <Ionicons name="close-circle-outline" size={22} color={colors.danger} />
-                          </TouchableOpacity>
-                        </View>
+
+                          {verificationEnabled && verifyState && verifyState !== 'reading' && (
+                            <View style={styles.verifyBlock}>
+                              {verifyState === 'unverified' && isWeb && !reference?.reference && (
+                                <Text style={styles.verifyHint}>
+                                  We couldn't read the receipt — upload a clearer screenshot or type
+                                  the reference manually.
+                                </Text>
+                              )}
+                              {verifyState === 'not_found' && (
+                                <Text style={styles.verifyError}>
+                                  We couldn't find this transaction — check the reference and retry.
+                                </Text>
+                              )}
+                              {verifyState === 'wrong_recipient' && (
+                                <Text style={styles.verifyError}>
+                                  This payment went to a different account. Please pay the account
+                                  shown and upload the new receipt.
+                                </Text>
+                              )}
+                              {verifyState === 'wrong_amount' && (
+                                <Text style={styles.verifyError}>
+                                  This receipt is for{' '}
+                                  {paidAmount != null ? formatPrice(paidAmount) : 'an unknown amount'}{' '}
+                                  but this shop's total is {formatPrice(group.total)}.
+                                </Text>
+                              )}
+                              {verifyState === 'already_claimed' && (
+                                <Text style={styles.verifyError}>
+                                  This transaction was already used for another order.
+                                </Text>
+                              )}
+                              {verifyState === 'unavailable' && (
+                                <Text style={styles.verifyHint}>
+                                  Verification service is temporarily unavailable — please try again
+                                  in a moment.
+                                </Text>
+                              )}
+
+                              {/* Hard failures stay blocked until a new proof is
+                                  picked, so the reference form hides for them. */}
+                              {!hardFailed && (
+                                <>
+                                  <View style={styles.providerRow}>
+                                    <Text style={styles.verifyLabel}>Paid via</Text>
+                                    <View style={styles.choiceRow}>
+                                      {(['cbe', 'telebirr'] as const).map((provider) => (
+                                        <TouchableOpacity
+                                          key={provider}
+                                          style={[
+                                            styles.choiceChip,
+                                            reference?.provider === provider && styles.choiceChipActive,
+                                          ]}
+                                          onPress={() => setReferenceProvider(group.key, provider)}
+                                          activeOpacity={0.7}
+                                        >
+                                          <Text
+                                            style={[
+                                              styles.choiceChipText,
+                                              reference?.provider === provider &&
+                                                styles.choiceChipTextActive,
+                                            ]}
+                                          >
+                                            {provider === 'cbe' ? 'CBE' : 'Telebirr'}
+                                          </Text>
+                                        </TouchableOpacity>
+                                      ))}
+                                    </View>
+                                  </View>
+                                  <TextInput
+                                    style={styles.input}
+                                    placeholder="Transaction reference"
+                                    value={reference?.reference ?? ''}
+                                    onChangeText={(text) => editReference(group.key, text)}
+                                    autoCapitalize="characters"
+                                    autoCorrect={false}
+                                  />
+                                  {canVerify && (
+                                    <Button
+                                      title="Verify payment"
+                                      variant="secondary"
+                                      onPress={() => verifyShop(group.key, proofUrl, reference!)}
+                                    />
+                                  )}
+                                </>
+                              )}
+                            </View>
+                          )}
+                        </>
                       ) : (
                         <>
                           <TouchableOpacity
@@ -947,6 +1285,42 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
     fontSize: fontSizes.sm,
     color: colors.primary,
     fontWeight: '600',
+  },
+  proofActionRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+  },
+  verifyChip: {
+    borderWidth: 1,
+    borderRadius: borderRadius.sm,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 2,
+  },
+  verifyChipText: {
+    fontSize: fontSizes.xs,
+    fontWeight: '600',
+  },
+  verifyBlock: {
+    gap: spacing.sm,
+  },
+  verifyHint: {
+    fontSize: fontSizes.sm,
+    color: colors.textSecondary,
+  },
+  verifyError: {
+    fontSize: fontSizes.sm,
+    color: colors.danger,
+  },
+  verifyLabel: {
+    fontSize: fontSizes.sm,
+    fontWeight: '600',
+    color: colors.text,
+  },
+  providerRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
   },
   zoomOverlay: {
     flex: 1,

@@ -20,6 +20,7 @@ interface DbOrder {
   telegram_id: number | null;
   tenant_ids: string[] | null;
   payment_proofs: Record<string, string> | null;
+  payment_references: Record<string, { provider: 'cbe' | 'telebirr'; reference: string; key: string }> | null;
   shipping_fees: Record<string, number> | null;
   item_statuses: Record<string, string> | null;
 }
@@ -38,6 +39,7 @@ function toOrder(db: DbOrder): Order {
     telegramId: db.telegram_id ?? undefined,
     tenantIds: db.tenant_ids ?? undefined,
     paymentProofs: db.payment_proofs ?? undefined,
+    paymentReferences: db.payment_references ?? undefined,
     shippingFees: db.shipping_fees ?? undefined,
     itemStatuses: db.item_statuses ?? undefined,
   };
@@ -57,6 +59,7 @@ function toDbOrder(order: Order): DbOrder {
     telegram_id: order.telegramId ?? null,
     tenant_ids: order.tenantIds ?? null,
     payment_proofs: order.paymentProofs ?? {},
+    payment_references: order.paymentReferences ?? {},
     shipping_fees: order.shippingFees ?? {},
     item_statuses: order.itemStatuses ?? {},
   };

@@ -26,6 +26,7 @@ export interface TenantProfile {
   shop_name: string | null;
   telegram_chat_id: string | null;
   bank_accounts: unknown;
+  shipping_fee?: number | null;
 }
 
 export function escapeHtml(text: string): string {
@@ -137,10 +138,17 @@ export async function attemptClaim(
     .eq('provider', provider)
     .eq('reference', reference)
     .maybeSingle();
-  if (!holder) return { kind: 'claimed' };
-  return holder.order_id === orderId
-    ? { kind: 'same_order' }
-    : { kind: 'other_order', holderOrderId: holder.order_id };
+  if (holder) {
+    return holder.order_id === orderId
+      ? { kind: 'same_order' }
+      : { kind: 'other_order', holderOrderId: holder.order_id };
+  }
+  if (error) {
+    // Fail closed: a transient DB error must NOT record a phantom claim —
+    // the caller catches this and marks the attempt retryable instead.
+    throw new Error(`claim insert failed: ${error.message}`);
+  }
+  return { kind: 'claimed' };
 }
 
 export interface CompleteAttemptInput {

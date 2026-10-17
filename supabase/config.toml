@@ -431,3 +431,8 @@ verify_jwt = false
 # Called by verify.et's servers; gated by the webhook signing secret.
 [functions.verify-et-webhook]
 verify_jwt = false
+
+# Called by anonymous shoppers at checkout, before the order exists; abuse
+# is gated by the proof-exists check, per-key idempotency and a daily cap.
+[functions.verify-payment-reference]
+verify_jwt = false

@@ -15,11 +15,15 @@
 // RECEIPT_MAX_AGE_HOURS (default 24).
 // SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY are provided automatically.
 //
-// NOTE: verification is currently paused — see VERIFICATION_PAUSED below.
+// NOTE: verification can be stopped at runtime — see
+// platform_settings.payment_verification_enabled (migration 042).
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.112.3';
 import { extractResultItem, parseReceipt } from '../_shared/verifyEvaluation.ts';
+import { syncRegistry, type RegistryAccount } from '../_shared/verifyRegistry.ts';
 import { completeAttempt, type TenantProfile } from '../_shared/verifyWorkflow.ts';
+import { resolveUnitPrice, type SelectedOption } from '../_shared/variantPricing.ts';
+import { isVerificationEnabled } from '../_shared/verificationToggle.ts';
 
 const VERIFY_ET_API_KEY = Deno.env.get('VERIFY_ET_API_KEY') ?? '';
 const INTERNAL_TOKEN = Deno.env.get('VERIFY_FUNCTION_SECRET') ?? '';
@@ -34,11 +38,9 @@ const PROOFS_BUCKET = 'payment-proofs-private';
 const DAILY_SUBMISSION_CAP = 500;
 const IN_FLIGHT_MINUTES = 10;
 
-// TEMPORARY: verification paused until the verify.et integration is
-// finished. While true, every call short-circuits before any verify.et
-// submission or Telegram message. Set to false (or delete this block)
-// and redeploy to re-enable.
-const VERIFICATION_PAUSED = true;
+// Verification can be stopped at runtime by the super admin via
+// platform_settings.payment_verification_enabled (see
+// _shared/verificationToggle.ts) — no redeploy needed.
 
 const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
   auth: { persistSession: false, autoRefreshToken: false },
@@ -53,52 +55,6 @@ function json(body: unknown, status = 200): Response {
 
 function basename(ref: string): string {
   return ref.split('/').pop() ?? ref;
-}
-
-// --- verify.et registry sync ------------------------------------------------
-
-interface RegistryAccount {
-  accountNumber: string;
-  bankName: string | null;
-}
-
-/** Best-effort: make sure every tenant bank account exists in the verify.et
- *  registry, so the receiver on a receipt can be resolved to a concrete
- *  account. Failures only degrade the recipient check to "review". */
-async function syncRegistry(tenantAccounts: RegistryAccount[]): Promise<void> {
-  try {
-    const res = await fetch('https://verify.et/api/bank-accounts', {
-      headers: { 'x-api-key': VERIFY_ET_API_KEY },
-    });
-    if (!res.ok) {
-      console.error('registry list failed:', res.status, await res.text().catch(() => ''));
-      return;
-    }
-    const body = await res.json().catch(() => null);
-    const existing = new Set<string>();
-    for (const item of Array.isArray(body?.data) ? body.data : []) {
-      const num = item?.accountNumber ?? item?.account_number ?? item?.number;
-      if (num) existing.add(String(num).replace(/\D/g, ''));
-    }
-    let added = 0;
-    for (const account of tenantAccounts) {
-      const digits = account.accountNumber.replace(/\D/g, '');
-      if (!digits || existing.has(digits) || added >= 20) continue;
-      const create = await fetch('https://verify.et/api/bank-accounts', {
-        method: 'POST',
-        headers: { 'x-api-key': VERIFY_ET_API_KEY, 'Content-Type': 'application/json' },
-        body: JSON.stringify({ accountNumber: account.accountNumber, bankName: account.bankName }),
-      });
-      if (create.ok) {
-        existing.add(digits);
-        added++;
-      } else {
-        console.error('registry add failed:', create.status, await create.text().catch(() => ''));
-      }
-    }
-  } catch (error) {
-    console.error('registry sync error:', error);
-  }
 }
 
 // --- proof bytes --------------------------------------------------------------
@@ -143,6 +99,39 @@ async function submitToVerifyEt(image: Uint8Array, idempotencyKey: string): Prom
   }
 }
 
+/** Reference-based submission (no image): used when the order carries a
+ *  checkout-verified payment_references entry. The idempotency key is the
+ *  SAME key the pre-order check used, so verify.et replays that result
+ *  instead of charging a new verification. The body must stay byte-identical
+ *  to the pre-check's ({ bank, reference } only — no webhookUrl, which is
+ *  registered on the verify.et dashboard anyway), or the replay turns into a
+ *  409 key conflict. The response envelope is identical to the image path,
+ *  so everything downstream is unchanged. */
+async function submitReferenceToVerifyEt(
+  provider: string,
+  reference: string,
+  idempotencyKey: string
+): Promise<VerifyEtSubmission> {
+  try {
+    const res = await fetch(`${VERIFY_ET_URL}?waitMs=25000`, {
+      method: 'POST',
+      headers: {
+        'x-api-key': VERIFY_ET_API_KEY,
+        'Idempotency-Key': idempotencyKey,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ bank: provider, reference }),
+    });
+    const body = await res.json().catch(() => null);
+    if (!res.ok) {
+      return { payload: body, requestId: body?.requestId ?? null, error: `verify.et HTTP ${res.status}: ${body?.message ?? ''}` };
+    }
+    return { payload: body, requestId: body?.requestId ?? null, error: null };
+  } catch (error) {
+    return { payload: null, requestId: null, error: `verify.et request failed: ${String(error)}` };
+  }
+}
+
 /** Bounded polling for queued verifications (the webhook is the primary
  *  completion path; this covers fast-but-not-instant OCR within the
  *  function's wall clock). */
@@ -168,16 +157,37 @@ async function pollVerifyEt(requestId: string): Promise<Record<string, unknown> 
 // --- per-merchant verification ------------------------------------------------------
 
 interface OrderItem {
-  product?: { owner_id?: string; ownerId?: string; price?: number };
+  product?: { id?: string; owner_id?: string; ownerId?: string; price?: number };
   unitPrice?: number;
   quantity?: number;
+  selectedOptions?: SelectedOption[];
 }
 
-function expectedSliceTotal(items: OrderItem[], tenantId: string, shippingFees: Record<string, number>): number {
-  const subtotal = items
-    .filter((i) => (i.product?.owner_id ?? i.product?.ownerId) === tenantId)
-    .reduce((sum, i) => sum + (i.unitPrice ?? i.product?.price ?? 0) * (i.quantity ?? 1), 0);
-  return subtotal + (shippingFees[tenantId] ?? 0);
+/** Expected slice total, recomputed from the catalog: the order's stored
+ *  prices come from an anonymous client (public orders INSERT) and cannot be
+ *  trusted — a crafted order could snapshot a fake total matching a small
+ *  receipt. Products no longer in the catalog fall back to the order-time
+ *  snapshot (legacy rows). The shipping fee comes from the tenant's profile,
+ *  not the client-sent shipping_fees. */
+async function expectedSliceTotal(
+  items: OrderItem[],
+  tenantId: string,
+  profile: TenantProfile
+): Promise<number> {
+  const owned = items.filter((i) => (i.product?.owner_id ?? i.product?.ownerId) === tenantId);
+  const ids = [...new Set(owned.map((i) => i.product?.id).filter((id): id is string => !!id))];
+  const { data: products } = ids.length
+    ? await supabase.from('products').select('id, price, variants').in('id', ids)
+    : { data: [] as { id: string; price: number; variants: unknown }[] };
+  const byId = new Map((products ?? []).map((p) => [p.id as string, p]));
+  const subtotal = owned.reduce((sum, i) => {
+    const catalog = i.product?.id ? byId.get(i.product.id) : undefined;
+    const unit = catalog
+      ? resolveUnitPrice(catalog, i.selectedOptions ?? [])
+      : (i.unitPrice ?? i.product?.price ?? 0);
+    return sum + unit * (i.quantity ?? 1);
+  }, 0);
+  return subtotal + (Number(profile.shipping_fee) || 0);
 }
 
 async function verifyTenantSlice(
@@ -187,6 +197,7 @@ async function verifyTenantSlice(
     created_at: string;
     payment_proofs: Record<string, string>;
     shipping_fees: Record<string, number>;
+    payment_references: Record<string, { provider?: string; reference?: string; key?: string }>;
   },
   tenantId: string,
   proofRef: string,
@@ -215,7 +226,7 @@ async function verifyTenantSlice(
   if (current) {
     await supabase.from('payment_verifications').update({ is_current: false }).eq('id', current.id);
   }
-  const expectedAmount = expectedSliceTotal(order.items ?? [], tenantId, order.shipping_fees ?? {});
+  const expectedAmount = await expectedSliceTotal(order.items ?? [], tenantId, profile);
   const { data: attempt, error: attemptError } = await supabase
     .from('payment_verifications')
     .insert({ order_id: order.id, tenant_id: tenantId, attempt_no: attemptNo, expected_amount: expectedAmount })
@@ -234,9 +245,19 @@ async function verifyTenantSlice(
   };
 
   try {
-    const image = await fetchProofBytes(proofRef);
-    const idempotencyKey = `order-${order.id}-${tenantId}-${attemptNo}-${basename(proofRef)}`.slice(0, 255);
-    const submission = await submitToVerifyEt(image, idempotencyKey);
+    // Reference path (new checkouts): the shopper's reference was already
+    // verified pre-order; replay it with the same idempotency key (free).
+    // Legacy orders have no payment_references entry and keep the image
+    // submission below.
+    const refEntry = order.payment_references?.[tenantId];
+    let submission: VerifyEtSubmission;
+    if (refEntry?.provider && refEntry?.reference && refEntry?.key) {
+      submission = await submitReferenceToVerifyEt(refEntry.provider, refEntry.reference, refEntry.key);
+    } else {
+      const image = await fetchProofBytes(proofRef);
+      const idempotencyKey = `order-${order.id}-${tenantId}-${attemptNo}-${basename(proofRef)}`.slice(0, 255);
+      submission = await submitToVerifyEt(image, idempotencyKey);
+    }
 
     if (submission.error && !submission.requestId) {
       // Temporary failure (network, 5xx, bank source down): never a fraud
@@ -301,7 +322,7 @@ async function verifyTenantSlice(
 Deno.serve(async (req) => {
   if (req.method !== 'POST') return json({ error: 'Method not allowed' }, 405);
 
-  if (VERIFICATION_PAUSED) return json({ skipped: 'verification paused' });
+  if (!(await isVerificationEnabled(supabase))) return json({ skipped: 'verification disabled' });
 
   // Internal callers only (DB trigger / retry RPC). No publishable-key path.
   if (!INTERNAL_TOKEN || req.headers.get('x-internal-token') !== INTERNAL_TOKEN) {
@@ -332,7 +353,7 @@ Deno.serve(async (req) => {
 
   const { data: order, error: orderError } = await supabase
     .from('orders')
-    .select('id, items, created_at, payment_proofs, shipping_fees')
+    .select('id, items, created_at, payment_proofs, shipping_fees, payment_references')
     .eq('id', orderId)
     .maybeSingle();
   if (orderError || !order) return json({ error: 'order not found' }, 404);
@@ -343,7 +364,7 @@ Deno.serve(async (req) => {
 
   const { data: profiles } = await supabase
     .from('profiles')
-    .select('id, shop_name, telegram_chat_id, bank_accounts')
+    .select('id, shop_name, telegram_chat_id, bank_accounts, shipping_fee')
     .in('id', tenantIds);
 
   // Registry sync across ALL tenants, so any receiver can be resolved.
@@ -358,7 +379,7 @@ Deno.serve(async (req) => {
       if (num) registryAccounts.push({ accountNumber: num, bankName: (a as { bank_name?: string })?.bank_name ?? null });
     }
   }
-  await syncRegistry(registryAccounts);
+  await syncRegistry(VERIFY_ET_API_KEY, registryAccounts);
 
   const results: Record<string, string> = {};
   for (const tenantId of tenantIds) {

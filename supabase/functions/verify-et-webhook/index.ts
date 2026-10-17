@@ -10,23 +10,21 @@
 // RECEIPT_MAX_AGE_HOURS (default 24).
 // SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY are provided automatically.
 //
-// NOTE: verification is currently paused — see VERIFICATION_PAUSED below.
+// NOTE: verification can be stopped at runtime — see
+// platform_settings.payment_verification_enabled (migration 042). While
+// disabled, webhook deliveries are acknowledged without completing attempts
+// or messaging merchants.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.112.3';
 import { extractResultItem, parseReceipt } from '../_shared/verifyEvaluation.ts';
 import { completeAttempt, type TenantProfile } from '../_shared/verifyWorkflow.ts';
+import { isVerificationEnabled } from '../_shared/verificationToggle.ts';
 
 const WEBHOOK_SECRET = Deno.env.get('VERIFY_ET_WEBHOOK_SECRET') ?? '';
 const BOT_TOKEN = Deno.env.get('TELEGRAM_BOT_TOKEN') ?? '';
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
 const MAX_AGE_HOURS = Number(Deno.env.get('RECEIPT_MAX_AGE_HOURS') ?? '24') || 24;
-
-// TEMPORARY: verification paused until the verify.et integration is
-// finished. While true, webhook deliveries are acknowledged without
-// completing attempts or messaging merchants. Set to false (or delete
-// this block) and redeploy to re-enable.
-const VERIFICATION_PAUSED = true;
 
 const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
   auth: { persistSession: false, autoRefreshToken: false },
@@ -108,7 +106,7 @@ function findRequestId(payload: Record<string, unknown>): string | null {
 Deno.serve(async (req) => {
   if (req.method !== 'POST') return json({ error: 'Method not allowed' }, 405);
 
-  if (VERIFICATION_PAUSED) return json({ skipped: 'verification paused' });
+  if (!(await isVerificationEnabled(supabase))) return json({ skipped: 'verification disabled' });
 
   const rawBody = await req.text();
   if (!(await isSignatureValid(req, rawBody))) {

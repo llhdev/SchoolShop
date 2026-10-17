@@ -111,6 +111,10 @@ export interface Order {
   tenantIds?: string[];
   /** Payment proof photo URLs uploaded at checkout, keyed by tenant owner id (migration 020). */
   paymentProofs?: Record<string, string>;
+  /** Per-shop payment references verified at checkout via the
+   *  verify-payment-reference function, keyed by tenant owner id (migration 041).
+   *  The key is replayed post-order so verify.et does not bill the retry. */
+  paymentReferences?: Record<string, { provider: 'cbe' | 'telebirr'; reference: string; key: string }>;
   /** Flat shipping fees charged per shop at checkout, keyed by tenant owner id (migration 031). */
   shippingFees?: Record<string, number>;
   /** Per-item statuses, keyed by "productId:selectedImageIndex" (migration 022).
