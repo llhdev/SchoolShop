@@ -13,7 +13,9 @@
 //                                                   each R2 copy by size)
 //
 // Required env (set in .env or the shell):
-//   EXPO_PUBLIC_SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY
+//   EXPO_PUBLIC_SUPABASE_URL
+//   SUPABASE_SERVICE_ROLE_KEY  (falls back to EXPO_PUBLIC_SUPABASE_ANON_KEY —
+//                               fine while RLS allows public read/write)
 //   R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY
 //   R2_BUCKET                  (default timor-shop-images)
 //   R2_PUBLIC_BASE_URL         (default https://img.timor.et)
@@ -24,7 +26,39 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const net = require('net');
 const { createClient } = require('@supabase/supabase-js');
+
+// supabase.co is intermittently unreachable from this network; route through
+// the local proxy when one is listening (same pattern as
+// scripts/test-reference-verification.js). Retries below cover the proxy
+// dropping mid-run.
+async function setupProxy() {
+  const reachable = await new Promise((resolve) => {
+    const socket = net.connect({ host: '127.0.0.1', port: 7890, timeout: 1500 });
+    socket.once('connect', () => { socket.destroy(); resolve(true); });
+    socket.once('error', () => resolve(false));
+    socket.once('timeout', () => { socket.destroy(); resolve(false); });
+  });
+  if (reachable) {
+    const { ProxyAgent, setGlobalDispatcher } = require('undici');
+    setGlobalDispatcher(new ProxyAgent('http://127.0.0.1:7890'));
+    console.log('using proxy 127.0.0.1:7890');
+  }
+}
+
+async function withRetry(fn, attempts = 4) {
+  let lastError;
+  for (let i = 0; i < attempts; i++) {
+    try {
+      return await fn();
+    } catch (error) {
+      lastError = error;
+      await new Promise((r) => setTimeout(r, 1000 * (i + 1)));
+    }
+  }
+  throw lastError;
+}
 
 function loadEnv() {
   const envPath = path.resolve(__dirname, '..', '.env');
@@ -44,7 +78,7 @@ const APPLY = process.argv.includes('--apply');
 const DELETE_SOURCE = process.argv.includes('--delete');
 
 const SUPABASE_URL = process.env.EXPO_PUBLIC_SUPABASE_URL;
-const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const SERVICE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
 const R2_ACCOUNT_ID = process.env.R2_ACCOUNT_ID;
 const R2_ACCESS_KEY_ID = process.env.R2_ACCESS_KEY_ID;
 const R2_SECRET_ACCESS_KEY = process.env.R2_SECRET_ACCESS_KEY;
@@ -53,7 +87,7 @@ const R2_PUBLIC_BASE_URL = (process.env.R2_PUBLIC_BASE_URL || 'https://img.timor
 
 for (const [name, value] of Object.entries({
   EXPO_PUBLIC_SUPABASE_URL: SUPABASE_URL,
-  SUPABASE_SERVICE_ROLE_KEY: SERVICE_KEY,
+  SUPABASE_KEY: SERVICE_KEY,
   R2_ACCOUNT_ID,
   R2_ACCESS_KEY_ID,
   R2_SECRET_ACCESS_KEY,
@@ -133,7 +167,9 @@ async function listAllObjects(bucket) {
   const objects = [];
   const PAGE = 1000;
   for (let offset = 0; ; offset += PAGE) {
-    const { data, error } = await supabase.storage.from(bucket).list('', { limit: PAGE, offset });
+    const { data, error } = await withRetry(() =>
+      supabase.storage.from(bucket).list('', { limit: PAGE, offset })
+    );
     if (error) throw new Error(`list ${bucket} failed: ${error.message}`);
     const files = (data || []).filter((o) => o.name && o.name !== '.emptyFolderPlaceholder');
     objects.push(...files);
@@ -215,6 +251,7 @@ async function rewriteDatabase() {
 // --- main -------------------------------------------------------------------------
 
 async function main() {
+  await setupProxy();
   console.log(APPLY ? 'Mode: APPLY (copying + rewriting)' : 'Mode: DRY RUN (report only)');
   if (DELETE_SOURCE && !APPLY) {
     console.error('--delete requires --apply');
@@ -234,10 +271,12 @@ async function main() {
         if (existing !== null && (size === null || existing === size)) {
           skipped++;
         } else if (APPLY) {
-          const { data, error } = await supabase.storage.from(bucket).download(object.name);
+          const { data, error } = await withRetry(() =>
+            supabase.storage.from(bucket).download(object.name)
+          );
           if (error) throw new Error(`download failed: ${error.message}`);
           const buffer = Buffer.from(await data.arrayBuffer());
-          const res = await r2Request('PUT', key, buffer);
+          const res = await withRetry(() => r2Request('PUT', key, buffer));
           if (!res.ok) throw new Error(`R2 PUT failed: HTTP ${res.status}`);
           copied++;
         } else {
@@ -247,8 +286,14 @@ async function main() {
         if (DELETE_SOURCE && APPLY) {
           const verified = await r2Size(key);
           if (verified !== null && (size === null || verified === size)) {
-            const { error } = await supabase.storage.from(bucket).remove([object.name]);
+            const { data: removed, error } = await withRetry(() =>
+              supabase.storage.from(bucket).remove([object.name])
+            );
             if (error) throw new Error(`delete failed: ${error.message}`);
+            // RLS silently turns an unauthorized DELETE into a 0-row success.
+            if (!removed || removed.length === 0) {
+              throw new Error('delete blocked by RLS (needs SUPABASE_SERVICE_ROLE_KEY in .env)');
+            }
             deleted++;
           }
         }

@@ -160,7 +160,8 @@ export async function uploadProductImages(uris: string[]): Promise<string[]> {
  *  Goes to the PRIVATE Supabase bucket (migration 040) and returns the storage
  *  object path — not a URL. Payment proofs intentionally stay on Supabase:
  *  they are sensitive, low-volume, and read server-side by the verification
- *  edge functions. Legacy orders hold full public payment-proofs URLs. */
+ *  edge functions. Older orders were migrated to bare paths by
+ *  scripts/migrate-proofs-to-private.js (readers still tolerate full URLs). */
 export async function uploadPaymentProof(uri: string): Promise<string> {
   const fileName = newFileName();
   const buffer = await imageToArrayBuffer(uri);
