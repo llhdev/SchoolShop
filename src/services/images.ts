@@ -2,8 +2,6 @@ import { Platform } from 'react-native';
 import { supabase } from '../lib/supabase';
 import { resizeImage, getThumbnailPath } from '../utils/images';
 
-const PAYMENT_PROOFS_PRIVATE_BUCKET = 'payment-proofs-private';
-
 /** Public base URL of the Cloudflare R2 bucket that now serves all display
  *  images (product photos + thumbnails, shop logos, bank QRs). Public info,
  *  safe to inline. Keys are namespaced: products/, logos/, qrs/. */
@@ -77,14 +75,19 @@ async function signR2Uploads(keys: string[]): Promise<SignedUpload[]> {
   return body.uploads;
 }
 
-/** PUT raw bytes to a presigned R2 URL. Filenames are unique per upload, so
- *  objects are immutable — cache aggressively for a year. */
-async function putToR2(uploadUrl: string, buffer: ArrayBuffer): Promise<void> {
+/** PUT raw bytes to a presigned R2 URL. Display images are immutable
+ *  (unique filenames) and cached for a year; proofs are private and never
+ *  cached. */
+async function putToR2(
+  uploadUrl: string,
+  buffer: ArrayBuffer,
+  cacheControl = 'public, max-age=31536000, immutable'
+): Promise<void> {
   const response = await fetch(uploadUrl, {
     method: 'PUT',
     headers: {
       'Content-Type': 'image/jpeg',
-      'Cache-Control': 'public, max-age=31536000, immutable',
+      'Cache-Control': cacheControl,
     },
     body: buffer,
   });
@@ -157,23 +160,58 @@ export async function uploadProductImages(uris: string[]): Promise<string[]> {
 }
 
 /** Shopper's payment proof photo for one tenant, uploaded at checkout.
- *  Goes to the PRIVATE Supabase bucket (migration 040) and returns the storage
- *  object path — not a URL. Payment proofs intentionally stay on Supabase:
- *  they are sensitive, low-volume, and read server-side by the verification
- *  edge functions. Older orders were migrated to bare paths by
- *  scripts/migrate-proofs-to-private.js (readers still tolerate full URLs). */
+ *  Goes to the PRIVATE R2 proofs bucket via the r2-upload-sign edge
+ *  function's anonymous sign-proof-upload action (shoppers aren't signed
+ *  in) and returns the bare object key — not a URL. Older orders hold the
+ *  same key format in the legacy Supabase bucket; readers fall back
+ *  automatically. */
 export async function uploadPaymentProof(uri: string): Promise<string> {
-  const fileName = newFileName();
+  const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
+  const anonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+  if (!supabaseUrl || !anonKey) throw new Error('Image storage is not configured.');
+  const key = newFileName();
   const buffer = await imageToArrayBuffer(uri);
-  const { data, error } = await supabase.storage
-    .from(PAYMENT_PROOFS_PRIVATE_BUCKET)
-    .upload(fileName, buffer, {
-      contentType: 'image/jpeg',
-      cacheControl: '31536000',
-      upsert: false,
-    });
-  if (error) throw error;
-  return data.path;
+  const response = await fetch(`${supabaseUrl}/functions/v1/r2-upload-sign`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', apikey: anonKey },
+    body: JSON.stringify({ action: 'sign-proof-upload', files: [{ key }] }),
+  });
+  const body = (await response.json().catch(() => null)) as
+    | { uploads?: { key: string; uploadUrl: string }[]; error?: string }
+    | null;
+  const upload = body?.uploads?.[0];
+  if (!response.ok || !upload) {
+    throw new Error(body?.error ?? `Could not prepare the upload (HTTP ${response.status}).`);
+  }
+  await putToR2(upload.uploadUrl, buffer, 'private, no-cache');
+  return upload.key;
+}
+
+/** Resolve proof object keys to viewable URLs for admins (OrderDetail).
+ *  The edge function presigns R2 GETs and falls back to Supabase signed
+ *  URLs for not-yet-migrated proofs. Requires a signed-in admin session.
+ *  Legacy full-URL refs pass through unchanged. */
+export async function getPaymentProofUrls(refs: string[]): Promise<(string | null)[]> {
+  const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
+  const anonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+  const { data: sessionData } = await supabase.auth.getSession();
+  const token = sessionData.session?.access_token;
+  if (!supabaseUrl || !anonKey || !token) return refs.map(() => null);
+  const keys = refs.filter((ref) => !isRemoteImage(ref));
+  const response = await fetch(`${supabaseUrl}/functions/v1/r2-upload-sign`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      apikey: anonKey,
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ action: 'sign-proof-get', keys }),
+  });
+  const body = (await response.json().catch(() => null)) as
+    | { proofs?: { key: string; url: string | null }[]; error?: string }
+    | null;
+  const byKey = new Map((body?.proofs ?? []).map((p) => [p.key, p.url]));
+  return refs.map((ref) => (isRemoteImage(ref) ? ref : byKey.get(ref) ?? null));
 }
 
 /** Tenant's bank transfer QR code, uploaded by the super admin or the tenant.

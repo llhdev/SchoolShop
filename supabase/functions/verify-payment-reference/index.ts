@@ -12,8 +12,8 @@
 // verify.et replays it for free.
 //
 // Credit-burn protection (verify_jwt is off — shoppers are anonymous):
-//   - the proof object must exist in the private payment-proofs-private
-//     bucket (only real uploads pass),
+//   - the proof object must exist in the private R2 proofs bucket (only
+//     real uploads pass; legacy Supabase bucket checked as fallback),
 //   - a daily cap on new pre-checks (same style as DAILY_SUBMISSION_CAP),
 //   - idempotent replays never re-call verify.et.
 //
@@ -37,6 +37,7 @@ import { syncRegistry, type RegistryAccount } from '../_shared/verifyRegistry.ts
 import { resolveUnitPrice, type SelectedOption } from '../_shared/variantPricing.ts';
 import { cbeSuffixFor } from '../_shared/referenceSuffix.ts';
 import { isVerificationEnabled, isVerificationEnabledForTenant } from '../_shared/verificationToggle.ts';
+import { R2_PROOFS_BUCKET, presign, r2Configured } from '../_shared/r2Sign.ts';
 
 const VERIFY_ET_API_KEY = Deno.env.get('VERIFY_ET_API_KEY') ?? '';
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
@@ -44,6 +45,8 @@ const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
 const MAX_AGE_HOURS = Number(Deno.env.get('RECEIPT_MAX_AGE_HOURS') ?? '24') || 24;
 
 const VERIFY_ET_URL = 'https://verify.et/api/verify';
+// Legacy Supabase bucket — proofs now live in the private R2 bucket
+// (R2_PROOFS_BUCKET); the Supabase check is the not-yet-migrated fallback.
 const PROOFS_BUCKET = 'payment-proofs-private';
 const DAILY_PRECHECK_CAP = 500;
 
@@ -277,10 +280,19 @@ Deno.serve(async (req) => {
     .maybeSingle();
   if (existing?.verdict) return json(existing.verdict);
 
-  // Proof gate: the referenced proof must actually exist in the private
-  // bucket (bytes discarded) — credit burn is limited to real uploads.
-  const { error: proofError } = await supabase.storage.from(PROOFS_BUCKET).download(proofRef);
-  if (proofError) return json({ error: 'proof not found' }, 400);
+  // Proof gate: the referenced proof must actually exist (bytes discarded) —
+  // credit burn is limited to real uploads. Proofs live in the private R2
+  // bucket; fall back to the legacy Supabase bucket during the migration.
+  let proofFound = false;
+  if (r2Configured()) {
+    const res = await fetch(await presign('GET', R2_PROOFS_BUCKET, proofRef, 600));
+    proofFound = res.ok;
+  }
+  if (!proofFound) {
+    const { error: proofError } = await supabase.storage.from(PROOFS_BUCKET).download(proofRef);
+    proofFound = !proofError;
+  }
+  if (!proofFound) return json({ error: 'proof not found' }, 400);
 
   // Daily cap on new pre-checks.
   const { count } = await supabase

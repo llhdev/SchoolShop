@@ -19,6 +19,7 @@
 // Management screen (profiles.telegram_chat_id, migration 018).
 
 import { createClient, type SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2.112.3';
+import { R2_PROOFS_BUCKET, presign, r2Configured, signedRequest } from '../_shared/r2Sign.ts';
 
 const BOT_TOKEN = Deno.env.get('TELEGRAM_BOT_TOKEN') ?? '';
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
@@ -196,9 +197,10 @@ interface SendResult {
   error?: string;
 }
 
-/** Proofs uploaded after migration 040 live in the PRIVATE payment-proofs-private
- *  bucket and are stored as bare object paths; Telegram can still fetch them
- *  through a short-lived signed URL. Legacy rows hold full public URLs. */
+/** Proofs live in the PRIVATE R2 bucket (bare object paths on
+ *  orders.payment_proofs) — Telegram fetches them through a short-lived
+ *  presigned R2 URL. Proofs not yet migrated fall back to a signed URL from
+ *  the legacy Supabase bucket. Legacy rows hold full public URLs. */
 const PROOFS_BUCKET = 'payment-proofs-private';
 
 async function resolveProofUrl(
@@ -206,6 +208,10 @@ async function resolveProofUrl(
   ref: string
 ): Promise<string | null> {
   if (ref.startsWith('http://') || ref.startsWith('https://')) return ref;
+  if (r2Configured()) {
+    const head = await signedRequest('HEAD', R2_PROOFS_BUCKET, ref);
+    if (head.ok) return presign('GET', R2_PROOFS_BUCKET, ref, 3600);
+  }
   const { data, error } = await supabase.storage.from(PROOFS_BUCKET).createSignedUrl(ref, 3600);
   if (error) {
     console.error('failed to sign proof url:', error.message ?? error);

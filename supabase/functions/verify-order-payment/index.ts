@@ -25,6 +25,7 @@ import { completeAttempt, type TenantProfile } from '../_shared/verifyWorkflow.t
 import { cbeSuffixFor } from '../_shared/referenceSuffix.ts';
 import { resolveUnitPrice, type SelectedOption } from '../_shared/variantPricing.ts';
 import { isVerificationEnabled } from '../_shared/verificationToggle.ts';
+import { R2_PROOFS_BUCKET, presign, r2Configured } from '../_shared/r2Sign.ts';
 
 const VERIFY_ET_API_KEY = Deno.env.get('VERIFY_ET_API_KEY') ?? '';
 const INTERNAL_TOKEN = Deno.env.get('VERIFY_FUNCTION_SECRET') ?? '';
@@ -35,6 +36,8 @@ const MAX_AGE_HOURS = Number(Deno.env.get('RECEIPT_MAX_AGE_HOURS') ?? '24') || 2
 
 const VERIFY_ET_URL = 'https://verify.et/api/verify';
 const WEBHOOK_URL = `${SUPABASE_URL}/functions/v1/verify-et-webhook`;
+// Legacy Supabase bucket — proofs now live in the private R2 bucket
+// (R2_PROOFS_BUCKET); the Supabase path is the not-yet-migrated fallback.
 const PROOFS_BUCKET = 'payment-proofs-private';
 const DAILY_SUBMISSION_CAP = 500;
 const IN_FLIGHT_MINUTES = 10;
@@ -66,6 +69,12 @@ async function fetchProofBytes(ref: string): Promise<Uint8Array> {
     const res = await fetch(ref);
     if (!res.ok) throw new Error(`proof download failed: HTTP ${res.status}`);
     return new Uint8Array(await res.arrayBuffer());
+  }
+  // Proofs live in the private R2 bucket; fall back to the legacy Supabase
+  // bucket for objects not yet migrated.
+  if (r2Configured()) {
+    const res = await fetch(await presign('GET', R2_PROOFS_BUCKET, ref, 600));
+    if (res.ok) return new Uint8Array(await res.arrayBuffer());
   }
   const { data, error } = await supabase.storage.from(PROOFS_BUCKET).download(ref);
   if (error || !data) throw new Error(`proof download failed: ${error?.message ?? 'no data'}`);

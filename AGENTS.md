@@ -34,7 +34,7 @@ Key facts:
 | State | React Context + `useReducer` | `src/context/AppContext.tsx` |
 | Backend / DB | Supabase | `@supabase/supabase-js` — Postgres + Realtime |
 | Local cache | AsyncStorage | `2.2.0` |
-| File storage | Cloudflare R2 | `timor-shop-images` bucket on `img.timor.et`; Supabase Storage only for private payment proofs |
+| File storage | Cloudflare R2 | `timor-shop-images` bucket (public, `img.timor.et`) + `timor-shop-proofs` bucket (private, presigned access only) |
 | Styling | RN `StyleSheet` | tokens in `src/constants/theme.ts` |
 | Icons | `@expo/vector-icons` | Ionicons |
 | Images | `expo-image-picker`, `expo-image-manipulator` | admin product uploads |
@@ -57,7 +57,7 @@ Docs: <https://docs.expo.dev/versions/v54.0.0/>
 │   │   ├── telegram-order-notify/   # sends each order to every shop's Telegram group
 │   │   ├── verify-order-payment/    # DB-triggered verify.et check of payment proofs
 │   │   ├── verify-payment-reference/ # pre-order read-only reference check (checkout calls it)
-│   │   ├── r2-upload-sign/          # admin-authed presigned PUT + delete for Cloudflare R2
+│   │   ├── r2-upload-sign/          # presigned R2 access: admin PUT/delete (images), anon proof PUT, admin proof GET
 │   │   └── verify-et-webhook/       # completes queued verifications (signed, idempotent)
 │   └── migrations/                  # 001–043, in order; header comments document each
 ├── docs/telegram-mini-app.md        # TMA runbook
@@ -163,7 +163,7 @@ Param lists in `src/types/navigation.ts`. Web has a `linking` config (`product/:
 - `assets/logo.png` is the web-optimized 192×192 header logo (~35 kB); the 1024×1024 source is `assets/icon.png`. Don't swap in a large logo — it ships in the first page load.
 - Product images render through `ProductImage` (`expo-image`, memory + disk cache); missing images render a local placeholder (category color + product initial) — no external service, works offline.
 - Uploads are resized to max 800px, stored in the Cloudflare R2 bucket `timor-shop-images` (served from `https://img.timor.et`, keys namespaced `products/` / `logos/` / `qrs/`) with a 400px `-thumb.jpg` companion (1-year `Cache-Control`). Clients never see R2 credentials: the `r2-upload-sign` edge function (secrets `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET`, `R2_PUBLIC_BASE_URL`) checks the caller is a signed-in admin and returns presigned PUT URLs; the client uploads bytes straight to R2. Only the full URL is stored on the product; list views request the derived thumbnail. `scripts/migrate-images-to-r2.js` copied legacy Supabase objects and rewrote DB URLs.
-- Payment proofs live in the **private** `payment-proofs-private` bucket **on Supabase** (proofs stay there — sensitive, low-volume, read server-side by the verification functions), stored on the order as bare object paths; `scripts/migrate-proofs-to-private.js` moved legacy public `payment-proofs` objects there and rewrote `orders.payment_proofs` to bare paths (readers still tolerate legacy full URLs). Server-side readers use the service role; admins view proofs via short-lived signed URLs; proofs are not shown to shoppers. Bank QR codes were in `bank-qrs` (020) — now `qrs/` in R2, uploaded as-is (no resize — QRs must stay scannable), never auto-deleted.
+- Payment proofs live in the **private R2 bucket** `timor-shop-proofs` (no public access), stored on the order as bare object paths (keys unchanged since migration 040 — only the backend moved; `scripts/migrate-proofs-to-r2.js`). All access is presigned via `r2-upload-sign` (`_shared/r2Sign.ts`): shoppers upload with the anonymous `sign-proof-upload` action (max 4 keys, 10-min PUT URLs); admins view with `sign-proof-get` (admin-authed GET presign, falls back to the legacy `payment-proofs-private` Supabase bucket for unmigrated objects — as do `verify-order-payment`, `verify-payment-reference`, `telegram-order-notify`); proofs are not shown to shoppers. Bank QR codes were in `bank-qrs` (020) — now `qrs/` in R2, uploaded as-is (no resize — QRs must stay scannable), never auto-deleted.
 - Cover thumbnails are prefetched when the catalog loads. `coverImageIndex` picks the card/list image.
 - `utils/images.ts`: `getProductCoverImage`, `getProductGalleryImages`, `getThumbnailUrl`; `services/images.ts`: upload/delete/URL parsing.
 - On web, native image modules don't run: `src/lib/image-web.ts` uses a hidden `<input type="file">` + canvas. Native-only modules are **dynamically imported** everywhere so they stay out of the web bundle.
@@ -203,7 +203,7 @@ Param lists in `src/types/navigation.ts`. Web has a `linking` config (`product/:
 6. Mini App: `supabase functions deploy telegram-auth`, set the `TELEGRAM_BOT_TOKEN` secret (from @BotFather). Full steps in `docs/telegram-mini-app.md`.
 7. Order notifications: `supabase functions deploy telegram-order-notify` (needs `TELEGRAM_BOT_TOKEN` and `PUBLISHABLE_KEY`; per-tenant chat ids in `profiles.telegram_chat_id`). Tenants without a chat id are skipped — order placement unaffected. A group upgraded to a supergroup gets its new chat id adopted automatically.
 8. Payment verification: `supabase functions deploy verify-order-payment verify-payment-reference verify-et-webhook`; secrets `VERIFY_ET_API_KEY`, `VERIFY_FUNCTION_SECRET` (also `SELECT vault.create_secret('<same>', 'verify_function_secret')`), `VERIFY_ET_WEBHOOK_SECRET` (webhook URL `…/functions/v1/verify-et-webhook`), optionally `RECEIPT_MAX_AGE_HOURS` (default 24). Test with genuine CBE/Telebirr receipts via `scripts/test-reference-verification.js` before going live.
-9. Image storage (R2): `supabase functions deploy r2-upload-sign`; secrets `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET`, `R2_PUBLIC_BASE_URL`. Bucket `timor-shop-images` on Cloudflare R2, custom domain `img.timor.et` attached in the Cloudflare dashboard. Legacy Supabase objects: `node scripts/migrate-images-to-r2.js --apply --delete`.
+9. Image storage (R2): `supabase functions deploy r2-upload-sign`; secrets `R2_ACCOUNT_ID`, `R2_ACCESS_KEY_ID`, `R2_SECRET_ACCESS_KEY`, `R2_BUCKET`, `R2_PUBLIC_BASE_URL`, `R2_PROOFS_BUCKET`. Buckets `timor-shop-images` (public, custom domain `img.timor.et`) and `timor-shop-proofs` (private — create it in the Cloudflare dashboard; the token can't create buckets). Legacy Supabase objects: `node scripts/migrate-images-to-r2.js --apply --delete` and `node scripts/migrate-proofs-to-r2.js --apply --delete`.
 9. Start the app. It begins with empty products, orders, and categories.
 
 ---

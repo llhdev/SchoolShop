@@ -26,7 +26,9 @@ export interface VerifyPaymentReferenceArgs {
   /** Idempotency key — stable per (proof, reference text) so verify.et bills
    *  a retry of the same reference for free. */
   key: string;
-  /** Bare object path in payment-proofs-private returned by uploadPaymentProof. */
+  /** Bare proof object key returned by uploadPaymentProof (private R2 proofs
+   *  bucket; legacy orders reference the Supabase payment-proofs-private
+   *  bucket — readers fall back automatically). */
   proofRef: string;
   items: VerificationItem[];
 }

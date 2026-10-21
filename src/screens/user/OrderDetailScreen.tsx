@@ -17,7 +17,7 @@ import {
   retryPaymentVerification,
   subscribeToVerifications,
 } from '../../services/paymentVerifications';
-import { supabase } from '../../lib/supabase';
+import { getPaymentProofUrls } from '../../services/images';
 import { useResponsive } from '../../hooks/useResponsive';
 import { formatPrice } from '../../utils/format';
 import { formatVariantLabel, getUnitPrice } from '../../utils/variants';
@@ -84,9 +84,10 @@ export function OrderDetailScreen() {
   const [proofUrls, setProofUrls] = useState<string[]>([]);
   const proofRefsKey = visibleProofRefs.join('|');
 
-  // Resolve private-bucket paths to short-lived signed URLs (admins are
-  // authenticated; the bucket is not publicly readable). Legacy full URLs
-  // pass through untouched.
+  // Resolve proof object keys to short-lived presigned URLs via the
+  // r2-upload-sign edge function (admins are authenticated; the private R2
+  // bucket is not publicly readable). The function falls back to Supabase
+  // signed URLs for not-yet-migrated proofs; legacy full URLs pass through.
   useEffect(() => {
     if (!proofRefsKey) {
       setProofUrls([]);
@@ -94,19 +95,7 @@ export function OrderDetailScreen() {
     }
     let cancelled = false;
     (async () => {
-      const resolved = await Promise.all(
-        proofRefsKey.split('|').map(async (ref) => {
-          if (ref.startsWith('http://') || ref.startsWith('https://')) return ref;
-          const { data, error } = await supabase.storage
-            .from('payment-proofs-private')
-            .createSignedUrl(ref, 3600);
-          if (error) {
-            console.warn('Failed to sign payment proof URL:', error.message);
-            return null;
-          }
-          return data.signedUrl;
-        })
-      );
+      const resolved = await getPaymentProofUrls(proofRefsKey.split('|'));
       if (!cancelled) setProofUrls(resolved.filter((u): u is string => !!u));
     })();
     return () => {
