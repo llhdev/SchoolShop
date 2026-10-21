@@ -436,3 +436,9 @@ verify_jwt = false
 # is gated by the proof-exists check, per-key idempotency and a daily cap.
 [functions.verify-payment-reference]
 verify_jwt = false
+
+# Called by signed-in admins to presign R2 image uploads / delete R2 objects;
+# the function validates the caller's JWT + profile role itself, so the
+# platform JWT check stays off (and browsers need OPTIONS handled anyway).
+[functions.r2-upload-sign]
+verify_jwt = false

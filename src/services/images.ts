@@ -2,10 +2,12 @@ import { Platform } from 'react-native';
 import { supabase } from '../lib/supabase';
 import { resizeImage, getThumbnailPath } from '../utils/images';
 
-const BUCKET = 'product-images';
 const PAYMENT_PROOFS_PRIVATE_BUCKET = 'payment-proofs-private';
-const BANK_QRS_BUCKET = 'bank-qrs';
-const SHOP_LOGOS_BUCKET = 'shop-logos';
+
+/** Public base URL of the Cloudflare R2 bucket that now serves all display
+ *  images (product photos + thumbnails, shop logos, bank QRs). Public info,
+ *  safe to inline. Keys are namespaced: products/, logos/, qrs/. */
+const R2_PUBLIC_BASE_URL = 'https://img.timor.et';
 
 function base64ToArrayBuffer(base64: string): ArrayBuffer {
   const clean = base64.includes(',') ? base64.split(',')[1] : base64;
@@ -39,72 +41,128 @@ async function imageToArrayBuffer(uri: string): Promise<ArrayBuffer> {
   return fileUriToArrayBuffer(uri);
 }
 
+// --- Cloudflare R2 uploads (presigned by the r2-upload-sign edge function) -----
+
+interface SignedUpload {
+  key: string;
+  uploadUrl: string;
+  publicUrl: string;
+}
+
+/** Ask the edge function to presign PUT URLs for the given R2 keys. Requires
+ *  a signed-in admin session — the function checks the caller's role. */
+async function signR2Uploads(keys: string[]): Promise<SignedUpload[]> {
+  const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
+  const anonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+  const { data: sessionData } = await supabase.auth.getSession();
+  const token = sessionData.session?.access_token;
+  if (!supabaseUrl || !anonKey || !token) {
+    throw new Error('Sign in as an admin to upload images.');
+  }
+  const response = await fetch(`${supabaseUrl}/functions/v1/r2-upload-sign`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      apikey: anonKey,
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ action: 'sign', files: keys.map((key) => ({ key })) }),
+  });
+  const body = (await response.json().catch(() => null)) as
+    | { uploads?: SignedUpload[]; error?: string }
+    | null;
+  if (!response.ok || !body?.uploads) {
+    throw new Error(body?.error ?? `Could not prepare the upload (HTTP ${response.status}).`);
+  }
+  return body.uploads;
+}
+
+/** PUT raw bytes to a presigned R2 URL. Filenames are unique per upload, so
+ *  objects are immutable — cache aggressively for a year. */
+async function putToR2(uploadUrl: string, buffer: ArrayBuffer): Promise<void> {
+  const response = await fetch(uploadUrl, {
+    method: 'PUT',
+    headers: {
+      'Content-Type': 'image/jpeg',
+      'Cache-Control': 'public, max-age=31536000, immutable',
+    },
+    body: buffer,
+  });
+  if (!response.ok) {
+    throw new Error(`Image upload failed (HTTP ${response.status}).`);
+  }
+}
+
+/** Delete R2 objects by key (full + thumb). Best-effort — callers chain
+ *  .catch(() => {}) already. */
+async function deleteR2Objects(keys: string[]): Promise<void> {
+  const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
+  const anonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+  const { data: sessionData } = await supabase.auth.getSession();
+  const token = sessionData.session?.access_token;
+  if (!supabaseUrl || !anonKey || !token) return;
+  const response = await fetch(`${supabaseUrl}/functions/v1/r2-upload-sign`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      apikey: anonKey,
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ action: 'delete', keys }),
+  });
+  if (!response.ok) {
+    const body = (await response.json().catch(() => null)) as { error?: string } | null;
+    throw new Error(body?.error ?? `R2 delete failed (HTTP ${response.status}).`);
+  }
+}
+
+function newFileName(): string {
+  return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}.jpg`;
+}
+
+/** Upload one image to R2 under the given prefix and return its public URL. */
+async function uploadR2Image(uri: string, prefix: 'products' | 'logos' | 'qrs'): Promise<string> {
+  const key = `${prefix}/${newFileName()}`;
+  const buffer = await imageToArrayBuffer(uri);
+  const [upload] = await signR2Uploads([key]);
+  await putToR2(upload.uploadUrl, buffer);
+  return upload.publicUrl;
+}
+
 export async function uploadProductImage(uri: string): Promise<string> {
-  const baseName = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}`;
-  const fileName = `${baseName}.jpg`;
-  const thumbName = getThumbnailPath(fileName);
+  const baseName = newFileName();
+  const key = `products/${baseName}`;
+  const thumbKey = `products/${getThumbnailPath(baseName)}`;
 
   // Upload the full image and a 400px thumbnail companion so list views can
   // fetch small payloads on slow connections. The product record stores the
   // full URL only; thumbnails are derived by naming convention.
-  const [upload, thumbUpload] = await Promise.all([
-    imageToArrayBuffer(uri).then((buffer) =>
-      supabase.storage.from(BUCKET).upload(fileName, buffer, {
-        contentType: 'image/jpeg',
-        // Filenames are unique per upload, so content is immutable — let
-        // browsers/WebViews cache aggressively for a year.
-        cacheControl: '31536000',
-        upsert: false,
-      })
-    ),
-    resizeImage(uri, 400)
-      .then((thumbUri) => imageToArrayBuffer(thumbUri))
-      .then((buffer) =>
-        supabase.storage.from(BUCKET).upload(thumbName, buffer, {
-          contentType: 'image/jpeg',
-          cacheControl: '31536000',
-          upsert: false,
-        })
-      ),
-  ]);
+  const [fullBuffer, thumbUri] = await Promise.all([imageToArrayBuffer(uri), resizeImage(uri, 400)]);
+  const thumbBuffer = await imageToArrayBuffer(thumbUri);
+  const [full, thumb] = await signR2Uploads([key, thumbKey]);
 
-  if (upload.error) throw upload.error;
+  await putToR2(full.uploadUrl, fullBuffer);
   // A missing thumbnail only hurts bandwidth, not correctness.
-  if (thumbUpload.error) {
-    console.warn('Thumbnail upload failed:', thumbUpload.error.message);
+  try {
+    await putToR2(thumb.uploadUrl, thumbBuffer);
+  } catch (error) {
+    console.warn('Thumbnail upload failed:', error);
   }
 
-  const { data: publicUrlData } = supabase.storage.from(BUCKET).getPublicUrl(upload.data.path);
-  return publicUrlData.publicUrl;
+  return full.publicUrl;
 }
 
 export async function uploadProductImages(uris: string[]): Promise<string[]> {
   return Promise.all(uris.map((uri) => uploadProductImage(uri)));
 }
 
-/** Upload a single image to a bucket as-is (no thumbnail companion) and
- *  return its public URL. Used for payment proofs and tenant bank QR codes,
- *  which are viewed at full resolution by admins and the Telegram bot. */
-export async function uploadSingleImage(uri: string, bucket: string): Promise<string> {
-  const fileName = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}.jpg`;
-  const buffer = await imageToArrayBuffer(uri);
-  const { data, error } = await supabase.storage.from(bucket).upload(fileName, buffer, {
-    contentType: 'image/jpeg',
-    cacheControl: '31536000',
-    upsert: false,
-  });
-  if (error) throw error;
-  const { data: publicUrlData } = supabase.storage.from(bucket).getPublicUrl(data.path);
-  return publicUrlData.publicUrl;
-}
-
 /** Shopper's payment proof photo for one tenant, uploaded at checkout.
- *  Goes to the PRIVATE bucket (migration 040) and returns the storage object
- *  path — not a URL. Server-side readers (edge functions) download it with
- *  the service role; admins view it through short-lived signed URLs. Legacy
- *  orders hold full public payment-proofs URLs instead. */
+ *  Goes to the PRIVATE Supabase bucket (migration 040) and returns the storage
+ *  object path — not a URL. Payment proofs intentionally stay on Supabase:
+ *  they are sensitive, low-volume, and read server-side by the verification
+ *  edge functions. Legacy orders hold full public payment-proofs URLs. */
 export async function uploadPaymentProof(uri: string): Promise<string> {
-  const fileName = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}.jpg`;
+  const fileName = newFileName();
   const buffer = await imageToArrayBuffer(uri);
   const { data, error } = await supabase.storage
     .from(PAYMENT_PROOFS_PRIVATE_BUCKET)
@@ -117,39 +175,40 @@ export async function uploadPaymentProof(uri: string): Promise<string> {
   return data.path;
 }
 
-/** Tenant's bank transfer QR code, uploaded by the super admin or the tenant. */
+/** Tenant's bank transfer QR code, uploaded by the super admin or the tenant.
+ *  Uploaded as-is (no resize — QRs must stay scannable). */
 export async function uploadBankQr(uri: string): Promise<string> {
-  return uploadSingleImage(uri, BANK_QRS_BUCKET);
+  return uploadR2Image(uri, 'qrs');
 }
 
 /** Tenant shop logo, uploaded by the super admin (migration 023). Logos are
  *  display-only and rendered small (store filter chips/lists), so they are
  *  resized to 400px before upload — unlike QR codes, no scannability concern. */
 export async function uploadShopLogo(uri: string): Promise<string> {
-  const fileName = `${Date.now()}-${Math.random().toString(36).slice(2, 9)}.jpg`;
   const resized = await resizeImage(uri, 400);
-  const buffer = await imageToArrayBuffer(resized);
-  const { data, error } = await supabase.storage.from(SHOP_LOGOS_BUCKET).upload(fileName, buffer, {
-    contentType: 'image/jpeg',
-    cacheControl: '31536000',
-    upsert: false,
-  });
-  if (error) throw error;
-  const { data: publicUrlData } = supabase.storage.from(SHOP_LOGOS_BUCKET).getPublicUrl(data.path);
-  return publicUrlData.publicUrl;
+  return uploadR2Image(resized, 'logos');
 }
 
 export async function deleteProductImage(url: string): Promise<void> {
   if (!url) return;
 
-  // Only delete URLs that belong to our Supabase storage bucket.
-  const marker = `/object/public/${BUCKET}/`;
+  // R2 URLs: strip the public base URL to get the object key, delete the
+  // full image and its thumbnail companion via the edge function.
+  const r2Marker = `${R2_PUBLIC_BASE_URL}/`;
+  if (url.startsWith(r2Marker)) {
+    const key = url.slice(r2Marker.length);
+    await deleteR2Objects([key, getThumbnailPath(key)]);
+    return;
+  }
+
+  // Legacy Supabase URLs (products uploaded before the R2 move).
+  const marker = '/object/public/product-images/';
   const markerIndex = url.indexOf(marker);
   if (markerIndex === -1) return;
 
   const path = url.slice(markerIndex + marker.length);
   const { error } = await supabase.storage
-    .from(BUCKET)
+    .from('product-images')
     .remove([path, getThumbnailPath(path)]);
   if (error) throw error;
 }
