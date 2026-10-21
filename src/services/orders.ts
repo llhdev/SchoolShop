@@ -73,17 +73,37 @@ export async function saveOrdersToCache(orders: Order[]): Promise<void> {
   await setCached(CACHE_KEYS.orders, orders);
 }
 
+/** PostgREST silently truncates responses at 1000 rows, so a plain select
+ *  under-reports once the table grows past that. Page through with range()
+ *  until a short page comes back. */
+const PAGE_SIZE = 1000;
+
+async function fetchAllOrderPages(
+  buildQuery: () => ReturnType<ReturnType<typeof supabase.from>['select']>
+): Promise<Order[]> {
+  const all: Order[] = [];
+  let from = 0;
+  for (;;) {
+    const { data, error } = await buildQuery().range(from, from + PAGE_SIZE - 1);
+    if (error) throw error;
+    const rows = (data ?? []).map((row) => toOrder(row as unknown as DbOrder));
+    all.push(...rows);
+    if (rows.length < PAGE_SIZE) return all;
+    from += PAGE_SIZE;
+  }
+}
+
 /** Tenant admins only see orders containing their own products.
  *  tenant_ids is filled server-side by the stamp_order_tenants trigger. */
 export async function fetchOrders(tenantId?: string): Promise<Order[]> {
-  let query = supabase
-    .from('orders')
-    .select('*')
-    .order('created_at', { ascending: false });
-  if (tenantId) query = query.contains('tenant_ids', [tenantId]);
-  const { data, error } = await query;
-  if (error) throw error;
-  return (data ?? []).map(toOrder);
+  return fetchAllOrderPages(() => {
+    let query = supabase
+      .from('orders')
+      .select('*')
+      .order('created_at', { ascending: false });
+    if (tenantId) query = query.contains('tenant_ids', [tenantId]);
+    return query;
+  });
 }
 
 /** Line items of an order that belong to one tenant. Item snapshots are
@@ -98,13 +118,13 @@ export function getOrderItemsForTenant(order: Order, tenantId: string): Order['i
 
 /** Orders placed by one Telegram shopper, newest first. */
 export async function fetchOrdersByTelegramId(telegramId: number): Promise<Order[]> {
-  const { data, error } = await supabase
-    .from('orders')
-    .select('*')
-    .eq('telegram_id', telegramId)
-    .order('created_at', { ascending: false });
-  if (error) throw error;
-  return (data ?? []).map(toOrder);
+  return fetchAllOrderPages(() =>
+    supabase
+      .from('orders')
+      .select('*')
+      .eq('telegram_id', telegramId)
+      .order('created_at', { ascending: false })
+  );
 }
 
 export async function createOrder(order: Order): Promise<Order> {

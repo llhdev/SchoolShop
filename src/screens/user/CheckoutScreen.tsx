@@ -123,6 +123,9 @@ export function CheckoutScreen() {
   const [verifyStates, setVerifyStates] = useState<Record<string, ShopVerifyState>>({});
   /** Amount the verifier saw on the receipt, for the wrong-amount message. */
   const [verifyPaidAmounts, setVerifyPaidAmounts] = useState<Record<string, number | null>>({});
+  /** Server-provided reason behind the latest verdict, shown under the
+   *  friendly message so the real failure is visible. */
+  const [verifyDetails, setVerifyDetails] = useState<Record<string, string | null>>({});
   /** Latest verification key per group — a stale OCR/verify completion (from
    *  before a re-pick or edit) discards itself by comparing keys. */
   const verificationKeys = useRef<Record<string, string>>({});
@@ -325,10 +328,13 @@ export function CheckoutScreen() {
       // A new proof means a new payment: reset this shop's verification and
       // try to read the reference off the receipt. When verification is off
       // for this shop (global kill-switch or the shop's own flag), the proof
-      // alone satisfies it.
+      // alone satisfies it. OCR runs on the ORIGINAL full-resolution image —
+      // the 800px upload copy degrades small text enough to break provider
+      // detection (Tesseract is web-only, so the data-URI original is always
+      // available when OCR runs).
       const group = tenantGroups.find((g) => g.key === groupKey);
       if (group && isGroupVerificationRequired(group)) {
-        startVerification(groupKey, url, resized);
+        startVerification(groupKey, url, localUri);
       } else {
         resetGroupVerification(groupKey);
       }
@@ -357,6 +363,11 @@ export function CheckoutScreen() {
       delete next[groupKey];
       return next;
     });
+    setVerifyDetails((prev) => {
+      const next = { ...prev };
+      delete next[groupKey];
+      return next;
+    });
   }
 
   /** Reset one shop's verification for a freshly uploaded proof, then read
@@ -366,8 +377,19 @@ export function CheckoutScreen() {
   function startVerification(groupKey: string, proofRef: string, imageUri: string) {
     const key = newVerificationKey();
     verificationKeys.current[groupKey] = key;
-    setReferences((prev) => ({ ...prev, [groupKey]: { reference: '', key } }));
+    // Keep the previous "Paid via" choice across proof replacements — it
+    // breaks ties when the receipt prints no brand name (Telebirr's own app).
+    const providerHint = references[groupKey]?.provider;
+    setReferences((prev) => ({
+      ...prev,
+      [groupKey]: { reference: '', key, ...(providerHint ? { provider: providerHint } : {}) },
+    }));
     setVerifyPaidAmounts((prev) => {
+      const next = { ...prev };
+      delete next[groupKey];
+      return next;
+    });
+    setVerifyDetails((prev) => {
       const next = { ...prev };
       delete next[groupKey];
       return next;
@@ -381,10 +403,10 @@ export function CheckoutScreen() {
     void (async () => {
       try {
         const { extractReceiptReference } = await import('../../lib/ocr');
-        const ocr = await extractReceiptReference(imageUri);
+        const ocr = await extractReceiptReference(imageUri, providerHint);
         if (verificationKeys.current[groupKey] !== key) return;
         const next: ShopReference = {
-          provider: ocr.provider,
+          provider: ocr.provider ?? providerHint,
           reference: ocr.reference ?? '',
           key,
         };
@@ -425,6 +447,7 @@ export function CheckoutScreen() {
     // A re-pick or an edit superseded this attempt while it was in flight.
     if (verificationKeys.current[groupKey] !== ref.key) return;
     setVerifyStates((prev) => ({ ...prev, [groupKey]: result.verdict }));
+    setVerifyDetails((prev) => ({ ...prev, [groupKey]: result.detail }));
     if (result.verdict === 'wrong_amount') {
       setVerifyPaidAmounts((prev) => ({ ...prev, [groupKey]: result.paidAmount }));
     }
@@ -889,6 +912,9 @@ export function CheckoutScreen() {
                                   in a moment.
                                 </Text>
                               )}
+                              {verifyDetails[group.key] && verifyState !== 'verified' && (
+                                <Text style={styles.verifyDetail}>{verifyDetails[group.key]}</Text>
+                              )}
 
                               {/* Hard failures stay blocked until a new proof is
                                   picked, so the reference form hides for them. */}
@@ -1326,6 +1352,11 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
   verifyError: {
     fontSize: fontSizes.sm,
     color: colors.danger,
+  },
+  verifyDetail: {
+    fontSize: fontSizes.xs,
+    color: colors.textSecondary,
+    fontStyle: 'italic',
   },
   verifyLabel: {
     fontSize: fontSizes.sm,

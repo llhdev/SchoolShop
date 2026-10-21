@@ -35,6 +35,7 @@ import {
 } from '../_shared/verifyEvaluation.ts';
 import { syncRegistry, type RegistryAccount } from '../_shared/verifyRegistry.ts';
 import { resolveUnitPrice, type SelectedOption } from '../_shared/variantPricing.ts';
+import { cbeSuffixFor } from '../_shared/referenceSuffix.ts';
 import { isVerificationEnabled, isVerificationEnabledForTenant } from '../_shared/verificationToggle.ts';
 
 const VERIFY_ET_API_KEY = Deno.env.get('VERIFY_ET_API_KEY') ?? '';
@@ -46,6 +47,15 @@ const VERIFY_ET_URL = 'https://verify.et/api/verify';
 const PROOFS_BUCKET = 'payment-proofs-private';
 const DAILY_PRECHECK_CAP = 500;
 
+// Called from the browser (checkout) with apikey/authorization/json headers,
+// so every request is CORS-preflighted — answer OPTIONS and tag every
+// response, or the browser blocks the call before it reaches us.
+const corsHeaders = {
+  'Access-Control-Allow-Origin': '*',
+  'Access-Control-Allow-Headers': 'authorization, content-type, apikey, x-client-info',
+  'Access-Control-Allow-Methods': 'POST, OPTIONS',
+};
+
 const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
   auth: { persistSession: false, autoRefreshToken: false },
 });
@@ -53,7 +63,7 @@ const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
 function json(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
     status,
-    headers: { 'Content-Type': 'application/json' },
+    headers: { 'Content-Type': 'application/json', ...corsHeaders },
   });
 }
 
@@ -72,6 +82,11 @@ interface PrecheckPayload {
   paidAmount: number | null;
   expectedAmount: number;
   requestId: string | null;
+  /** Human-readable reason behind the verdict — verify.et's error message or
+   *  the reasons of the checks that did not pass. Shown to the shopper so a
+   *  fixable problem (typo, wrong account) is distinguishable from a
+   *  temporary outage. */
+  detail?: string;
 }
 
 // --- input validation ---------------------------------------------------------
@@ -160,11 +175,15 @@ interface VerifyEtSubmission {
 }
 
 /** Synchronous reference lookup: no image, no settlementAccount (registry
- *  matching covers the recipient), no webhookUrl. */
+ *  matching covers the recipient), no webhookUrl. Legacy CBE FT references
+ *  additionally need the receiver account's 8-digit suffix. The body shape
+ *  must stay identical to the order-time replay in verify-order-payment —
+ *  same idempotency key + same body = free replay on verify.et's side. */
 async function submitReferenceToVerifyEt(
   provider: string,
   reference: string,
-  idempotencyKey: string
+  idempotencyKey: string,
+  suffix?: string
 ): Promise<VerifyEtSubmission> {
   try {
     const res = await fetch(`${VERIFY_ET_URL}?waitMs=25000`, {
@@ -174,7 +193,7 @@ async function submitReferenceToVerifyEt(
         'Idempotency-Key': idempotencyKey,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ bank: provider, reference }),
+      body: JSON.stringify({ bank: provider, reference, ...(suffix ? { suffix } : {}) }),
     });
     const body = await res.json().catch(() => null);
     if (!res.ok) {
@@ -224,6 +243,7 @@ function isNotFound(
 // --- entry point ------------------------------------------------------------------
 
 Deno.serve(async (req) => {
+  if (req.method === 'OPTIONS') return new Response(null, { status: 200, headers: corsHeaders });
   if (req.method !== 'POST') return json({ error: 'Method not allowed' }, 405);
 
   if (!(await isVerificationEnabled(supabase))) return json({ skipped: 'verification disabled' });
@@ -314,7 +334,8 @@ Deno.serve(async (req) => {
   const finish = async (
     verdict: Verdict,
     paidAmount: number | null,
-    requestId: string | null
+    requestId: string | null,
+    detail?: string
   ): Promise<Response> => {
     const payload: PrecheckPayload = {
       verdict,
@@ -323,6 +344,7 @@ Deno.serve(async (req) => {
       paidAmount,
       expectedAmount,
       requestId,
+      ...(detail ? { detail } : {}),
     };
     const { error } = await supabase
       .from('payment_prechecks')
@@ -355,14 +377,22 @@ Deno.serve(async (req) => {
     .filter((a) => a.accountNumber);
   await syncRegistry(VERIFY_ET_API_KEY, tenantAccounts);
 
-  const submission = await submitReferenceToVerifyEt(provider, reference, key);
+  // Legacy CBE FT references need the receiver account's 8-digit suffix.
+  const suffix = cbeSuffixFor(provider, reference, tenantAccounts);
+  const submission = await submitReferenceToVerifyEt(provider, reference, key, suffix);
   if (submission.error && !submission.requestId) {
     // 400/422: verify.et rejected the reference itself (wrong format for the
     // bank) — the shopper can correct it, so surface it as not_found.
     // Everything else (5xx, network, timeout) is a temporary failure:
-    // retryable, never a fraud verdict.
+    // retryable, never a fraud verdict. Either way, pass verify.et's own
+    // message through so the failure is diagnosable.
     const badReference = submission.status === 400 || submission.status === 422;
-    return finish(badReference ? 'not_found' : 'unavailable', null, submission.requestId);
+    return finish(
+      badReference ? 'not_found' : 'unavailable',
+      null,
+      submission.requestId,
+      submission.error ?? undefined
+    );
   }
 
   let payload = submission.payload;
@@ -380,7 +410,12 @@ Deno.serve(async (req) => {
 
   if (isNotFound(payload, item)) return finish('not_found', null, submission.requestId);
   if (!receipt || receipt.processing) {
-    return finish('unavailable', receipt?.paidAmount ?? null, submission.requestId);
+    return finish(
+      'unavailable',
+      receipt?.paidAmount ?? null,
+      submission.requestId,
+      'verify.et is still processing this lookup — retry in a moment'
+    );
   }
 
   const evaluation = evaluateChecks({
@@ -410,5 +445,11 @@ Deno.serve(async (req) => {
     // rejection.
     verdict = 'unavailable';
   }
-  return finish(verdict, receipt.paidAmount, submission.requestId);
+  // Surface the reasons of every check that did not pass — a review/fail
+  // with no explanation is indistinguishable from an outage to the shopper.
+  const detail = Object.values(checks)
+    .filter((c) => c.result !== 'pass')
+    .map((c) => c.reason)
+    .join('; ');
+  return finish(verdict, receipt.paidAmount, submission.requestId, detail || undefined);
 });

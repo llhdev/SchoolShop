@@ -22,6 +22,7 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.112.3';
 import { extractResultItem, parseReceipt } from '../_shared/verifyEvaluation.ts';
 import { syncRegistry, type RegistryAccount } from '../_shared/verifyRegistry.ts';
 import { completeAttempt, type TenantProfile } from '../_shared/verifyWorkflow.ts';
+import { cbeSuffixFor } from '../_shared/referenceSuffix.ts';
 import { resolveUnitPrice, type SelectedOption } from '../_shared/variantPricing.ts';
 import { isVerificationEnabled } from '../_shared/verificationToggle.ts';
 
@@ -103,14 +104,19 @@ async function submitToVerifyEt(image: Uint8Array, idempotencyKey: string): Prom
  *  checkout-verified payment_references entry. The idempotency key is the
  *  SAME key the pre-order check used, so verify.et replays that result
  *  instead of charging a new verification. The body must stay byte-identical
- *  to the pre-check's ({ bank, reference } only — no webhookUrl, which is
- *  registered on the verify.et dashboard anyway), or the replay turns into a
- *  409 key conflict. The response envelope is identical to the image path,
- *  so everything downstream is unchanged. */
+ *  to the pre-check's ({ bank, reference } plus the suffix when applicable —
+ *  no webhookUrl, which is registered on the verify.et dashboard anyway), or
+ *  the replay turns into a
+ *  409 key conflict. Legacy CBE FT references additionally carry the receiver
+ *  account's 8-digit suffix — cbeSuffixFor derives it from the tenant profile
+ *  in both functions, so the replay body matches the pre-check's. The
+ *  response envelope is identical to the image path, so everything
+ *  downstream is unchanged. */
 async function submitReferenceToVerifyEt(
   provider: string,
   reference: string,
-  idempotencyKey: string
+  idempotencyKey: string,
+  suffix?: string
 ): Promise<VerifyEtSubmission> {
   try {
     const res = await fetch(`${VERIFY_ET_URL}?waitMs=25000`, {
@@ -120,7 +126,7 @@ async function submitReferenceToVerifyEt(
         'Idempotency-Key': idempotencyKey,
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({ bank: provider, reference }),
+      body: JSON.stringify({ bank: provider, reference, ...(suffix ? { suffix } : {}) }),
     });
     const body = await res.json().catch(() => null);
     if (!res.ok) {
@@ -252,7 +258,14 @@ async function verifyTenantSlice(
     const refEntry = order.payment_references?.[tenantId];
     let submission: VerifyEtSubmission;
     if (refEntry?.provider && refEntry?.reference && refEntry?.key) {
-      submission = await submitReferenceToVerifyEt(refEntry.provider, refEntry.reference, refEntry.key);
+      const tenantAccounts = (Array.isArray(profile.bank_accounts) ? profile.bank_accounts : []).map(
+        (a) => ({
+          accountNumber: (a as { account_number?: string })?.account_number ?? '',
+          bankName: (a as { bank_name?: string })?.bank_name ?? null,
+        })
+      );
+      const suffix = cbeSuffixFor(refEntry.provider, refEntry.reference, tenantAccounts);
+      submission = await submitReferenceToVerifyEt(refEntry.provider, refEntry.reference, refEntry.key, suffix);
     } else {
       const image = await fetchProofBytes(proofRef);
       const idempotencyKey = `order-${order.id}-${tenantId}-${attemptNo}-${basename(proofRef)}`.slice(0, 255);

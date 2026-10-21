@@ -52,8 +52,12 @@ const REFERENCE_SHAPES: Record<ReceiptProvider, RegExp> = {
 };
 
 const PROVIDER_LABELS: Record<ReceiptProvider, RegExp> = {
-  telebirr: /transaction\s*(?:number|no\.?|id|code)?|ክፍያ/gi,
-  cbe: /receipt\s*(?:id|no\.?|number)?|reference/gi,
+  // Telebirr prints "Transaction No." — keep the vocabulary exclusive of
+  // CBE's "transaction ID" so the brand-free fallback can't hit both.
+  telebirr: /transaction\s*(?:number|no\.?|code)|ክፍያ/gi,
+  // CBE receipts label it "Receipt ID" on the receipt page and
+  // "transaction ID" on the in-app success screen.
+  cbe: /receipt\s*(?:id|no\.?|number)?|transaction\s*id|reference/gi,
 };
 
 /** Whitespace-delimited tokens with OCR punctuation artifacts stripped. */
@@ -88,10 +92,29 @@ function findShapeReference(text: string, shape: RegExp): string | undefined {
 
 /** Extract provider + transaction reference from raw OCR text. Fields stay
  *  undefined when the text is ambiguous — the caller falls back to manual
- *  entry instead of verifying a guess. */
-export function parseReceiptText(text: string): ReceiptParseResult {
+ *  entry instead of verifying a guess. providerHint (the shopper's "Paid
+ *  via" choice) breaks ties when the receipt prints no brand name — the
+ *  Telebirr app's own receipt screen never says "Telebirr". */
+export function parseReceiptText(text: string, providerHint?: ReceiptProvider): ReceiptParseResult {
   const provider = detectProvider(text);
-  if (!provider) return {};
+  if (provider) return extractForProvider(text, provider);
+  // Brand-free fallback: try each provider's label window and trust the hit
+  // only when exactly one provider matches (the label vocabularies differ:
+  // Telebirr prints "Transaction No.", CBE "transaction ID"/"Receipt ID").
+  const telebirrRef = findLabeledReference(text, PROVIDER_LABELS.telebirr, REFERENCE_SHAPES.telebirr);
+  const cbeRef = findLabeledReference(text, PROVIDER_LABELS.cbe, REFERENCE_SHAPES.cbe);
+  if (telebirrRef && !cbeRef) return { provider: 'telebirr', reference: telebirrRef.toUpperCase() };
+  if (cbeRef && !telebirrRef) return { provider: 'cbe', reference: cbeRef };
+  // Both hit the same token: an FT + date-digits shape is CBE's legacy
+  // reference; Telebirr numbers never look like that.
+  if (cbeRef && telebirrRef === cbeRef && /^FT\d/i.test(cbeRef)) {
+    return { provider: 'cbe', reference: cbeRef };
+  }
+  if (providerHint) return extractForProvider(text, providerHint);
+  return {};
+}
+
+function extractForProvider(text: string, provider: ReceiptProvider): ReceiptParseResult {
   const shape = REFERENCE_SHAPES[provider];
   const raw =
     findLabeledReference(text, PROVIDER_LABELS[provider], shape) ??
@@ -107,7 +130,10 @@ export function parseReceiptText(text: string): ReceiptParseResult {
  * network); callers treat that as "unreadable receipt" and fall back to
  * manual entry.
  */
-export async function extractReceiptReference(dataUri: string): Promise<ReceiptOcrResult> {
+export async function extractReceiptReference(
+  dataUri: string,
+  providerHint?: ReceiptProvider
+): Promise<ReceiptOcrResult> {
   const { createWorker, OEM } = await import('tesseract.js');
   const worker = await createWorker('eng', OEM.LSTM_ONLY, {
     workerPath: WORKER_PATH,
@@ -116,7 +142,7 @@ export async function extractReceiptReference(dataUri: string): Promise<ReceiptO
   });
   try {
     const { data } = await worker.recognize(dataUri);
-    return { ...parseReceiptText(data.text), rawText: data.text };
+    return { ...parseReceiptText(data.text, providerHint), rawText: data.text };
   } finally {
     await worker.terminate();
   }

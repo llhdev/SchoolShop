@@ -149,6 +149,21 @@ const MASKED_MATCH_REASONS = new Set([
   'receiver_suffix_matches',
 ]);
 
+/** Match a masked receiver (e.g. `1****8566`, `2519****0897`) against the
+ *  merchant's own accounts by visible prefix+suffix digits — the same rule
+ *  verify.et applies for its registry matches, done locally so recipient
+ *  confirmation does not depend on the registry sync. Phone accounts are
+ *  compared in both 09… and 2519… forms. Returns the matching accounts. */
+export function matchMaskedAccounts(mask: string, merchantNorms: string[]): string[] {
+  const [pre = '', suf = ''] = mask.split(/\*+/).map((s) => s.replace(/\D/g, ''));
+  if (!pre && !suf) return [];
+  return merchantNorms.filter((account) => {
+    const forms = [account];
+    if (account.startsWith('0') && account.length === 10) forms.push(`251${account.slice(1)}`);
+    return forms.some((f) => f.startsWith(pre) && f.endsWith(suf));
+  });
+}
+
 export function evaluateChecks(input: EvaluationInput): Evaluation {
   const { receipt, merchantAccounts, expectedAmount, orderCreatedAt, claimOutcome, maxAgeHours } =
     input;
@@ -171,6 +186,15 @@ export function evaluateChecks(input: EvaluationInput): Evaluation {
   const sam = receipt.settlementMatch ?? null;
   const matchedAccountNorm = normalizeAccount(sam?.matchedSettlementAccount);
   const receiverNorm = normalizeAccount(receipt.receiverAccount);
+  // Local masked-receiver matching: verify.et (and the providers themselves)
+  // often return only a masked receiver like 1****8566 — resolve it against
+  // this shop's accounts by visible digits instead of giving up.
+  const maskSource = sam?.receiverAccount ?? receipt.receiverAccount;
+  const localMaskMatches =
+    maskSource?.includes('*') && merchantNorms.length > 0
+      ? matchMaskedAccounts(maskSource, merchantNorms)
+      : [];
+
   if (sam?.ambiguous) {
     checks.recipientMatch = { result: 'review', reason: 'ambiguous masked receiver — confirm manually' };
   } else if (
@@ -185,21 +209,62 @@ export function evaluateChecks(input: EvaluationInput): Evaluation {
       reason: 'paid to a different account than this shop\'s',
     };
   } else if (sam?.reason && MASKED_MATCH_REASONS.has(sam.reason)) {
-    checks.recipientMatch = {
-      result: 'review',
-      reason: 'masked account digits are not proof of recipient — confirm manually',
-    };
+    // Wallet providers (Telebirr) never reveal the full receiver, so a masked
+    // match is the strongest signal available: conclusive when the matched
+    // account is (or is not) this shop's, in either direction.
+    if (matchedAccountNorm && merchantNorms.includes(matchedAccountNorm)) {
+      checks.recipientMatch = {
+        result: 'pass',
+        reason: `paid to this shop's account (matched by visible digits)`,
+      };
+    } else if (matchedAccountNorm) {
+      checks.recipientMatch = {
+        result: 'fail',
+        reason: 'paid to a different registered account than this shop\'s',
+      };
+    } else if (localMaskMatches.length === 1) {
+      checks.recipientMatch = {
+        result: 'pass',
+        reason: `paid to this shop's account (matched by visible digits)`,
+      };
+    } else if (localMaskMatches.length > 1) {
+      checks.recipientMatch = { result: 'review', reason: 'ambiguous masked receiver — confirm manually' };
+    } else if (merchantNorms.length > 0) {
+      checks.recipientMatch = {
+        result: 'fail',
+        reason: `paid to a different account than this shop's (receiver ${maskSource})`,
+      };
+    } else {
+      checks.recipientMatch = {
+        result: 'review',
+        reason: 'masked account digits are not proof of recipient — confirm manually',
+      };
+    }
   } else if (receiverNorm && !receipt.receiverAccount?.includes('*') && merchantNorms.includes(receiverNorm)) {
     checks.recipientMatch = { result: 'pass', reason: `paid to this shop's account` };
   } else if (receiverNorm && receipt.receiverAccount?.includes('*')) {
-    checks.recipientMatch = {
-      result: 'review',
-      reason: 'receiver account is masked — confirm manually',
-    };
+    if (localMaskMatches.length === 1) {
+      checks.recipientMatch = {
+        result: 'pass',
+        reason: `paid to this shop's account (matched by visible digits)`,
+      };
+    } else if (localMaskMatches.length > 1) {
+      checks.recipientMatch = { result: 'review', reason: 'ambiguous masked receiver — confirm manually' };
+    } else if (merchantNorms.length > 0) {
+      checks.recipientMatch = {
+        result: 'fail',
+        reason: `paid to a different account than this shop's (receiver ${receipt.receiverAccount})`,
+      };
+    } else {
+      checks.recipientMatch = {
+        result: 'review',
+        reason: `receiver account is masked (${receipt.receiverAccount}) — confirm manually`,
+      };
+    }
   } else {
     checks.recipientMatch = {
       result: 'review',
-      reason: 'receiver account could not be confirmed — check manually',
+      reason: `receiver account could not be confirmed — check manually (verify.et: ${sam?.reason ?? 'no settlement data'}${receipt.receiverAccount ? `, receiver ${receipt.receiverAccount}` : ''})`,
     };
   }
 

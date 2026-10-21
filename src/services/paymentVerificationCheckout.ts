@@ -36,6 +36,10 @@ export interface VerifyPaymentReferenceResult {
   paidAmount: number | null;
   expectedAmount: number;
   requestId: string | null;
+  /** Server-provided reason behind the verdict (verify.et's error message or
+   *  the failed/reviewed check reasons) — shown to the shopper so a fixable
+   *  problem is distinguishable from a temporary outage. */
+  detail: string | null;
 }
 
 const VERIFY_TIMEOUT_MS = 45_000;
@@ -54,6 +58,7 @@ const UNAVAILABLE: VerifyPaymentReferenceResult = {
   paidAmount: null,
   expectedAmount: 0,
   requestId: null,
+  detail: null,
 };
 
 /** Verify one shop's payment reference before the order is placed. Network
@@ -81,7 +86,12 @@ export async function verifyPaymentReference(
       body: JSON.stringify(args),
       signal: controller.signal,
     });
-    if (!response.ok) return UNAVAILABLE;
+    if (!response.ok) {
+      // Surface the server's error message (e.g. "proof not found") instead
+      // of a bare generic failure.
+      const body = (await response.json().catch(() => null)) as { error?: string } | null;
+      return { ...UNAVAILABLE, detail: body?.error ?? `HTTP ${response.status}` };
+    }
     const data = (await response.json()) as Partial<VerifyPaymentReferenceResult>;
     if (!data.verdict || !VALID_VERDICTS.includes(data.verdict)) return UNAVAILABLE;
     return {
@@ -89,9 +99,10 @@ export async function verifyPaymentReference(
       paidAmount: data.paidAmount ?? null,
       expectedAmount: data.expectedAmount ?? 0,
       requestId: data.requestId ?? null,
+      detail: data.detail ?? null,
     };
-  } catch {
-    return UNAVAILABLE;
+  } catch (error) {
+    return { ...UNAVAILABLE, detail: `network error: ${String(error)}` };
   } finally {
     clearTimeout(timeout);
   }

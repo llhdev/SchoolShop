@@ -72,6 +72,8 @@ const DATE_FILTERS: { key: DateFilter; label: string }[] = [
   { key: 'custom', label: 'Custom range' },
 ];
 
+const PAGE_SIZES = [25, 50, 100, 200];
+
 /** Parse "YYYY-MM-DD" as local midnight (Date.parse would treat it as UTC). */
 function parseDateInput(value: string): number | null {
   const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value.trim());
@@ -134,6 +136,8 @@ export function AdminAnalysisScreen() {
   const [customEnd, setCustomEnd] = useState('');
   const [groupByStore, setGroupByStore] = useState(false);
   const [selectedStore, setSelectedStore] = useState<string | null>(null);
+  const [pageSize, setPageSize] = useState(25);
+  const [page, setPage] = useState(1);
   const [telegramNames, setTelegramNames] = useState<Map<number, Shopper>>(new Map());
 
   // Tenant admins are scoped to their own line items (mixed orders included);
@@ -327,6 +331,18 @@ export function AdminAnalysisScreen() {
     () =>
       selectedStore ? filtered.filter((r) => r.shopName === selectedStore) : filtered,
     [filtered, selectedStore]
+  );
+
+  // Any filter/search/sort/store/page-size change goes back to page 1.
+  useEffect(() => {
+    setPage(1);
+  }, [query, sort, dateRange, selectedStore, pageSize]);
+
+  const pageCount = Math.max(1, Math.ceil(displayedRows.length / pageSize));
+  const currentPage = Math.min(page, pageCount);
+  const pageRows = displayedRows.slice(
+    (currentPage - 1) * pageSize,
+    currentPage * pageSize
   );
 
   const isWeb = Platform.OS === 'web';
@@ -568,7 +584,7 @@ export function AdminAnalysisScreen() {
                 </View>
               )}
               {isPhone ? (
-                <View style={styles.cardList}>{displayedRows.map(renderCard)}</View>
+                <View style={styles.cardList}>{pageRows.map(renderCard)}</View>
               ) : (
             <ScrollView horizontal style={styles.tableScroll}>
               <View style={styles.table}>
@@ -586,7 +602,7 @@ export function AdminAnalysisScreen() {
                   )}
                   {headerCell('Location', 'location', styles.wLocation)}
                 </View>
-                {displayedRows.map((row) => (
+                {pageRows.map((row) => (
                   <TouchableOpacity
                     key={row.key}
                     style={styles.trow}
@@ -609,6 +625,67 @@ export function AdminAnalysisScreen() {
               </View>
             </ScrollView>
               )}
+              <View style={styles.pagerRow}>
+                <Text style={styles.pagerLabel}>Rows per page</Text>
+                {PAGE_SIZES.map((size) => (
+                  <TouchableOpacity
+                    key={size}
+                    style={[styles.chip, pageSize === size && styles.chipActive]}
+                    onPress={() => setPageSize(size)}
+                  >
+                    <Text
+                      style={[styles.chipText, pageSize === size && styles.chipTextActive]}
+                    >
+                      {size}
+                    </Text>
+                  </TouchableOpacity>
+                ))}
+                <View style={styles.pagerSpacer} />
+                <TouchableOpacity
+                  style={[styles.pagerButton, currentPage <= 1 && styles.pagerButtonDisabled]}
+                  onPress={() => setPage((p) => Math.max(1, p - 1))}
+                  disabled={currentPage <= 1}
+                >
+                  <Ionicons
+                    name="chevron-back"
+                    size={14}
+                    color={currentPage <= 1 ? colors.textSecondary : colors.primary}
+                  />
+                  <Text
+                    style={[
+                      styles.pagerButtonText,
+                      currentPage <= 1 && styles.pagerButtonTextDisabled,
+                    ]}
+                  >
+                    Prev
+                  </Text>
+                </TouchableOpacity>
+                <Text style={styles.pagerInfo}>
+                  Page {currentPage} of {pageCount}
+                </Text>
+                <TouchableOpacity
+                  style={[
+                    styles.pagerButton,
+                    currentPage >= pageCount && styles.pagerButtonDisabled,
+                  ]}
+                  onPress={() => setPage((p) => Math.min(pageCount, p + 1))}
+                  disabled={currentPage >= pageCount}
+                >
+                  <Text
+                    style={[
+                      styles.pagerButtonText,
+                      currentPage >= pageCount && styles.pagerButtonTextDisabled,
+                    ]}
+                  >
+                    Next
+                  </Text>
+                  <Ionicons
+                    name="chevron-forward"
+                    size={14}
+                    color={currentPage >= pageCount ? colors.textSecondary : colors.primary}
+                  />
+                </TouchableOpacity>
+              </View>
             </>
           )}
         </View>
@@ -805,6 +882,46 @@ const makeStyles = (colors: ColorPalette) =>
       fontSize: fontSizes.lg,
       fontWeight: '700',
       color: colors.text,
+    },
+    pagerRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      flexWrap: 'wrap',
+      gap: spacing.sm,
+      marginTop: spacing.md,
+    },
+    pagerLabel: {
+      fontSize: fontSizes.sm,
+      color: colors.textSecondary,
+    },
+    pagerSpacer: {
+      flex: 1,
+    },
+    pagerButton: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: 2,
+      paddingHorizontal: spacing.sm,
+      paddingVertical: spacing.xs,
+      borderRadius: borderRadius.sm,
+      borderWidth: 1,
+      borderColor: colors.primary,
+      ...(Platform.OS === 'web' ? ({ cursor: 'pointer' } as any) : {}),
+    },
+    pagerButtonDisabled: {
+      borderColor: colors.border,
+    },
+    pagerButtonText: {
+      fontSize: fontSizes.sm,
+      fontWeight: '600',
+      color: colors.primary,
+    },
+    pagerButtonTextDisabled: {
+      color: colors.textSecondary,
+    },
+    pagerInfo: {
+      fontSize: fontSizes.sm,
+      color: colors.textSecondary,
     },
     tableScroll: {
       marginTop: spacing.md,
