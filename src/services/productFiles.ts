@@ -10,7 +10,7 @@ import {
 
 /** PDFs up to this size can be attached to a post (client-side guard; R2
  *  presigned PUTs cannot enforce a size limit server-side). */
-export const MAX_PDF_BYTES = 60 * 1024 * 1024;
+export const MAX_PDF_BYTES = 150 * 1024 * 1024;
 
 interface DbProductFile {
   id: string;
@@ -64,7 +64,7 @@ export async function uploadProductPdf(
   if (!buffer) throw new Error('No PDF data to upload.');
   const sizeBytes = source.sizeBytes ?? buffer.byteLength;
   if (sizeBytes > MAX_PDF_BYTES) {
-    throw new Error('PDF is too large — keep it under 60 MB.');
+    throw new Error(`PDF is too large — keep it under ${Math.round(MAX_PDF_BYTES / (1024 * 1024))} MB.`);
   }
   const key = `books/${Date.now()}-${Math.random().toString(36).slice(2, 9)}.pdf`;
   const [upload] = await signR2Uploads([key]);

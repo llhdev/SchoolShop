@@ -32,6 +32,8 @@ const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
 const SERVICE_ROLE_KEY = Deno.env.get('SUPABASE_SERVICE_ROLE_KEY') ?? '';
 
 const PRESIGN_EXPIRY_SECONDS = 600;
+// Book PDFs are large and upload slowly — their presigned PUTs live longer.
+const BOOK_PRESIGN_EXPIRY_SECONDS = 3600;
 const MAX_FILES_PER_REQUEST = 20;
 const MAX_PROOF_UPLOADS_PER_REQUEST = 4;
 
@@ -100,7 +102,14 @@ async function handleSignUploads(body: Record<string, unknown>): Promise<Respons
   const uploads = await Promise.all(
     keys.map(async (key) => ({
       key,
-      uploadUrl: await presign('PUT', R2_BUCKET, key, PRESIGN_EXPIRY_SECONDS),
+      // Book PDFs can be tens of MB — on a slow connection 10 minutes is not
+      // enough to finish the PUT, so they get an hour.
+      uploadUrl: await presign(
+        'PUT',
+        R2_BUCKET,
+        key,
+        key.startsWith('books/') ? BOOK_PRESIGN_EXPIRY_SECONDS : PRESIGN_EXPIRY_SECONDS
+      ),
       publicUrl: `${R2_PUBLIC_BASE_URL}/${key}`,
     }))
   );
