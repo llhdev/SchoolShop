@@ -2,6 +2,8 @@
   {
     "AllowedOrigins": [
       "https://shop.timor.et",
+      "https://timor-shop.vercel.app",
+      "https://llhdev.github.io",
       "http://localhost:8081",
       "http://localhost:19006"
     ],
