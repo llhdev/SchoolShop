@@ -1,0 +1,13 @@
+[
+  {
+    "AllowedOrigins": [
+      "https://shop.timor.et",
+      "http://localhost:8081",
+      "http://localhost:19006"
+    ],
+    "AllowedMethods": ["GET", "PUT", "HEAD"],
+    "AllowedHeaders": ["*"],
+    "ExposeHeaders": ["ETag"],
+    "MaxAgeSeconds": 3600
+  }
+]
