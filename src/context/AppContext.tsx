@@ -660,7 +660,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
         deleteProductImages(product.images).catch(() => {});
       }
     },
-    addToCart: (product, selectedImageIndex = product.coverImageIndex ?? 0, selectedOptions, unitPrice) =>
+    addToCart: (product, selectedImageIndex = product.coverImageIndex ?? 0, selectedOptions, unitPrice) => {
+      // Free download posts (price 0, migration 044) are never purchasable.
+      if (product.price <= 0) return;
       dispatch({
         type: 'ADD_TO_CART',
         payload: {
@@ -672,7 +674,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
           selectedOptions,
           unitPrice,
         },
-      }),
+      });
+    },
     removeFromCart: (productId, selectedImageIndex, variantKey) =>
       dispatch({
         type: 'REMOVE_FROM_CART',

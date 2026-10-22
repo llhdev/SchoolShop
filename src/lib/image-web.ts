@@ -57,6 +57,53 @@ export function pickImagesWeb(): Promise<string[]> {
   });
 }
 
+export interface PickedPdf {
+  name: string;
+  buffer: ArrayBuffer;
+}
+
+/**
+ * Opens the browser file picker for PDFs and resolves with the chosen files
+ * (empty array when cancelled). Bytes are read via file.arrayBuffer() — not
+ * data URIs — because PDFs can be tens of MB.
+ */
+export function pickPdfWeb(): Promise<PickedPdf[]> {
+  return new Promise((resolve) => {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = 'application/pdf,.pdf';
+    input.multiple = true;
+
+    let settled = false;
+    const finish = (files: PickedPdf[]) => {
+      if (settled) return;
+      settled = true;
+      window.removeEventListener('focus', onWindowFocus);
+      resolve(files);
+    };
+
+    const onWindowFocus = () => {
+      setTimeout(() => finish([]), 400);
+    };
+
+    input.addEventListener('change', async () => {
+      const files = Array.from(input.files ?? []);
+      if (files.length === 0) {
+        finish([]);
+        return;
+      }
+      const picked = await Promise.all(
+        files.map(async (file) => ({ name: file.name, buffer: await file.arrayBuffer() }))
+      );
+      finish(picked);
+    });
+    input.addEventListener('cancel', () => finish([]));
+
+    window.addEventListener('focus', onWindowFocus);
+    input.click();
+  });
+}
+
 function loadImage(src: string): Promise<HTMLImageElement> {
   return new Promise((resolve, reject) => {
     const image = new Image();

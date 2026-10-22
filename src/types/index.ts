@@ -82,6 +82,22 @@ export interface Product {
   checkoutFields?: CheckoutField[];
 }
 
+/** A downloadable PDF attached to a product post (migration 044). Files on
+ *  price-0 posts are publicly listed (free downloads); files on priced posts
+ *  are hidden from anonymous clients and unlock for the buyer once the order
+ *  item is marked paid (via the sign-book-get edge function action). */
+export interface ProductFile {
+  id: string;
+  productId: string;
+  /** Display name shown on download buttons, e.g. "Mathematics Grade 1". */
+  name: string;
+  /** R2 object key (books/<name>.pdf) in the public bucket. */
+  key: string;
+  /** Public URL derived from the key. */
+  url: string;
+  sizeBytes?: number;
+}
+
 export interface CartItem {
   product: Product;
   quantity: number;

@@ -3,9 +3,10 @@ import { supabase } from '../lib/supabase';
 import { resizeImage, getThumbnailPath } from '../utils/images';
 
 /** Public base URL of the Cloudflare R2 bucket that now serves all display
- *  images (product photos + thumbnails, shop logos, bank QRs). Public info,
- *  safe to inline. Keys are namespaced: products/, logos/, qrs/. */
-const R2_PUBLIC_BASE_URL = 'https://img.timor.et';
+ *  images (product photos + thumbnails, shop logos, bank QRs) and digital-book
+ *  PDFs (books/ prefix, migration 044). Public info, safe to inline. Keys are
+ *  namespaced: products/, logos/, qrs/, books/. */
+export const R2_PUBLIC_BASE_URL = 'https://img.timor.et';
 
 function base64ToArrayBuffer(base64: string): ArrayBuffer {
   const clean = base64.includes(',') ? base64.split(',')[1] : base64;
@@ -32,7 +33,9 @@ function isDataUri(value: string): boolean {
   return value.startsWith('data:');
 }
 
-async function imageToArrayBuffer(uri: string): Promise<ArrayBuffer> {
+/** Reads a picked file into bytes: data URIs (web pickers) are decoded
+ *  directly, native file URIs go through expo-file-system. */
+export async function imageToArrayBuffer(uri: string): Promise<ArrayBuffer> {
   if (isDataUri(uri)) {
     return base64ToArrayBuffer(uri);
   }
@@ -49,7 +52,7 @@ interface SignedUpload {
 
 /** Ask the edge function to presign PUT URLs for the given R2 keys. Requires
  *  a signed-in admin session — the function checks the caller's role. */
-async function signR2Uploads(keys: string[]): Promise<SignedUpload[]> {
+export async function signR2Uploads(keys: string[]): Promise<SignedUpload[]> {
   const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
   const anonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
   const { data: sessionData } = await supabase.auth.getSession();
@@ -78,27 +81,28 @@ async function signR2Uploads(keys: string[]): Promise<SignedUpload[]> {
 /** PUT raw bytes to a presigned R2 URL. Display images are immutable
  *  (unique filenames) and cached for a year; proofs are private and never
  *  cached. */
-async function putToR2(
+export async function putToR2(
   uploadUrl: string,
   buffer: ArrayBuffer,
-  cacheControl = 'public, max-age=31536000, immutable'
+  cacheControl = 'public, max-age=31536000, immutable',
+  contentType = 'image/jpeg'
 ): Promise<void> {
   const response = await fetch(uploadUrl, {
     method: 'PUT',
     headers: {
-      'Content-Type': 'image/jpeg',
+      'Content-Type': contentType,
       'Cache-Control': cacheControl,
     },
     body: buffer,
   });
   if (!response.ok) {
-    throw new Error(`Image upload failed (HTTP ${response.status}).`);
+    throw new Error(`Upload failed (HTTP ${response.status}).`);
   }
 }
 
 /** Delete R2 objects by key (full + thumb). Best-effort — callers chain
  *  .catch(() => {}) already. */
-async function deleteR2Objects(keys: string[]): Promise<void> {
+export async function deleteR2Objects(keys: string[]): Promise<void> {
   const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
   const anonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
   const { data: sessionData } = await supabase.auth.getSession();

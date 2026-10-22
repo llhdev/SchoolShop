@@ -263,7 +263,8 @@ export function HomeScreen() {
           onClose={() => setViewerProductId(null)}
           onAddToCart={(selectedImageIndex) => {
             const product = products.find((p) => p.id === viewerProductId);
-            if (product) addToCart(product, selectedImageIndex);
+            // Free download posts (price 0) are never added to the cart.
+            if (product && product.price > 0) addToCart(product, selectedImageIndex);
           }}
         />
       </Screen>

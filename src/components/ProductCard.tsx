@@ -30,6 +30,8 @@ export function ProductCard({ product, onPress }: ProductCardProps) {
 
   const coverIndex = product.coverImageIndex ?? 0;
   const discount = product.priceHidden ? null : getDiscountPercent(product.price, product.compareAtPrice);
+  // Free download posts (price 0, migration 044): no price, no cart.
+  const isFreeDownload = !product.priceHidden && product.price === 0;
 
   const cartQuantity = cart
     .filter((item) => item.product.id === product.id)
@@ -91,6 +93,8 @@ export function ProductCard({ product, onPress }: ProductCardProps) {
         <View style={styles.footer}>
           {product.priceHidden ? (
             <Text style={styles.chatToOrder}>Chat to order</Text>
+          ) : isFreeDownload ? (
+            <Text style={styles.chatToOrder}>Free download</Text>
           ) : (
             <>
               <View style={styles.priceBlock}>

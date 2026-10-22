@@ -1,4 +1,4 @@
-import { Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View, Image, Modal } from 'react-native';
+import { Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View, Image, Modal, Linking } from 'react-native';
 import { useEffect, useState } from 'react';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -18,8 +18,9 @@ import {
   subscribeToVerifications,
 } from '../../services/paymentVerifications';
 import { getPaymentProofUrls } from '../../services/images';
+import { getPurchasedBookFiles, PurchasedBookFile } from '../../services/productFiles';
 import { useResponsive } from '../../hooks/useResponsive';
-import { formatPrice } from '../../utils/format';
+import { formatFileSize, formatPrice } from '../../utils/format';
 import { formatVariantLabel, getUnitPrice } from '../../utils/variants';
 import { confirmAction } from '../../utils/confirm';
 import { ORDER_STATUSES, ORDER_STATUS_LABELS } from '../../constants/orderStatus';
@@ -28,6 +29,9 @@ import { RootStackParamList } from '../../types/navigation';
 import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../../constants/theme';
 
 const MAX_WIDTH = 900;
+
+/** Item statuses that unlock paid digital downloads (migration 044). */
+const DOWNLOAD_UNLOCKED: OrderStatus[] = ['paid', 'on_the_way', 'completed'];
 
 // Mirrors CHECK_TITLES in supabase/functions/_shared/verifyWorkflow.ts.
 const VERIFICATION_CHECK_TITLES: Record<string, string> = {
@@ -83,6 +87,43 @@ export function OrderDetailScreen() {
   const [zoomedImage, setZoomedImage] = useState<string | null>(null);
   const [proofUrls, setProofUrls] = useState<string[]>([]);
   const proofRefsKey = visibleProofRefs.join('|');
+
+  // Paid digital downloads (migration 044), shopper view only: files of each
+  // item whose status reached "Order Received", revealed by sign-book-get.
+  const [bookFiles, setBookFiles] = useState<Record<string, PurchasedBookFile[]>>({});
+  const unlockKey =
+    order && !canManageStatus
+      ? (visibleItems ?? [])
+          .map((item) => `${getItemKey(item)}=${getItemStatus(order, item)}`)
+          .join('|')
+      : '';
+
+  useEffect(() => {
+    if (!order || !unlockKey) return;
+    let cancelled = false;
+    (async () => {
+      const entries = await Promise.all(
+        (visibleItems ?? [])
+          .filter((item) => DOWNLOAD_UNLOCKED.includes(getItemStatus(order, item)))
+          .map(async (item) => {
+            const files = await getPurchasedBookFiles(order.id, item.product.id);
+            return [getItemKey(item), files] as const;
+          })
+      );
+      if (cancelled) return;
+      setBookFiles((prev) => {
+        const next = { ...prev };
+        for (const [key, files] of entries) {
+          if (files.length > 0) next[key] = files;
+        }
+        return next;
+      });
+    })();
+    return () => {
+      cancelled = true;
+    };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [order?.id, unlockKey]);
 
   // Resolve proof object keys to short-lived presigned URLs via the
   // r2-upload-sign edge function (admins are authenticated; the private R2
@@ -296,6 +337,23 @@ export function OrderDetailScreen() {
                       Status: {ORDER_STATUS_LABELS[itemStatus]}
                     </Text>
                   )}
+                  {/* Paid digital downloads (migration 044) — shopper view;
+                      only populated for items past "Order Received". */}
+                  {(bookFiles[itemKey] ?? []).map((file) => (
+                    <TouchableOpacity
+                      key={file.url}
+                      style={styles.downloadRow}
+                      onPress={() => Linking.openURL(file.url)}
+                      activeOpacity={0.7}
+                    >
+                      <Ionicons name="document-text-outline" size={18} color={colors.primary} />
+                      <Text style={styles.downloadName} numberOfLines={1}>
+                        {file.name}
+                      </Text>
+                      <Text style={styles.downloadSize}>{formatFileSize(file.sizeBytes)}</Text>
+                      <Ionicons name="download-outline" size={18} color={colors.primary} />
+                    </TouchableOpacity>
+                  ))}
                 </View>
               );
             })}
@@ -632,6 +690,26 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
   },
   itemStatusLabel: {
     fontSize: fontSizes.sm,
+    color: colors.textSecondary,
+  },
+  downloadRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: borderRadius.md,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
+    marginTop: spacing.xs,
+  },
+  downloadName: {
+    flex: 1,
+    fontSize: fontSizes.sm,
+    color: colors.text,
+  },
+  downloadSize: {
+    fontSize: fontSizes.xs,
     color: colors.textSecondary,
   },
   itemAnswer: {

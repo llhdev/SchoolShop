@@ -15,3 +15,10 @@ export function getDiscountPercent(price: number, compareAtPrice?: number): numb
   if (!compareAtPrice || compareAtPrice <= price) return null;
   return Math.round(((compareAtPrice - price) / compareAtPrice) * 100);
 }
+
+/** "1.4 MB" style label for a downloadable file; empty when size is unknown. */
+export function formatFileSize(sizeBytes?: number): string {
+  if (!sizeBytes || sizeBytes <= 0) return '';
+  if (sizeBytes >= 1024 * 1024) return `${(sizeBytes / (1024 * 1024)).toFixed(1)} MB`;
+  return `${Math.max(1, Math.round(sizeBytes / 1024))} KB`;
+}

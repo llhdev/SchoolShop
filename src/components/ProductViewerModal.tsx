@@ -173,7 +173,9 @@ export function ProductViewerModal({
                 <Text style={styles.name} numberOfLines={2}>
                   {product.name}
                 </Text>
-                <Text style={styles.price}>{formatPrice(product.price)}</Text>
+                <Text style={styles.price}>
+                  {product.price === 0 ? 'Free' : formatPrice(product.price)}
+                </Text>
               </View>
 
               {product.shopName ? (
@@ -191,7 +193,7 @@ export function ProductViewerModal({
                 )}
               </View>
 
-              {onAddToCart && (
+              {onAddToCart && product.price > 0 && (
                 <Button
                   title="Add to Cart"
                   onPress={() => {

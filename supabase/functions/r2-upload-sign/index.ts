@@ -10,6 +10,11 @@
 //   - sign-proof-get:    admin-only, presigned GET. Falls back to a Supabase
 //     signed URL for proofs not yet migrated off payment-proofs-private.
 //
+// Digital-book PDFs (migration 044) live in the PUBLIC bucket under books/:
+// admins upload/delete them via the normal sign/delete actions; the anonymous
+// sign-book-get action reveals a paid post's file URLs only when the caller's
+// order item has reached 'paid'.
+//
 // verify_jwt is off at the gateway (the app calls this with the user's own
 // access token, and OPTIONS must be answered for browsers), so the function
 // authenticates the caller itself for the admin actions: bearer token ->
@@ -32,7 +37,8 @@ const MAX_PROOF_UPLOADS_PER_REQUEST = 4;
 
 // products/<name>.jpg | logos/<name>.jpg | qrs/<name>.jpg — client-generated
 // names are `${Date.now()}-<random>[-thumb].jpg`, hence the narrow charset.
-const KEY_PATTERN = /^(products|logos|qrs)\/[a-z0-9][a-z0-9-]*\.jpg$/;
+// books/<name>.pdf holds digital-book PDFs (044) in the same public bucket.
+const KEY_PATTERN = /^(?:(?:products|logos|qrs)\/[a-z0-9][a-z0-9-]*\.jpg|books\/[a-z0-9][a-z0-9-]*\.pdf)$/;
 // Proof keys are the same flat `${Date.now()}-<random>.jpg` names the client
 // has always used (keys did not change with the R2 move).
 const PROOF_KEY_PATTERN = /^[a-z0-9][a-z0-9-]*\.jpg$/;
@@ -87,7 +93,7 @@ async function handleSignUploads(body: Record<string, unknown>): Promise<Respons
   for (const f of files) {
     const key = typeof f === 'object' && f !== null ? (f as Record<string, unknown>).key : null;
     if (typeof key !== 'string' || !KEY_PATTERN.test(key)) {
-      return json({ error: 'each file needs a valid key (products|logos|qrs)/<name>.jpg' }, 400);
+      return json({ error: 'each file needs a valid key (products|logos|qrs)/<name>.jpg or books/<name>.pdf' }, 400);
     }
     keys.push(key);
   }
@@ -182,6 +188,63 @@ async function handleSignProofGet(body: Record<string, unknown>): Promise<Respon
   return json({ proofs });
 }
 
+/** Statuses that unlock paid digital downloads: the merchant has confirmed
+ *  the item (lifecycle order pending -> paid -> on_the_way -> completed). */
+const DOWNLOAD_UNLOCKED_STATUSES = new Set(['paid', 'on_the_way', 'completed']);
+
+/** Anonymous shopper download gate for paid digital files (migration 044).
+ *  The books live in the PUBLIC bucket, so protection comes from never
+ *  exposing paid keys to anon clients (product_files RLS only exposes files
+ *  of price-0 products) and revealing them here only after the buyer's order
+ *  item reached 'paid'. Returns public URLs — no presigning needed. */
+async function handleSignBookGet(body: Record<string, unknown>): Promise<Response> {
+  const orderId = typeof body.orderId === 'string' ? body.orderId : '';
+  const productId = typeof body.productId === 'string' ? body.productId : '';
+  if (!orderId || !productId) return json({ error: 'orderId and productId are required' }, 400);
+
+  const { data: order } = await supabase
+    .from('orders')
+    .select('items, status, item_statuses')
+    .eq('id', orderId)
+    .maybeSingle();
+  if (!order) return json({ error: 'not unlocked' }, 403);
+
+  interface OrderItemSnapshot {
+    product?: { id?: string };
+    selectedImageIndex?: number;
+    selectedOptions?: { group: string; option: string }[];
+  }
+  const items = Array.isArray(order.items) ? (order.items as OrderItemSnapshot[]) : [];
+  const item = items.find((it) => it?.product?.id === productId);
+  if (!item) return json({ error: 'not unlocked' }, 403);
+
+  // Same line-key rule as the client's getCartItemLineId (utils/variants.ts).
+  const variantKey = (item.selectedOptions ?? [])
+    .map((o) => `${o.group}=${o.option}`)
+    .join('|');
+  const lineKey = `${productId}:${item.selectedImageIndex ?? 0}${variantKey ? `:${variantKey}` : ''}`;
+  const itemStatuses = (order.item_statuses ?? {}) as Record<string, string>;
+  const status = itemStatuses[lineKey] ?? (order.status as string);
+  if (!DOWNLOAD_UNLOCKED_STATUSES.has(status)) return json({ error: 'not unlocked' }, 403);
+
+  const { data: files, error } = await supabase
+    .from('product_files')
+    .select('name, key, size_bytes')
+    .eq('product_id', productId)
+    .order('created_at', { ascending: true });
+  if (error) {
+    console.error('product_files lookup failed:', error.message ?? error);
+    return json({ error: 'could not load files' }, 500);
+  }
+  return json({
+    files: (files ?? []).map((f) => ({
+      name: f.name as string,
+      url: `${R2_PUBLIC_BASE_URL}/${f.key}`,
+      sizeBytes: (f.size_bytes as number | null) ?? null,
+    })),
+  });
+}
+
 // --- entry point -----------------------------------------------------------------
 
 Deno.serve(async (req) => {
@@ -202,8 +265,8 @@ Deno.serve(async (req) => {
 
   const action = typeof body.action === 'string' ? body.action : '';
 
-  // Shopper proof uploads are the only anonymous action.
-  if (action !== 'sign-proof-upload') {
+  // Shopper proof uploads and paid-book downloads are the anonymous actions.
+  if (action !== 'sign-proof-upload' && action !== 'sign-book-get') {
     const authError = await requireAdmin(req);
     if (authError) return authError;
   }
@@ -217,6 +280,8 @@ Deno.serve(async (req) => {
       return handleSignProofUpload(body);
     case 'sign-proof-get':
       return handleSignProofGet(body);
+    case 'sign-book-get':
+      return handleSignBookGet(body);
     default:
       return json({ error: 'unknown action' }, 400);
   }

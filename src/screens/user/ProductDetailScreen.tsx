@@ -5,6 +5,7 @@ import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import {
   Dimensions,
   FlatList,
+  Linking,
   NativeScrollEvent,
   NativeSyntheticEvent,
   ScrollView,
@@ -14,6 +15,7 @@ import {
   View,
   useWindowDimensions,
 } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { Screen } from '../../components/Screen';
 import { Button } from '../../components/Button';
 import { EmptyState } from '../../components/EmptyState';
@@ -24,9 +26,10 @@ import { useApp } from '../../context/AppContext';
 import { useResponsive } from '../../hooks/useResponsive';
 import { getProductGalleryImages } from '../../utils/images';
 import { hasUnselectedGroups, resolveVariantPrice } from '../../utils/variants';
-import { VariantGroup, VariantOption } from '../../types';
+import { ProductFile, VariantGroup, VariantOption } from '../../types';
 import { isTelegramMiniApp, openTelegramChat } from '../../lib/telegram';
-import { formatPrice, getDiscountPercent } from '../../utils/format';
+import { fetchProductFiles } from '../../services/productFiles';
+import { formatFileSize, formatPrice, getDiscountPercent } from '../../utils/format';
 import { RootStackParamList } from '../../types/navigation';
 import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../../constants/theme';
 
@@ -90,11 +93,22 @@ export function ProductDetailScreen() {
   const [selected, setSelected] = useState<Record<string, string>>({});
   /** Set when the shopper tries to add/buy without picking every group. */
   const [variantError, setVariantError] = useState(false);
+  /** Free downloadable PDFs attached to a price-0 post (migration 044). */
+  const [freeFiles, setFreeFiles] = useState<ProductFile[]>([]);
   const galleryRef = useRef<FlatList>(null);
   const addResetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isTMA = isTelegramMiniApp();
 
   const product = products.find((p) => p.id === productId);
+  const isFreeDownload = !!product && !product.priceHidden && product.price === 0;
+
+  useEffect(() => {
+    if (!isFreeDownload || !product) return;
+    fetchProductFiles(product.id)
+      .then(setFreeFiles)
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [product?.id, isFreeDownload]);
 
   if (!product) {
     return (
@@ -206,6 +220,8 @@ export function ProductDetailScreen() {
           <View style={styles.tmaPriceRow}>
             {product.priceHidden ? (
               <Text style={styles.priceOnRequest}>Price on request</Text>
+            ) : isFreeDownload ? (
+              <Text style={styles.tmaPrice}>Free</Text>
             ) : (
               <>
                 <Text style={styles.tmaPrice}>{formatPrice(displayPrice)}</Text>
@@ -227,6 +243,8 @@ export function ProductDetailScreen() {
           <View style={styles.priceBlock}>
             {product.priceHidden ? (
               <Text style={styles.priceOnRequest}>Price on request</Text>
+            ) : isFreeDownload ? (
+              <Text style={styles.price}>Free</Text>
             ) : (
               <>
                 {discount !== null && product.compareAtPrice && (
@@ -329,7 +347,7 @@ export function ProductDetailScreen() {
             username={product.ownerTelegramUsername}
             style={styles.chatIconButton}
           />
-          {!product.priceHidden && (
+          {!product.priceHidden && !isFreeDownload && (
             <Button
               title="Add to Cart"
               onPress={handleAddToCart}
@@ -362,6 +380,30 @@ export function ProductDetailScreen() {
             category={product.category}
             name={product.name}
           />
+        ))}
+      </View>
+    ) : null;
+
+  // Free download posts (price 0, migration 044): the attached PDFs, one row
+  // each, opened in the browser/viewer via the public R2 URL.
+  const downloadsSection =
+    isFreeDownload && freeFiles.length > 0 ? (
+      <View style={[styles.detailSection, isWebDesktop && styles.detailSectionDesktop]}>
+        <Text style={styles.sectionTitle}>Downloads</Text>
+        {freeFiles.map((file) => (
+          <TouchableOpacity
+            key={file.id}
+            style={styles.downloadRow}
+            onPress={() => Linking.openURL(file.url)}
+            activeOpacity={0.7}
+          >
+            <Ionicons name="document-text-outline" size={20} color={colors.primary} />
+            <Text style={styles.downloadName} numberOfLines={1}>
+              {file.name}
+            </Text>
+            <Text style={styles.downloadSize}>{formatFileSize(file.sizeBytes)}</Text>
+            <Ionicons name="download-outline" size={20} color={colors.primary} />
+          </TouchableOpacity>
         ))}
       </View>
     ) : null;
@@ -405,6 +447,7 @@ export function ProductDetailScreen() {
             </View>
             {infoSection}
           </View>
+          {downloadsSection}
           {detailImagesSection}
         </ScrollView>
       </Screen>
@@ -481,6 +524,7 @@ export function ProductDetailScreen() {
           >
             {gallerySection}
             {infoSection}
+            {downloadsSection}
             {detailImagesSection}
           </ScrollView>
           <View style={styles.tmaBottomBar}>
@@ -494,6 +538,15 @@ export function ProductDetailScreen() {
               ) : (
                 <Text style={styles.priceOnRequest}>Chat with the shop to order</Text>
               )
+            ) : isFreeDownload ? (
+              <>
+                <TelegramChatButton
+                  username={product.ownerTelegramUsername}
+                  size={24}
+                  style={styles.tmaChatButton}
+                />
+                <Text style={styles.tmaFreeNote}>Free — download above</Text>
+              </>
             ) : (
               <>
                 <TelegramChatButton
@@ -520,6 +573,7 @@ export function ProductDetailScreen() {
     <Screen scroll noPadding edges={['top', 'left', 'right']}>
       {gallerySection}
       {infoSection}
+      {downloadsSection}
       {detailImagesSection}
     </Screen>
   );
@@ -697,6 +751,34 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
     maxWidth: MAX_WIDTH,
     width: '100%',
     alignSelf: 'center',
+  },
+  downloadRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: borderRadius.md,
+    backgroundColor: colors.surface,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    marginBottom: spacing.xs,
+  },
+  downloadName: {
+    flex: 1,
+    fontSize: fontSizes.sm,
+    color: colors.text,
+  },
+  downloadSize: {
+    fontSize: fontSizes.xs,
+    color: colors.textSecondary,
+  },
+  tmaFreeNote: {
+    flex: 1,
+    textAlign: 'center',
+    alignSelf: 'center',
+    fontSize: fontSizes.sm,
+    color: colors.textSecondary,
   },
   detailImageContainer: {
     borderRadius: borderRadius.md,

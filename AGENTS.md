@@ -83,7 +83,8 @@ Docs: <https://docs.expo.dev/versions/v54.0.0/>
     │   └── user/                    # Home, ProductDetail, Cart, Checkout, Orders, OrderDetail
     ├── services/                    # cache, categories, images, orders, products, tenants,
     │                                # paymentVerifications (040), paymentVerificationCheckout (041),
-    │                                # settings (042), telegramAuth, telegramOrderNotify
+    │                                # settings (042), telegramAuth, telegramOrderNotify,
+    │                                # productFiles (044 — PDF downloads)
     ├── types/                       # index.ts (domain), navigation.ts (param lists)
     └── utils/                       # format, images, storage, validation, variants, checkoutFields
 ```
@@ -152,6 +153,7 @@ Param lists in `src/types/navigation.ts`. Web has a `linking` config (`product/:
 - `CartItem`: `{ product, quantity, selectedImageIndex, selectedOptions?, unitPrice?, fieldAnswers? }` — `selectedOptions` is the chosen variant (`{ group, option }[]`), `unitPrice` snapshots the variant price at add-to-cart (cart/order lines keyed by `productId:selectedImageIndex[:variantKey]`, see `utils/variants.ts`), `fieldAnswers` snapshots checkout answers (`{ label, value }[]`, 036)
 - `Order`: `id` (short random code like `K7QX-9M2R`; sequential numbers would leak volume), `items` (snapshots stamped server-side with `owner_id`/`shop_name` by `stamp_order_tenants`), `total`, `paymentMethod`, `status`, `location` (optional since 034), `phoneNumber`, `studentName` (legacy only — not collected since 036), `createdAt` (server-forced to `now()` on insert, 041), `telegramId`, `tenantIds`, `paymentProofs` (jsonb: tenant owner id → proof URL), `paymentReferences` (jsonb: tenant owner id → verified `{ provider, reference, key }`, 041), `shippingFees` (jsonb: tenant owner id → fee, 031; in `total`), `itemStatuses` (jsonb: line key → per-item status, 022/038; missing entries fall back to `status`)
 - `Shopper`: `telegramId`, `firstName`, optional `lastName`/`username` (validated via `telegram-auth`)
+- `ProductFile` (table `product_files`, 044): downloadable PDFs attached to a product post, stored in the public R2 bucket under `books/`. Price-0 posts = free downloads (anon-readable via RLS, listed on ProductDetail; no cart/checkout — `addToCart` ignores price-0 products). Priced posts = paid: files are hidden from anon clients and revealed by the anonymous `sign-book-get` action of `r2-upload-sign` only when the buyer's order item reached `paid`; the shopper's OrderDetail then shows download buttons. Upload/pick: AddEditItem "Digital books (PDF)" section (web: `pickPdfWeb` in `lib/image-web.ts`; native: `expo-document-picker`), bytes PUT straight to R2 via the `sign` action.
 - `Category`: arbitrary string; defaults `School Uniform`, `Stationery`, `Books`, `Sports`, `Electronics`, `Accessories`
 - `Profile`: `id`, `role`, `email`, `username`, `shopName`, `telegramChatId` (per-tenant group for `telegram-order-notify`), `bankAccounts` (031; ≥1 required for tenants), `shippingFee` (031), `shopLogoUrl` (required for tenants, 023), `shopDescription` (024), `telegramUsername` (025 — shoppers DM `https://t.me/<username>`), `isActive` (037 — super admin switch; off = products vanish from `fetch_products_with_shop`, tenant cannot log in, live sessions signed out via realtime profile subscription), `paymentVerificationEnabled` (043 — super admin switch; off = shop excluded from payment verification)
 - `PaymentMethod`: `bank_transfer` (the only method)

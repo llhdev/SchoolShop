@@ -21,9 +21,17 @@ import { useApp } from '../../context/AppContext';
 import { useResponsive } from '../../hooks/useResponsive';
 import { AdminStackParamList } from '../../types/navigation';
 import { getProductCoverImage, resizeImage } from '../../utils/images';
-import { deleteProductImage, uploadProductImages } from '../../services/images';
+import { formatFileSize } from '../../utils/format';
+import { deleteProductImage, deleteR2Objects, uploadProductImages } from '../../services/images';
+import {
+  addProductFile,
+  deleteProductFile,
+  fetchProductFiles,
+  uploadProductPdf,
+  PdfUploadSource,
+} from '../../services/productFiles';
 import { fetchOwnProfile, updateOwnShippingFee } from '../../services/account';
-import { Category, CheckoutField, Product, VariantGroup, VariantOption } from '../../types';
+import { Category, CheckoutField, Product, ProductFile, VariantGroup, VariantOption } from '../../types';
 import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../../constants/theme';
 import { MERCHANT_ACCOUNT_EDITING_ENABLED } from '../../constants/featureFlags';
 
@@ -113,6 +121,19 @@ export function AddEditItemScreen() {
   const [checkoutFields, setCheckoutFields] = useState<FieldEdit[]>(() =>
     toFieldEdits(existing?.checkoutFields)
   );
+  // Downloadable PDFs attached to this post (migration 044). On an existing
+  // product rows are inserted/deleted immediately; on a new product they
+  // wait in state until the product is saved (its id is generated on save).
+  const [digitalFiles, setDigitalFiles] = useState<ProductFile[]>([]);
+  const [pdfBusy, setPdfBusy] = useState(false);
+
+  useEffect(() => {
+    if (!existing) return;
+    fetchProductFiles(existing.id)
+      .then(setDigitalFiles)
+      .catch(() => {});
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [existing?.id]);
 
   useEffect(() => {
     if (role !== 'admin' || !MERCHANT_ACCOUNT_EDITING_ENABLED) return;
@@ -155,9 +176,11 @@ export function AddEditItemScreen() {
   }, [existing, isSuperAdmin, navigation]);
 
   const compareAt = priceOnRequest ? undefined : compareAtPrice.trim() ? Number(compareAtPrice) : undefined;
+  // A post with PDFs attached may leave the price empty/0 — it becomes a free
+  // download post (migration 044).
   const isValid =
     name.trim() &&
-    (priceOnRequest || (!isNaN(Number(price)) && Number(price) > 0)) &&
+    (priceOnRequest || digitalFiles.length > 0 || (!isNaN(Number(price)) && Number(price) > 0)) &&
     (priceOnRequest || compareAt === undefined || (!isNaN(compareAt) && compareAt > Number(price))) &&
     category.trim().length > 0;
 
@@ -230,6 +253,81 @@ export function AddEditItemScreen() {
     });
     // Best-effort cleanup of the storage object.
     deleteProductImage(removed).catch(() => {});
+  }
+
+  // --- Digital books (PDF) -------------------------------------------------
+
+  /** Upload one picked PDF to R2, then register it on the product (immediately
+   *  for existing products; at save time for new ones). */
+  async function uploadOnePdf(source: PdfUploadSource) {
+    const uploaded = await uploadProductPdf(source);
+    if (existing) {
+      const row = await addProductFile(existing.id, {
+        name: source.name,
+        key: uploaded.key,
+        sizeBytes: uploaded.sizeBytes,
+      });
+      setDigitalFiles((prev) => [...prev, row]);
+    } else {
+      setDigitalFiles((prev) => [
+        ...prev,
+        {
+          id: `local-${uploaded.key}`,
+          productId: '',
+          name: source.name,
+          key: uploaded.key,
+          url: uploaded.url,
+          sizeBytes: uploaded.sizeBytes,
+        },
+      ]);
+    }
+  }
+
+  async function pickPdfs() {
+    setPdfBusy(true);
+    try {
+      if (Platform.OS === 'web') {
+        const { pickPdfWeb } = await import('../../lib/image-web');
+        const picked = await pickPdfWeb();
+        for (const file of picked) {
+          await uploadOnePdf({ name: file.name.replace(/\.pdf$/i, ''), buffer: file.buffer });
+        }
+        return;
+      }
+      // Native: dynamically imported so the module stays out of the web bundle.
+      const DocumentPicker = await import('expo-document-picker');
+      const result = await DocumentPicker.getDocumentAsync({
+        type: 'application/pdf',
+        multiple: true,
+        copyToCacheDirectory: true,
+      });
+      if (!result.canceled) {
+        for (const asset of result.assets) {
+          await uploadOnePdf({
+            name: asset.name.replace(/\.pdf$/i, ''),
+            uri: asset.uri,
+            sizeBytes: asset.size,
+          });
+        }
+      }
+    } catch (error) {
+      Alert.alert(
+        'Upload failed',
+        error instanceof Error ? error.message : 'Could not upload the PDF. Please try again.'
+      );
+    } finally {
+      setPdfBusy(false);
+    }
+  }
+
+  function removeDigitalFile(file: ProductFile) {
+    setDigitalFiles((prev) => prev.filter((f) => f.id !== file.id));
+    if (file.id.startsWith('local-')) {
+      // Never registered in the DB (new unsaved product) — just drop the object.
+      deleteR2Objects([file.key]).catch(() => {});
+    } else {
+      deleteProductFile(file.id, file.key).catch(() => {});
+    }
   }
 
   function updateGroup(gi: number, patch: Partial<GroupEdit>) {
@@ -430,6 +528,22 @@ export function AddEditItemScreen() {
         Alert.alert('Item Updated', `${productData.name} has been updated.`);
       } else {
         await addProduct(productData);
+        // New products get their id at save time, so PDF rows are registered
+        // now (the bytes are already in R2 from pick time).
+        try {
+          for (const file of digitalFiles) {
+            await addProductFile(productData.id, {
+              name: file.name,
+              key: file.key,
+              sizeBytes: file.sizeBytes,
+            });
+          }
+        } catch {
+          Alert.alert(
+            'Note',
+            'The item was saved, but some PDF files could not be attached. Re-add them from the edit screen.'
+          );
+        }
         Alert.alert('Item Added', `${productData.name} has been added.`);
       }
       // Persist the shop's shipping fee when the tenant changed it here.
@@ -648,6 +762,36 @@ export function AddEditItemScreen() {
                 <Ionicons name="add-outline" size={28} color={colors.primary} />
               </TouchableOpacity>
             </View>
+          </View>
+
+          <View style={styles.field}>
+            <Text style={styles.label}>Digital books / PDF files (optional)</Text>
+            <Text style={styles.detailHint}>
+              Attach PDFs shoppers can download from the post. Leave the price empty (or 0) to
+              make the downloads free for everyone; on a priced post, buyers unlock the download
+              on their order page after you mark the item Order Received.
+            </Text>
+            {digitalFiles.map((file) => (
+              <View key={file.id} style={styles.fileRow}>
+                <Ionicons name="document-text-outline" size={20} color={colors.primary} />
+                <Text style={styles.fileName} numberOfLines={1}>
+                  {file.name}
+                </Text>
+                <Text style={styles.fileSize}>{formatFileSize(file.sizeBytes)}</Text>
+                <TouchableOpacity onPress={() => removeDigitalFile(file)} hitSlop={8}>
+                  <Ionicons name="close-circle" size={22} color={colors.danger} />
+                </TouchableOpacity>
+              </View>
+            ))}
+            <TouchableOpacity
+              style={styles.fileAddButton}
+              onPress={() => pickPdfs()}
+              disabled={pdfBusy}
+              activeOpacity={0.7}
+            >
+              <Ionicons name="add-outline" size={20} color={colors.primary} />
+              <Text style={styles.fileAddText}>{pdfBusy ? 'Uploading…' : 'Add PDF'}</Text>
+            </TouchableOpacity>
           </View>
 
           <View style={styles.field}>
@@ -1080,6 +1224,45 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
     borderStyle: 'dashed',
     borderColor: colors.primary,
     backgroundColor: colors.background,
+  },
+  fileRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: borderRadius.md,
+    paddingHorizontal: spacing.sm,
+    paddingVertical: spacing.xs,
+    marginBottom: spacing.xs,
+    backgroundColor: colors.background,
+  },
+  fileName: {
+    flex: 1,
+    fontSize: fontSizes.sm,
+    color: colors.text,
+  },
+  fileSize: {
+    fontSize: fontSizes.xs,
+    color: colors.textSecondary,
+  },
+  fileAddButton: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    alignSelf: 'flex-start',
+    gap: spacing.xs,
+    borderWidth: 1,
+    borderStyle: 'dashed',
+    borderColor: colors.primary,
+    borderRadius: borderRadius.md,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.xs,
+    marginTop: spacing.xs,
+  },
+  fileAddText: {
+    fontSize: fontSizes.sm,
+    color: colors.primary,
+    fontWeight: '600',
   },
   descriptionInput: {
     minHeight: 100,
