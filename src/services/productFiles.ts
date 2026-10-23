@@ -10,7 +10,7 @@ import {
 
 /** PDFs up to this size can be attached to a post (client-side guard; R2
  *  presigned PUTs cannot enforce a size limit server-side). */
-export const MAX_PDF_BYTES = 150 * 1024 * 1024;
+export const MAX_PDF_BYTES = 250 * 1024 * 1024;
 
 interface DbProductFile {
   id: string;
