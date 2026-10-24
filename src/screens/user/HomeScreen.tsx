@@ -243,8 +243,8 @@ export function HomeScreen() {
                 <ProductCard
                   product={item}
                   onPress={() => {
-                    // Mini App: full-screen product page. Web/native: modal.
-                    if (isTelegramMiniApp()) {
+                    // Mini App + web: full-screen product page. Native: quick-view modal.
+                    if (isTelegramMiniApp() || Platform.OS === 'web') {
                       navigation.navigate('ProductDetail', { productId: item.id });
                     } else {
                       setViewerProductId(item.id);
