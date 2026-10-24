@@ -163,8 +163,8 @@ export async function updateOrderStatus(id: string, status: Order['status']): Pr
 
 /** Stable per-item key inside an order: "productId:selectedImageIndex", plus
  *  ":Group=Option|…" when the line has variant selections (migration 035).
- *  Unique per order because the cart merges identical product+image+variant
- *  lines. Items without options keep the legacy format, so status keys on
+ *  Unique per order: the Buy flow creates one line per product+image+variant
+ *  selection. Items without options keep the legacy format, so status keys on
  *  orders written before variants still match. */
 export function getItemKey(item: CartItem): string {
   return getCartItemLineId(item);

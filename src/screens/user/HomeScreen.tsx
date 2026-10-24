@@ -8,7 +8,6 @@ import { SearchBar } from '../../components/SearchBar';
 import { CategoryFilter, SortOption } from '../../components/CategoryFilter';
 import { StoreList, StoreSummary } from '../../components/StoreList';
 import { ProductCard } from '../../components/ProductCard';
-import { ProductViewerModal } from '../../components/ProductViewerModal';
 import { EmptyState } from '../../components/EmptyState';
 import { WebHeader } from '../../components/WebHeader';
 import { ThemeToggle } from '../../components/ThemeToggle';
@@ -17,7 +16,6 @@ import { useResponsive } from '../../hooks/useResponsive';
 import { Category, Product } from '../../types';
 import { RootStackParamList } from '../../types/navigation';
 import { supabase } from '../../lib/supabase';
-import { isTelegramMiniApp } from '../../lib/telegram';
 import { useThemeColors, spacing, fontSizes, ColorPalette } from '../../constants/theme';
 
 const MAX_CONTENT_WIDTH = 1200;
@@ -28,7 +26,7 @@ type ListItem = Product | { id: string; filler: true };
 
 export function HomeScreen() {
   const navigation = useNavigation<Navigation>();
-  const { products, addToCart } = useApp();
+  const { products } = useApp();
   const { breakpoint, isDesktop } = useResponsive();
   const colors = useThemeColors();
   const styles = makeStyles(colors);
@@ -37,7 +35,6 @@ export function HomeScreen() {
   const [selectedCategory, setSelectedCategory] = useState<Category | null>(null);
   const [selectedOwnerId, setSelectedOwnerId] = useState<string | null>(null);
   const [storePanelOpen, setStorePanelOpen] = useState(false);
-  const [viewerProductId, setViewerProductId] = useState<string | null>(null);
   const [sortBy, setSortBy] = useState<SortOption>('featured');
 
   // "Featured" order: a random scramble built once per app session and kept
@@ -242,31 +239,15 @@ export function HomeScreen() {
               return (
                 <ProductCard
                   product={item}
-                  onPress={() => {
-                    // Mini App + web: full-screen product page. Native: quick-view modal.
-                    if (isTelegramMiniApp() || Platform.OS === 'web') {
-                      navigation.navigate('ProductDetail', { productId: item.id });
-                    } else {
-                      setViewerProductId(item.id);
-                    }
-                  }}
+                  onPress={() =>
+                    navigation.navigate('ProductDetail', { productId: item.id })
+                  }
                 />
               );
             }}
           />
           )}
         </View>
-
-        <ProductViewerModal
-          visible={viewerProductId !== null}
-          product={products.find((p) => p.id === viewerProductId) ?? null}
-          onClose={() => setViewerProductId(null)}
-          onAddToCart={(selectedImageIndex) => {
-            const product = products.find((p) => p.id === viewerProductId);
-            // Free download posts (price 0) are never added to the cart.
-            if (product && product.price > 0) addToCart(product, selectedImageIndex);
-          }}
-        />
       </Screen>
     </>
   );

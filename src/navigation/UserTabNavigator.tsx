@@ -4,13 +4,12 @@ import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { Ionicons } from '@expo/vector-icons';
 import { UserTabParamList } from '../types/navigation';
 import { HomeScreen } from '../screens/user/HomeScreen';
-import { useApp } from '../context/AppContext';
 import { useThemeColors } from '../constants/theme';
 
 const Tab = createBottomTabNavigator<UserTabParamList>();
 
-// Cart and Orders are split out of the initial bundle (web); Home stays eager
-// because it is the landing route.
+// Orders is split out of the initial bundle (web); Home stays eager because
+// it is the landing route.
 function lazyScreen<T extends ComponentType<any>>(
   factory: () => Promise<{ default: T }>
 ) {
@@ -30,15 +29,11 @@ function lazyScreen<T extends ComponentType<any>>(
   };
 }
 
-const CartScreen = lazyScreen(() =>
-  import('../screens/user/CartScreen').then((m) => ({ default: m.CartScreen }))
-);
 const OrdersScreen = lazyScreen(() =>
   import('../screens/user/OrdersScreen').then((m) => ({ default: m.OrdersScreen }))
 );
 
 export function UserTabNavigator() {
-  const { cartCount } = useApp();
   const colors = useThemeColors();
 
   return (
@@ -71,16 +66,6 @@ export function UserTabNavigator() {
           tabBarIcon: ({ color, size }) => (
             <Ionicons name="home-outline" size={size} color={color} />
           ),
-        }}
-      />
-      <Tab.Screen
-        name="Cart"
-        component={CartScreen}
-        options={{
-          tabBarIcon: ({ color, size }) => (
-            <Ionicons name="cart-outline" size={size} color={color} />
-          ),
-          tabBarBadge: cartCount > 0 ? (cartCount > 99 ? '99+' : cartCount) : undefined,
         }}
       />
       <Tab.Screen

@@ -73,7 +73,6 @@ const linking: LinkingOptions<RootStackParamList> | undefined =
               initialRouteName: 'Home',
               screens: {
                 Home: '',
-                Cart: 'cart',
                 Orders: 'orders',
               },
             },

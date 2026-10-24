@@ -4,7 +4,6 @@ import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { SearchBar } from './SearchBar';
 import { ThemeToggle } from './ThemeToggle';
-import { useApp } from '../context/AppContext';
 import { useResponsive } from '../hooks/useResponsive';
 import { RootStackParamList } from '../types/navigation';
 import { useThemeColors, spacing, fontSizes, ColorPalette } from '../constants/theme';
@@ -23,7 +22,6 @@ export function WebHeader({
   const colors = useThemeColors();
   const styles = makeStyles(colors);
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
-  const { cartCount } = useApp();
   const { isDesktop } = useResponsive();
 
   // Wide screens get the full top header; narrow web/TMA sessions rely on
@@ -57,23 +55,6 @@ export function WebHeader({
           >
             <Ionicons name="list-outline" size={22} color={colors.text} />
             <Text style={styles.iconLabel}>Orders</Text>
-          </TouchableOpacity>
-
-          <TouchableOpacity
-            style={styles.iconButton}
-            onPress={() => navigation.navigate('UserTabs', { screen: 'Cart' })}
-          >
-            <View style={styles.cartIcon}>
-              <Ionicons name="cart-outline" size={22} color={colors.text} />
-              {cartCount > 0 && (
-                <View style={styles.badge}>
-                  <Text style={styles.badgeText}>
-                    {cartCount > 99 ? '99+' : cartCount}
-                  </Text>
-                </View>
-              )}
-            </View>
-            <Text style={styles.iconLabel}>Cart</Text>
           </TouchableOpacity>
 
           <ThemeToggle />
@@ -133,25 +114,5 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
     fontSize: fontSizes.xs,
     color: colors.textSecondary,
     marginTop: 2,
-  },
-  cartIcon: {
-    position: 'relative',
-  },
-  badge: {
-    position: 'absolute',
-    top: -6,
-    right: -8,
-    backgroundColor: colors.price,
-    borderRadius: 10,
-    minWidth: 18,
-    height: 18,
-    justifyContent: 'center',
-    alignItems: 'center',
-    paddingHorizontal: 4,
-  },
-  badgeText: {
-    color: colors.surface,
-    fontSize: 10,
-    fontWeight: '700',
   },
 });

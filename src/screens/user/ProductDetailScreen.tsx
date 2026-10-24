@@ -26,7 +26,7 @@ import { useApp } from '../../context/AppContext';
 import { useResponsive } from '../../hooks/useResponsive';
 import { getProductGalleryImages } from '../../utils/images';
 import { hasUnselectedGroups, resolveVariantPrice } from '../../utils/variants';
-import { ProductFile, VariantGroup, VariantOption } from '../../types';
+import { CartItem, ProductFile, VariantGroup, VariantOption } from '../../types';
 import { isTelegramMiniApp, openTelegramChat } from '../../lib/telegram';
 import { fetchProductFiles } from '../../services/productFiles';
 import { formatFileSize, formatPrice, getDiscountPercent } from '../../utils/format';
@@ -35,6 +35,42 @@ import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '
 
 const PHONE_IMAGE_HEIGHT_RATIO = 0.65;
 const MAX_WIDTH = 1200;
+const MAX_QUANTITY = 99;
+
+/** Quantity picker next to the Buy button (no cart — the quantity goes
+ *  straight to checkout with the single line item). Button styling mirrors
+ *  the old ProductCard quick-add circles. */
+function QuantityStepper({
+  quantity,
+  onChange,
+}: {
+  quantity: number;
+  onChange: (next: number) => void;
+}) {
+  const colors = useThemeColors();
+  const styles = makeStyles(colors);
+  return (
+    <View style={styles.stepper}>
+      <TouchableOpacity
+        style={[styles.stepperButton, quantity <= 1 && styles.stepperButtonDisabled]}
+        onPress={() => onChange(Math.max(1, quantity - 1))}
+        disabled={quantity <= 1}
+        activeOpacity={0.8}
+      >
+        <Ionicons name="remove" size={16} color={colors.primary} />
+      </TouchableOpacity>
+      <Text style={styles.stepperValue}>{quantity}</Text>
+      <TouchableOpacity
+        style={[styles.stepperButton, quantity >= MAX_QUANTITY && styles.stepperButtonDisabled]}
+        onPress={() => onChange(Math.min(MAX_QUANTITY, quantity + 1))}
+        disabled={quantity >= MAX_QUANTITY}
+        activeOpacity={0.8}
+      >
+        <Ionicons name="add" size={18} color={colors.primary} />
+      </TouchableOpacity>
+    </View>
+  );
+}
 
 /** One detail image sized to its natural aspect ratio (fully visible, never
  *  cropped). Before the dimensions are known a 3:4 placeholder box is shown;
@@ -80,27 +116,30 @@ export function ProductDetailScreen() {
   const route = useRoute();
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const { productId } = route.params as { productId: string };
-  const { products, addToCart } = useApp();
+  const { products, role } = useApp();
   const { isDesktop } = useResponsive();
   const { width: windowWidth } = useWindowDimensions();
   const colors = useThemeColors();
   const styles = makeStyles(colors);
   const [activeIndex, setActiveIndex] = useState(0);
-  const [justAdded, setJustAdded] = useState(false);
+  const [quantity, setQuantity] = useState(1);
   const [viewerVisible, setViewerVisible] = useState(false);
   const [viewerIndex, setViewerIndex] = useState(0);
   /** Chosen variant options: group name → option name. */
   const [selected, setSelected] = useState<Record<string, string>>({});
-  /** Set when the shopper tries to add/buy without picking every group. */
+  /** Set when the shopper tries to buy without picking every group. */
   const [variantError, setVariantError] = useState(false);
   /** Free downloadable PDFs attached to a price-0 post (migration 044). */
   const [freeFiles, setFreeFiles] = useState<ProductFile[]>([]);
   const galleryRef = useRef<FlatList>(null);
-  const addResetTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isTMA = isTelegramMiniApp();
 
   const product = products.find((p) => p.id === productId);
   const isFreeDownload = !!product && !product.priceHidden && product.price === 0;
+  // Buy UI is shopper-only: admins share this screen but Checkout is not
+  // registered in the admin stack. Free downloads and price-on-request posts
+  // have no buy UI either.
+  const canBuy = role === 'user' && !!product && !product.priceHidden && !isFreeDownload;
 
   useEffect(() => {
     if (!isFreeDownload || !product) return;
@@ -151,7 +190,8 @@ export function ProductDetailScreen() {
     }
   };
 
-  /** Build the add-to-cart payload, or null when a group is still unpicked. */
+  /** Build the checkout line's variant payload, or null when a group is
+   *  still unpicked. */
   const buildSelection = ():
     | { selectedOptions: { group: string; option: string }[]; unitPrice: number }
     | null => {
@@ -166,35 +206,19 @@ export function ProductDetailScreen() {
     };
   };
 
-  useEffect(
-    () => () => {
-      if (addResetTimer.current) clearTimeout(addResetTimer.current);
-    },
-    []
-  );
-
-  function handleAddToCart() {
-    if (!product) return;
-    const selection = buildSelection();
-    if (variantGroups.length > 0 && !selection) return;
-    addToCart(product, activeIndex, selection?.selectedOptions, selection?.unitPrice);
-    if (isTMA) {
-      // Same confirmation mark the card's quick-add shows: a brief check
-      // state on the button instead of leaving the page.
-      setJustAdded(true);
-      if (addResetTimer.current) clearTimeout(addResetTimer.current);
-      addResetTimer.current = setTimeout(() => setJustAdded(false), 1600);
-    } else {
-      navigation.goBack();
-    }
-  }
-
+  // No cart: Buy goes straight to Checkout with the single line item.
   function handleBuy() {
     if (!product) return;
     const selection = buildSelection();
     if (variantGroups.length > 0 && !selection) return;
-    addToCart(product, activeIndex, selection?.selectedOptions, selection?.unitPrice);
-    navigation.navigate('Checkout');
+    const item: CartItem = {
+      product,
+      quantity,
+      selectedImageIndex: activeIndex,
+      selectedOptions: selection?.selectedOptions,
+      unitPrice: selection?.unitPrice,
+    };
+    navigation.navigate('Checkout', { items: [item] });
   }
 
   const phoneImageHeight = windowWidth * PHONE_IMAGE_HEIGHT_RATIO;
@@ -347,12 +371,15 @@ export function ProductDetailScreen() {
             username={product.ownerTelegramUsername}
             style={styles.chatIconButton}
           />
-          {!product.priceHidden && !isFreeDownload && (
-            <Button
-              title="Add to Cart"
-              onPress={handleAddToCart}
-              style={styles.actionButton}
-            />
+          {canBuy && (
+            <>
+              <QuantityStepper quantity={quantity} onChange={setQuantity} />
+              <Button
+                title="Buy Now"
+                onPress={handleBuy}
+                style={styles.actionButton}
+              />
+            </>
           )}
         </View>
       )}
@@ -554,13 +581,12 @@ export function ProductDetailScreen() {
                   size={24}
                   style={styles.tmaChatButton}
                 />
-                <Button
-                  title={justAdded ? '✓ Added to Cart' : 'Add to Cart'}
-                  variant="outline"
-                  onPress={handleAddToCart}
-                  style={styles.tmaBarButton}
-                />
-                <Button title="Buy" onPress={handleBuy} style={styles.tmaBarButton} />
+                {canBuy && (
+                  <>
+                    <QuantityStepper quantity={quantity} onChange={setQuantity} />
+                    <Button title="Buy" onPress={handleBuy} style={styles.tmaBarButton} />
+                  </>
+                )}
               </>
             )}
           </View>
@@ -792,8 +818,36 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
   },
   actions: {
     flexDirection: 'row',
+    alignItems: 'center',
     gap: spacing.md,
     marginTop: spacing.xl,
+  },
+  stepper: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    alignSelf: 'center',
+  },
+  stepperButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.primary,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
+  stepperButtonDisabled: {
+    borderColor: colors.border,
+    opacity: 0.5,
+  },
+  stepperValue: {
+    minWidth: 24,
+    textAlign: 'center',
+    fontSize: fontSizes.md,
+    fontWeight: '700',
+    color: colors.text,
   },
   actionButton: {
     flex: 1,

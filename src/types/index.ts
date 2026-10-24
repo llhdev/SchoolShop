@@ -55,7 +55,7 @@ export interface Product {
   images: string[];
   /** Optional detail images (size charts, close-ups) shown under the description (migration 027). */
   detailImages?: string[];
-  /** "Price on request": no price tag, no add-to-cart — shoppers order via chat (migration 029). */
+  /** "Price on request": no price tag, no Buy button — shoppers order via chat (migration 029). */
   priceHidden?: boolean;
   /** Units ordered so far; server-maintained by trigger, powers the Popular sort (migration 030). */
   orderCount?: number;
@@ -104,7 +104,7 @@ export interface CartItem {
   selectedImageIndex: number;
   /** Chosen variant options (absent/empty = product has no variants or none picked). */
   selectedOptions?: { group: string; option: string }[];
-  /** Unit price snapshotted at add-to-cart time (variant price); absent = product.price. */
+  /** Unit price snapshotted at purchase time (variant price); absent = product.price. */
   unitPrice?: number;
   /** Buyer's answers to the product's checkout questions, snapshotted on the
    *  order item (absent/empty = product has no questions or none answered). */
@@ -180,7 +180,6 @@ export interface AppState {
   role: Role;
   theme: Theme;
   products: Product[];
-  cart: CartItem[];
   orders: Order[];
   categories: Category[];
 }
@@ -192,11 +191,6 @@ export type AppAction =
   | { type: 'ADD_PRODUCT'; payload: Product }
   | { type: 'UPDATE_PRODUCT'; payload: Product }
   | { type: 'DELETE_PRODUCT'; payload: string }
-  | { type: 'ADD_TO_CART'; payload: { product: Product; selectedImageIndex: number; variantKey?: string; selectedOptions?: CartItem['selectedOptions']; unitPrice?: number } }
-  | { type: 'SET_CART'; payload: CartItem[] }
-  | { type: 'REMOVE_FROM_CART'; payload: { productId: string; selectedImageIndex: number; variantKey?: string } }
-  | { type: 'UPDATE_CART_QUANTITY'; payload: { productId: string; selectedImageIndex: number; variantKey?: string; quantity: number } }
-  | { type: 'CLEAR_CART' }
   | { type: 'SET_ORDERS'; payload: Order[] }
   | { type: 'ADD_ORDER'; payload: Order }
   | { type: 'UPDATE_ORDER'; payload: Order }

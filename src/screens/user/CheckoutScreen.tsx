@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Platform } from 'react-native';
-import { useFocusEffect, useNavigation } from '@react-navigation/native';
+import { useFocusEffect, useNavigation, useRoute } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import {
   Alert,
@@ -16,6 +16,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { Screen } from '../../components/Screen';
 import { Button } from '../../components/Button';
+import { EmptyState } from '../../components/EmptyState';
 import { WebHeader } from '../../components/WebHeader';
 import { useApp } from '../../context/AppContext';
 import { useResponsive } from '../../hooks/useResponsive';
@@ -45,7 +46,7 @@ import {
 } from '../../lib/telegram';
 
 const MAX_WIDTH = 900;
-/** Cart items whose product has no owner (legacy seed rows) pay to the shop directly. */
+/** Line items whose product has no owner (legacy seed rows) pay to the shop directly. */
 const UNKNOWN_TENANT_KEY = 'unknown';
 
 interface TenantPaymentGroup {
@@ -105,7 +106,23 @@ const VERIFY_CHIP_LABELS: Record<ShopVerifyState, string> = {
 
 export function CheckoutScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
-  const { cart, cartTotal, cartCount, clearCart, addOrder, shopper, products } = useApp();
+  const route = useRoute();
+  const { addOrder, shopper, products } = useApp();
+  // No cart: the Buy button on the product page passes the single line item
+  // as a route param. Empty/absent params (e.g. the /checkout deep link)
+  // render an empty state instead of the form.
+  const items = useMemo(
+    () => (route.params as { items?: CartItem[] } | undefined)?.items ?? [],
+    [route.params]
+  );
+  const itemsTotal = useMemo(
+    () => items.reduce((sum, item) => sum + getUnitPrice(item) * item.quantity, 0),
+    [items]
+  );
+  const itemCount = useMemo(
+    () => items.reduce((sum, item) => sum + item.quantity, 0),
+    [items]
+  );
   const { isDesktop, isPhone } = useResponsive();
   const colors = useThemeColors();
   const styles = makeStyles(colors);
@@ -114,7 +131,7 @@ export function CheckoutScreen() {
   const [landmarkQuery, setLandmarkQuery] = useState('');
   const [phoneNumber, setPhoneNumber] = useState('');
   const [phoneTouched, setPhoneTouched] = useState(false);
-  /** Payment proof photo URLs, keyed by tenant owner id (one per shop in the cart). */
+  /** Payment proof photo URLs, keyed by tenant owner id (one per shop in the order). */
   const [proofsByTenant, setProofsByTenant] = useState<Record<string, string>>({});
   const [proofUploading, setProofUploading] = useState<Record<string, boolean>>({});
   /** Per-shop payment reference (auto-filled by OCR on web), keyed by the
@@ -129,14 +146,14 @@ export function CheckoutScreen() {
   /** Latest verification key per group — a stale OCR/verify completion (from
    *  before a re-pick or edit) discards itself by comparing keys. */
   const verificationKeys = useRef<Record<string, string>>({});
-  /** Answers to tenant-defined checkout questions, keyed by cart line id then
+  /** Answers to tenant-defined checkout questions, keyed by order line id then
    *  question label. */
   const [answersByLine, setAnswersByLine] = useState<Record<string, Record<string, string>>>({});
   const [zoomedImage, setZoomedImage] = useState<string | null>(null);
   const [placingOrder, setPlacingOrder] = useState(false);
-  /** Fresh catalog fetched on mount. Cart items snapshot the product as it
-   *  was when added, so bank accounts / shipping fee / shop name are resolved
-   *  from the freshest data instead of the possibly stale cart snapshot. */
+  /** Fresh catalog fetched on mount. Line items snapshot the product as it
+   *  was on the product page, so bank accounts / shipping fee / shop name are
+   *  resolved from the freshest data instead of the possibly stale snapshot. */
   const [freshProducts, setFreshProducts] = useState<Product[] | null>(null);
   /** Set when the shopper taps Place Order with required info missing: shows
    *  the guidance message once and marks every empty field in red. */
@@ -177,16 +194,16 @@ export function CheckoutScreen() {
   const phoneValid = isValidEthiopianPhoneNumber(phoneNumber);
   const showPhoneError = phoneTouched && phoneNumber.trim().length > 0 && !phoneValid;
 
-  // Payment is a direct bank transfer to each shop in the cart. Group the
-  // cart by tenant so the shopper can transfer each shop's subtotal plus its
+  // Payment is a direct bank transfer to each shop in the order. Group the
+  // items by tenant so the shopper can transfer each shop's subtotal plus its
   // shipping fee and upload one payment proof per shop. Payment-relevant
   // fields (bank accounts, shipping fee, shop name, owner) always come from
-  // the freshest catalog row — the cart snapshot may predate the tenant
+  // the freshest catalog row — the line item snapshot may predate the tenant
   // publishing their bank details.
   const catalog = freshProducts ?? products;
   const tenantGroups = useMemo<TenantPaymentGroup[]>(() => {
     const map = new Map<string, TenantPaymentGroup>();
-    for (const item of cart) {
+    for (const item of items) {
       const current: Product =
         catalog.find((p) => p.id === item.product.id) ?? item.product;
       const key = current.ownerId ?? item.product.ownerId ?? UNKNOWN_TENANT_KEY;
@@ -212,17 +229,17 @@ export function CheckoutScreen() {
       group.total = group.subtotal + group.shippingFee;
     }
     return [...map.values()];
-  }, [cart, catalog]);
+  }, [items, catalog]);
 
-  // Each shop in the cart charges its flat shipping fee once per order.
+  // Each shop in the order charges its flat shipping fee once per order.
   const shippingTotal = tenantGroups.reduce((sum, group) => sum + group.shippingFee, 0);
-  const orderTotal = cartTotal + shippingTotal;
+  const orderTotal = itemsTotal + shippingTotal;
 
-  // Cart lines whose product defines tenant checkout questions (migration 036).
+  // Order lines whose product defines tenant checkout questions (migration 036).
   // Field definitions come from the freshest catalog row, like bank details.
   const questionLines = useMemo(
     () =>
-      cart
+      items
         .map((item) => {
           const current: Product =
             catalog.find((p) => p.id === item.product.id) ?? item.product;
@@ -230,7 +247,7 @@ export function CheckoutScreen() {
           return fields.length > 0 ? { lineId: getCartItemLineId(item), item, fields } : null;
         })
         .filter((line): line is NonNullable<typeof line> => line !== null),
-    [cart, catalog]
+    [items, catalog]
   );
 
   const unansweredRequired = questionLines.flatMap((line) =>
@@ -253,7 +270,7 @@ export function CheckoutScreen() {
     verificationEnabled && group.paymentVerificationEnabled;
 
   const canPlaceOrder =
-    cart.length > 0 &&
+    items.length > 0 &&
     phoneValid &&
     unansweredRequired.length === 0 &&
     !placingOrder &&
@@ -277,7 +294,7 @@ export function CheckoutScreen() {
   useFocusEffect(
     useCallback(() => {
       if (!isTMA) return;
-      if (cart.length === 0) {
+      if (items.length === 0) {
         configureTelegramMainButton(null);
         return;
       }
@@ -292,7 +309,7 @@ export function CheckoutScreen() {
       });
       return () => configureTelegramMainButton(null);
       // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [isTMA, canPlaceOrder, orderTotal, cart.length, colors.primary, colors.border])
+    }, [isTMA, canPlaceOrder, orderTotal, items.length, colors.primary, colors.border])
   );
 
   /** Pick one payment proof photo for a shop and upload it right away, so the
@@ -503,7 +520,7 @@ export function CheckoutScreen() {
   }
 
   async function handlePlaceOrder() {
-    if (cart.length === 0 || placingOrder) return;
+    if (items.length === 0 || placingOrder) return;
     if (!canPlaceOrder) {
       // Required info missing: mark the empty fields in red and tell the
       // shopper what's needed. The button stays tappable precisely so this
@@ -526,7 +543,7 @@ export function CheckoutScreen() {
     const order: Order = {
       id: generateOrderCode(),
       // Snapshot each line with the buyer's answers to the shop's questions.
-      items: cart.map((item) => {
+      items: items.map((item) => {
         const answers = answersByLine[getCartItemLineId(item)];
         const fieldAnswers = Object.entries(answers ?? {})
           .map(([label, value]) => ({ label, value: value.trim() }))
@@ -566,7 +583,6 @@ export function CheckoutScreen() {
     setTelegramMainButtonProgress(true);
     try {
       await addOrder(order);
-      clearCart();
       // Leave Checkout so it isn't kept in the stack over Home/Orders.
       navigation.popToTop();
       navigation.navigate('UserTabs', { screen: 'Orders' });
@@ -577,6 +593,18 @@ export function CheckoutScreen() {
       setPlacingOrder(false);
       setTelegramMainButtonProgress(false);
     }
+  }
+
+  // No line items (e.g. the /checkout web deep link carries no params).
+  if (items.length === 0) {
+    return (
+      <>
+        {isWeb && <WebHeader showSearch={false} />}
+        <Screen>
+          <EmptyState message="Nothing to check out." icon="cart-outline" />
+        </Screen>
+      </>
+    );
   }
 
   return (
@@ -604,7 +632,7 @@ export function CheckoutScreen() {
             <View style={[styles.column, isDesktop && styles.columnDesktop]}>
               <View style={styles.section}>
                 <Text style={styles.sectionTitle}>Order Summary</Text>
-                {cart.map((item) => (
+                {items.map((item) => (
                   <View key={getCartItemLineId(item)} style={styles.summaryRow}>
                     <Text style={styles.summaryText}>
                       {item.quantity} × {item.product.name}
@@ -1021,7 +1049,7 @@ export function CheckoutScreen() {
           <View style={styles.footerInner}>
             <View style={styles.footerTotals}>
               <Text style={styles.footerCount}>
-                {cartCount} item{cartCount === 1 ? '' : 's'}
+                {itemCount} item{itemCount === 1 ? '' : 's'}
               </Text>
               <Text style={styles.footerTotal}>{formatPrice(orderTotal)}</Text>
             </View>
