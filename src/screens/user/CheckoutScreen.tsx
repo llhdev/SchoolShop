@@ -132,6 +132,9 @@ export function CheckoutScreen() {
   /** Answers to tenant-defined checkout questions, keyed by cart line id then
    *  question label. */
   const [answersByLine, setAnswersByLine] = useState<Record<string, Record<string, string>>>({});
+  /** Which dropdown question is expanded, keyed `${lineId}:${label}` — only
+   *  one open at a time. */
+  const [openDropdown, setOpenDropdown] = useState<string | null>(null);
   const [zoomedImage, setZoomedImage] = useState<string | null>(null);
   const [placingOrder, setPlacingOrder] = useState(false);
   /** Fresh catalog fetched on mount. Cart items snapshot the product as it
@@ -686,6 +689,7 @@ export function CheckoutScreen() {
                       </Text>
                       {line.fields.map((field) => {
                         const value = answersByLine[line.lineId]?.[field.label] ?? '';
+                        const dropdownKey = `${line.lineId}:${field.label}`;
                         const missing =
                           showValidation && field.required && value.trim().length === 0;
                         return (
@@ -697,34 +701,75 @@ export function CheckoutScreen() {
                               )}
                             </Text>
                             {field.type === 'dropdown' ? (
-                              <View style={styles.choiceRow}>
-                                {(field.options ?? []).map((option) => (
-                                  <TouchableOpacity
-                                    key={option}
+                              <View>
+                                <TouchableOpacity
+                                  style={[styles.dropdownField, missing && styles.inputError]}
+                                  onPress={() =>
+                                    setOpenDropdown((cur) =>
+                                      cur === dropdownKey ? null : dropdownKey
+                                    )
+                                  }
+                                  activeOpacity={0.7}
+                                >
+                                  <Text
                                     style={[
-                                      styles.choiceChip,
-                                      value === option && styles.choiceChipActive,
-                                      missing && styles.inputError,
+                                      styles.dropdownValue,
+                                      !value && styles.dropdownValuePlaceholder,
                                     ]}
-                                    onPress={() =>
-                                      setAnswer(
-                                        line.lineId,
-                                        field.label,
-                                        value === option ? '' : option
-                                      )
-                                    }
-                                    activeOpacity={0.7}
+                                    numberOfLines={1}
                                   >
-                                    <Text
-                                      style={[
-                                        styles.choiceChipText,
-                                        value === option && styles.choiceChipTextActive,
-                                      ]}
-                                    >
-                                      {option}
-                                    </Text>
-                                  </TouchableOpacity>
-                                ))}
+                                    {value || `Select ${field.label.toLowerCase()}`}
+                                  </Text>
+                                  <Ionicons
+                                    name={openDropdown === dropdownKey ? 'chevron-up' : 'chevron-down'}
+                                    size={18}
+                                    color={colors.textSecondary}
+                                  />
+                                </TouchableOpacity>
+                                {openDropdown === dropdownKey && (
+                                  <ScrollView
+                                    style={styles.dropdownList}
+                                    nestedScrollEnabled
+                                    keyboardShouldPersistTaps="handled"
+                                  >
+                                    {(field.options ?? []).map((option) => (
+                                      <TouchableOpacity
+                                        key={option}
+                                        style={[
+                                          styles.dropdownOption,
+                                          value === option && styles.dropdownOptionActive,
+                                        ]}
+                                        onPress={() => {
+                                          // Tapping the selected option clears it.
+                                          setAnswer(
+                                            line.lineId,
+                                            field.label,
+                                            value === option ? '' : option
+                                          );
+                                          setOpenDropdown(null);
+                                        }}
+                                        activeOpacity={0.7}
+                                      >
+                                        <Text
+                                          style={[
+                                            styles.dropdownOptionText,
+                                            value === option && styles.dropdownOptionTextActive,
+                                          ]}
+                                          numberOfLines={1}
+                                        >
+                                          {option}
+                                        </Text>
+                                        {value === option && (
+                                          <Ionicons
+                                            name="checkmark"
+                                            size={16}
+                                            color={colors.primary}
+                                          />
+                                        )}
+                                      </TouchableOpacity>
+                                    ))}
+                                  </ScrollView>
+                                )}
                               </View>
                             ) : (
                               <TextInput
@@ -1491,6 +1536,56 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
   },
   choiceChipTextActive: {
     color: colors.surface,
+  },
+  dropdownField: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.sm,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: borderRadius.sm,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.md,
+  },
+  dropdownValue: {
+    flex: 1,
+    fontSize: fontSizes.md,
+    color: colors.text,
+  },
+  dropdownValuePlaceholder: {
+    color: colors.textSecondary,
+  },
+  dropdownList: {
+    maxHeight: 220,
+    marginTop: spacing.xs,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: borderRadius.sm,
+  },
+  dropdownOption: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    justifyContent: 'space-between',
+    gap: spacing.sm,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    borderBottomWidth: 1,
+    borderBottomColor: colors.border,
+  },
+  dropdownOptionActive: {
+    backgroundColor: colors.background,
+  },
+  dropdownOptionText: {
+    flex: 1,
+    fontSize: fontSizes.md,
+    color: colors.text,
+  },
+  dropdownOptionTextActive: {
+    color: colors.primary,
+    fontWeight: '600',
   },
   optionalHint: {
     fontSize: fontSizes.sm,
