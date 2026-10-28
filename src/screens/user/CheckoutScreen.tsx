@@ -652,6 +652,7 @@ export function CheckoutScreen() {
                 <TextInput
                   style={styles.input}
                   placeholder="e.g. AAU Sidist Kilo Dorm, Block B"
+                  placeholderTextColor={colors.textSecondary}
                   value={location}
                   onChangeText={setLocation}
                 />
@@ -663,6 +664,7 @@ export function CheckoutScreen() {
                     (showPhoneError || (showValidation && !phoneValid)) && styles.inputError,
                   ]}
                   placeholder="Enter phone number"
+                  placeholderTextColor={colors.textSecondary}
                   value={phoneNumber}
                   onChangeText={(text) => {
                     setPhoneNumber(text);
@@ -775,6 +777,7 @@ export function CheckoutScreen() {
                               <TextInput
                                 style={[styles.input, missing && styles.inputError]}
                                 placeholder={`Enter ${field.label.toLowerCase()}`}
+                                placeholderTextColor={colors.textSecondary}
                                 value={value}
                                 onChangeText={(text) =>
                                   setAnswer(line.lineId, field.label, text)
@@ -994,6 +997,7 @@ export function CheckoutScreen() {
                                   <TextInput
                                     style={styles.input}
                                     placeholder="Transaction reference"
+                                    placeholderTextColor={colors.textSecondary}
                                     value={reference?.reference ?? ''}
                                     onChangeText={(text) => editReference(group.key, text)}
                                     autoCapitalize="characters"
