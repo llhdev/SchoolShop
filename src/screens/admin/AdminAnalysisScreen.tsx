@@ -39,7 +39,7 @@ function canonicalQuestionLabel(label: string): string {
   return label.trim().toLowerCase().replace(/[&-]+/g, ' ').replace(/\s+/g, ' ');
 }
 
-/** One row per merchant line item: checkout answers live on the order line. */
+/** One row per merchant line item: checkout answers live on the cart line. */
 export interface AnalysisRow {
   key: string;
   orderId: string;

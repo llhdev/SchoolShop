@@ -6,7 +6,7 @@ Agent guide for the **Timor Shop** project: stack, architecture, conventions, an
 
 ## Project overview
 
-**Timor Shop** is a cross-platform mobile app built with **Expo SDK 54** and **React Native**. It is a student shopping MVP: users browse school supplies, buy items directly (no cart), and view order history. An admin mode manages products, categories, and orders.
+**Timor Shop** is a cross-platform mobile app built with **Expo SDK 54** and **React Native**. It is a student shopping MVP: users browse school supplies, add items to a cart, check out, and view order history. An admin mode manages products, categories, and orders.
 
 The admin layer is tenant-based: a single **super admin** manages categories and tenant admins; each **tenant admin** only uploads products and picks from existing categories. Admins log in by typing their **username** into the home-screen search bar. Default super admin username: `santa2024`.
 
@@ -65,7 +65,7 @@ Docs: <https://docs.expo.dev/versions/v54.0.0/>
 ├── scripts/                         # prep-dist.js, setup-admin.js, reset-data.js,
 │                                    # clean-database.js, test-reference-verification.js
 └── src/
-    ├── components/                  # AdminHeader, BankAccountsEditor, Button,
+    ├── components/                  # AdminHeader, BankAccountsEditor, Button, CartItemRow,
     │                                # CategoryFilter, EmptyState, ProductCard, ProductImage,
     │                                # ImageViewerModal, Screen, SearchBar, StoreList,
     │                                # VerificationBadge, WebHeader
@@ -80,7 +80,7 @@ Docs: <https://docs.expo.dev/versions/v54.0.0/>
     ├── screens/
     │   ├── admin/                   # AdminDashboard, AdminOrders, AdminAnalysis,
     │   │                            # AdminUserOrders, AddEditItem, TenantManagement
-    │   └── user/                    # Home, ProductDetail, Checkout, Orders, OrderDetail
+    │   └── user/                    # Home, ProductDetail, Cart, Checkout, Orders, OrderDetail
     ├── services/                    # cache, categories, images, orders, products, tenants,
     │                                # paymentVerifications (040), paymentVerificationCheckout (041),
     │                                # settings (042), telegramAuth, telegramOrderNotify,
@@ -118,7 +118,7 @@ The legacy GitHub Pages pipeline still exists: `npm run deploy:web` publishes `d
 
 All shared state lives in `src/context/AppContext.tsx`:
 
-- A single `useReducer` manages `role`, `products`, `orders`, `categories`. There is no cart: ProductDetail's **Buy** (with a quantity stepper) navigates straight to `Checkout` with `{ items: CartItem[] }` as a route param.
+- A single `useReducer` manages `role`, `products`, `cart`, `orders`, `categories`.
 - On mount the app loads the AsyncStorage cache so the UI renders offline, then a background sync fetches from Supabase.
 - Mutations are optimistic: reducer → cache → Supabase; failures roll back.
 - Realtime subscriptions refresh state + cache on product/order/category changes (refetches debounced).
@@ -126,7 +126,9 @@ All shared state lives in `src/context/AppContext.tsx`:
 - Shopper Analysis (`AdminAnalysisScreen`): tenant-scoped orders, one row per line item (order code, date, phone, Telegram name from the public-read `shoppers` table, student name, product, qty, status, one column per checkout-question label — case/separator variants merged — location last). Revenue card is super-admin-only. Rows open `OrderDetail`; web exports `.xlsx` (`src/utils/exportAnalysis.ts`, SheetJS lazy).
 - In the Mini App, a validated `shopper` (from `telegram-auth`, cached at `@schoolshop_shopper`) gives server-side order history by `telegram_id` across devices. Skipped while an admin is signed in.
 - The Supabase client persists auth sessions via AsyncStorage, so admin sign-in survives restarts.
-Actions: `SET_ROLE`, `SET_PRODUCTS`, `ADD_PRODUCT`, `UPDATE_PRODUCT`, `DELETE_PRODUCT`, `SET_ORDERS`, `ADD_ORDER`, `UPDATE_ORDER`, `DELETE_ORDER`, `SET_CATEGORIES`, `ADD_CATEGORY`, `REMOVE_CATEGORY`.
+- Derived values (`cartTotal`, `cartCount`) are computed at render time.
+
+Actions: `SET_ROLE`, `SET_PRODUCTS`, `ADD_PRODUCT`, `UPDATE_PRODUCT`, `DELETE_PRODUCT`, `ADD_TO_CART`, `SET_CART`, `REMOVE_FROM_CART`, `UPDATE_CART_QUANTITY`, `CLEAR_CART`, `SET_ORDERS`, `ADD_ORDER`, `UPDATE_ORDER`, `DELETE_ORDER`, `SET_CATEGORIES`, `ADD_CATEGORY`, `REMOVE_CATEGORY`.
 
 ### Navigation
 
@@ -143,15 +145,15 @@ Within the admin stack:
 - `super_admin`: categories, tenants, all products — never posts items (Add Item hidden/blocked). Orders screen lists tenants; tapping a shop shows its orders grouped by customer phone, scoped to its line items.
 - `admin` (tenant): only own products; picks from existing categories.
 
-Param lists in `src/types/navigation.ts`. Web has a `linking` config (`product/:productId`, `orders`, `checkout`, `order/:orderId`) anchored at the domain root (`WEB_BASE_PATH`). In the Mini App the RN header is hidden (would overlap Telegram's BackButton), driven from navigation state.
+Param lists in `src/types/navigation.ts`. Web has a `linking` config (`product/:productId`, `cart`, `orders`, `checkout`, `order/:orderId`) anchored at the domain root (`WEB_BASE_PATH`). In the Mini App the RN header is hidden (would overlap Telegram's BackButton), driven from navigation state.
 
 ### Data model
 
-- `Product`: `id`, `name`, `description`, `price`, `compareAtPrice` (optional "original" price for discount display), `category`, `images` (string array), `detailImages` (extra photos under description, 027), `priceHidden` ("price on request", 029 — no price/buy; ordered via the shop's Telegram chat, price 0), `orderCount` (server-maintained, 030 — Popular sort), `coverImageIndex`, `createdAt`, `ownerId`, `shopName` (via `fetch_products_with_shop`), `ownerShopLogoUrl` (023) / `ownerShopDescription` (024) / `ownerTelegramUsername` (025) (same RPC; Store filter), `ownerBankAccounts` (`{ accountNumber, bankName?, qrImageUrl? }[]`, 031), `ownerShippingFee` (flat fee once per order per shop, 031; 0/undefined = free), `variantGroups` (`{ name, affectsPrice, options: { name, price?, imageIndex? }[] }[]`, 035 — exactly one group sets the price; `imageIndex` points into `images`), `checkoutFields` (`{ label, type: 'text'|'dropdown', required, options? }[]`, 036 — tenant-defined checkout questions)
-- `CartItem`: `{ product, quantity, selectedImageIndex, selectedOptions?, unitPrice?, fieldAnswers? }` — `selectedOptions` is the chosen variant (`{ group, option }[]`), `unitPrice` snapshots the variant price at Buy time (order lines keyed by `productId:selectedImageIndex[:variantKey]`, see `utils/variants.ts`), `fieldAnswers` snapshots checkout answers (`{ label, value }[]`, 036)
+- `Product`: `id`, `name`, `description`, `price`, `compareAtPrice` (optional "original" price for discount display), `category`, `images` (string array), `detailImages` (extra photos under description, 027), `priceHidden` ("price on request", 029 — no price/cart; ordered via the shop's Telegram chat, price 0), `orderCount` (server-maintained, 030 — Popular sort), `coverImageIndex`, `createdAt`, `ownerId`, `shopName` (via `fetch_products_with_shop`), `ownerShopLogoUrl` (023) / `ownerShopDescription` (024) / `ownerTelegramUsername` (025) (same RPC; Store filter), `ownerBankAccounts` (`{ accountNumber, bankName?, qrImageUrl? }[]`, 031), `ownerShippingFee` (flat fee once per order per shop, 031; 0/undefined = free), `variantGroups` (`{ name, affectsPrice, options: { name, price?, imageIndex? }[] }[]`, 035 — exactly one group sets the price; `imageIndex` points into `images`), `checkoutFields` (`{ label, type: 'text'|'dropdown', required, options? }[]`, 036 — tenant-defined checkout questions)
+- `CartItem`: `{ product, quantity, selectedImageIndex, selectedOptions?, unitPrice?, fieldAnswers? }` — `selectedOptions` is the chosen variant (`{ group, option }[]`), `unitPrice` snapshots the variant price at add-to-cart (cart/order lines keyed by `productId:selectedImageIndex[:variantKey]`, see `utils/variants.ts`), `fieldAnswers` snapshots checkout answers (`{ label, value }[]`, 036)
 - `Order`: `id` (short random code like `K7QX-9M2R`; sequential numbers would leak volume), `items` (snapshots stamped server-side with `owner_id`/`shop_name` by `stamp_order_tenants`), `total`, `paymentMethod`, `status`, `location` (optional since 034), `phoneNumber`, `studentName` (legacy only — not collected since 036), `createdAt` (server-forced to `now()` on insert, 041), `telegramId`, `tenantIds`, `paymentProofs` (jsonb: tenant owner id → proof URL), `paymentReferences` (jsonb: tenant owner id → verified `{ provider, reference, key }`, 041), `shippingFees` (jsonb: tenant owner id → fee, 031; in `total`), `itemStatuses` (jsonb: line key → per-item status, 022/038; missing entries fall back to `status`)
 - `Shopper`: `telegramId`, `firstName`, optional `lastName`/`username` (validated via `telegram-auth`)
-- `ProductFile` (table `product_files`, 044): downloadable PDFs attached to a product post, stored in the public R2 bucket under `books/`. Price-0 posts = free downloads (anon-readable via RLS, listed on ProductDetail; no Buy button). Priced posts = paid: files are hidden from anon clients and revealed by the anonymous `sign-book-get` action of `r2-upload-sign` only when the buyer's order item reached `paid`; the shopper's OrderDetail then shows download buttons. Upload/pick: AddEditItem "Digital books (PDF)" section (web: `pickPdfWeb` in `lib/image-web.ts`; native: `expo-document-picker`), bytes PUT straight to R2 via the `sign` action.
+- `ProductFile` (table `product_files`, 044): downloadable PDFs attached to a product post, stored in the public R2 bucket under `books/`. Price-0 posts = free downloads (anon-readable via RLS, listed on ProductDetail; no cart/checkout — `addToCart` ignores price-0 products). Priced posts = paid: files are hidden from anon clients and revealed by the anonymous `sign-book-get` action of `r2-upload-sign` only when the buyer's order item reached `paid`; the shopper's OrderDetail then shows download buttons. Upload/pick: AddEditItem "Digital books (PDF)" section (web: `pickPdfWeb` in `lib/image-web.ts`; native: `expo-document-picker`), bytes PUT straight to R2 via the `sign` action.
 - `Category`: arbitrary string; defaults `School Uniform`, `Stationery`, `Books`, `Sports`, `Electronics`, `Accessories`
 - `Profile`: `id`, `role`, `email`, `username`, `shopName`, `telegramChatId` (per-tenant group for `telegram-order-notify`), `bankAccounts` (031; ≥1 required for tenants), `shippingFee` (031), `shopLogoUrl` (required for tenants, 023), `shopDescription` (024), `telegramUsername` (025 — shoppers DM `https://t.me/<username>`), `isActive` (037 — super admin switch; off = products vanish from `fetch_products_with_shop`, tenant cannot log in, live sessions signed out via realtime profile subscription), `paymentVerificationEnabled` (043 — super admin switch; off = shop excluded from payment verification)
 - `PaymentMethod`: `bank_transfer` (the only method)
@@ -172,18 +174,19 @@ Param lists in `src/types/navigation.ts`. Web has a `linking` config (`product/:
 ### Checkout behavior
 
 - Checkout collects, in order: optional delivery `location`, Ethiopian phone (required, validated by `isValidEthiopianPhoneNumber`), per-product **checkout questions** (036 — answers snapshotted onto the item's `fieldAnswers`; a tenant who needs a name adds a "Name" question — there is no fixed student-name field), then per-shop payment proof. A landmark picker (`src/constants/landmarks.ts`) fills the location.
-- Only payment method: **direct bank transfer**. Checkout groups the bought item(s) by tenant and shows per shop: name, bank accounts (number + bank + QR, via `fetch_products_with_shop`), subtotal + flat shipping fee. The shopper uploads **one proof photo per shop** (`uploadPaymentProof`, 800px); every shop needs a proof before ordering.
+- Only payment method: **direct bank transfer**. Checkout groups the cart by tenant and shows per shop: name, bank accounts (number + bank + QR, via `fetch_products_with_shop`), subtotal + flat shipping fee. The shopper uploads **one proof photo per shop** (`uploadPaymentProof`, 800px); every shop needs a proof before ordering.
 - **Pre-order verification (041).** After each proof upload, the transaction reference is read off the receipt — web/TMA via **Tesseract.js OCR** (`src/lib/ocr.ts`, lazy CDN worker, runs on the full-resolution original — the 800px proof copy garbles small text; CBE Receipt ID / Telebirr transaction numbers only), elsewhere typed manually — when the receipt prints no brand name (Telebirr's own app), the extractor falls back to each provider's label vocabulary plus the shopper's "Paid via" hint) — and checked by `verify-payment-reference` (`verify_jwt = false`; handles CORS/OPTIONS itself — every browser-called edge function must, curl/Node tests never catch a missing preflight; gated by proof existence in the private bucket + daily precheck cap + idempotency-key replay in `payment_prechecks`). It recomputes the expected amount server-side (`_shared/variantPricing.ts`), syncs the tenant's verify.et registry (`_shared/verifyRegistry.ts`), and calls verify.et's **reference JSON API** (no image credits; legacy CBE `FT…` references additionally send the receiver account's 8-digit `suffix` — `_shared/referenceSuffix.ts`, modern Receipt IDs must not). Masked receivers (`1****8566`, `2519****1630`) are matched to the shop's own accounts by visible digits (`matchMaskedAccounts` in `_shared/verifyEvaluation.ts`) — unique match passes, different account is `wrong_recipient`, ambiguous stays review. Every response carries a `detail` reason (verify.et's error or the failed/reviewed check reasons), shown in checkout under the friendly message. Verdicts: `verified` / `not_found` (fix and retry) / `wrong_recipient` / `wrong_amount` / `already_claimed` (hard rejects — new proof required) / `unavailable` (temporary, retryable — never an invalid payment). **Place Order is gated on every shop reaching `verified`**; the `{ provider, reference, key }` per tenant lands on `orders.payment_references`.
 - Orders start `pending` with proofs on `orders.payment_proofs`. `telegram-order-notify` sends each tenant their order summary **plus their proof photo**; each item's checkout answers are listed under it.
 - **Order-time verification (040–041).** An AFTER INSERT orders trigger calls `verify-order-payment` (client never triggers it). Orders with `payment_references` replay the pre-order check with the **same idempotency key** (free on verify.et's side — the JSON body must stay identical, `{ bank, reference }` plus the CBE suffix when applicable); legacy orders fall back to image-based submission. Each proof is checked for completion, exact recipient account, exact amount (items + fee), prior claim (`payment_claims`), and receipt age (`RECEIPT_MAX_AGE_HOURS`, default 24). Attempts log in `payment_verifications` (`is_current` = active); queued ones complete via the signed `verify-et-webhook`. Tenants retry/approve via `retry_payment_verification` / `approve_payment_verification` on OrderDetail and in `AdminUserOrdersScreen`. Verification never changes order status — approval stays manual.
 - **Runtime kill-switch (042) + per-tenant switch (043).** `platform_settings.payment_verification_enabled` (public read, super-admin write) gates the whole pipeline, and `profiles.payment_verification_enabled` excludes individual shops — a shop is verified only when BOTH are on. All three edge functions read the flags per request (missing/error = disabled, fail-safe). Flip them from Tenant Management (global switch at the top, per-shop switch on each tenant card) or with SQL: `UPDATE platform_settings SET value = 'false' WHERE key = 'payment_verification_enabled';` / `UPDATE profiles SET payment_verification_enabled = false WHERE id = '<tenant>';`. While off for a shop: checkout skips its verification (proof alone suffices, pre-040 behavior), the pre-check returns `{"skipped":"verification disabled"}` (client maps it to `unavailable`), order-time verification skips that shop's slice, and the webhook acks without touching verify.et or Telegram. `telegram-order-notify` is unaffected.
 - Tenant bank details live on `profiles.bank_accounts`, the fee on `profiles.shipping_fee`: super admin sets them at tenant creation/edit; tenants maintain their own via `update_own_bank_accounts` / `update_own_shipping_fee` in Account & Security. Each fee is charged once per order, added to that shop's transfer amount, stored on `orders.shipping_fees`, included in `orders.total`.
   Merchant account editing is temporarily disabled: `MERCHANT_ACCOUNT_EDITING_ENABLED = false` in `src/constants/featureFlags.ts` hides the tenant's Account & Security editing (password, shop description, Telegram username, bank details, shipping fee incl. its Add/Edit Item field) and entry points; flip to `true` to re-enable. Super admin and RPCs unaffected.
-- A checkout creates a single `Order` from the bought item(s), with one location and phone number.
+- A checkout creates a single `Order` containing all cart line items, sharing one location and phone number.
 
 ### Persistence keys
 
 - `@schoolshop_products` / `@schoolshop_orders` / `@schoolshop_categories` (caches)
+- `@schoolshop_cart` (cart)
 - `@schoolshop_shopper` (validated Telegram shopper)
 - `@onlineshop_theme`
 

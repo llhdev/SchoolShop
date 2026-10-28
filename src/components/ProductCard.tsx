@@ -5,10 +5,14 @@ import {
   TouchableOpacity,
   View,
 } from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { Product } from '../types';
 import { ProductImage } from './ProductImage';
 import { getProductCoverImage } from '../utils/images';
+import { variantKeyOf } from '../utils/variants';
 import { formatPrice, getDiscountPercent } from '../utils/format';
+import { useApp } from '../context/AppContext';
+import { isTelegramMiniApp } from '../lib/telegram';
 import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../constants/theme';
 
 interface ProductCardProps {
@@ -17,12 +21,45 @@ interface ProductCardProps {
 }
 
 export function ProductCard({ product, onPress }: ProductCardProps) {
+  const { cart, addToCart, updateCartQuantity } = useApp();
   const colors = useThemeColors();
   const styles = makeStyles(colors);
+  // Inside the Mini App there is no quick-add: tapping a card opens the
+  // full-screen product page instead.
+  const isTMA = isTelegramMiniApp();
 
+  const coverIndex = product.coverImageIndex ?? 0;
   const discount = product.priceHidden ? null : getDiscountPercent(product.price, product.compareAtPrice);
-  // Free download posts (price 0, migration 044): no price.
+  // Free download posts (price 0, migration 044): no price, no cart.
   const isFreeDownload = !product.priceHidden && product.price === 0;
+
+  const cartQuantity = cart
+    .filter((item) => item.product.id === product.id)
+    .reduce((sum, item) => sum + item.quantity, 0);
+
+  const coverItem = cart.find(
+    (item) =>
+      item.product.id === product.id && item.selectedImageIndex === coverIndex
+  );
+
+  // Products with variant groups can't be quick-added — the shopper must pick
+  // options on the product page first. The "+" button opens the page instead,
+  // and the decrease button is hidden (ambiguous which variant line to reduce).
+  const hasVariants = (product.variantGroups?.length ?? 0) > 0;
+
+  function handleAdd() {
+    if (hasVariants) {
+      onPress();
+      return;
+    }
+    addToCart(product, coverIndex);
+  }
+
+  function handleDecrease() {
+    if (coverItem) {
+      updateCartQuantity(product.id, coverIndex, variantKeyOf(coverItem), coverItem.quantity - 1);
+    }
+  }
 
   return (
     <TouchableOpacity
@@ -59,14 +96,43 @@ export function ProductCard({ product, onPress }: ProductCardProps) {
           ) : isFreeDownload ? (
             <Text style={styles.chatToOrder}>Free download</Text>
           ) : (
-            <View style={styles.priceBlock}>
-              {discount !== null && product.compareAtPrice && (
-                <Text style={styles.compareAt} numberOfLines={1}>
-                  {formatPrice(product.compareAtPrice)}
-                </Text>
+            <>
+              <View style={styles.priceBlock}>
+                {discount !== null && product.compareAtPrice && (
+                  <Text style={styles.compareAt} numberOfLines={1}>
+                    {formatPrice(product.compareAtPrice)}
+                  </Text>
+                )}
+                <Text style={styles.price}>{formatPrice(product.price)}</Text>
+              </View>
+              {!isTMA && (
+                <View style={styles.actions}>
+                  {cartQuantity > 0 && !hasVariants && (
+                    <TouchableOpacity
+                      style={styles.qtyButton}
+                      onPress={handleDecrease}
+                      activeOpacity={0.8}
+                    >
+                      <Ionicons name="remove" size={16} color={colors.primary} />
+                    </TouchableOpacity>
+                  )}
+                  <TouchableOpacity
+                    style={styles.addButton}
+                    onPress={handleAdd}
+                    activeOpacity={0.8}
+                  >
+                    <Ionicons name="add" size={18} color={colors.primary} />
+                    {cartQuantity > 0 && (
+                      <View style={styles.badge}>
+                        <Text style={styles.badgeText}>
+                          {cartQuantity > 99 ? '99+' : cartQuantity}
+                        </Text>
+                      </View>
+                    )}
+                  </TouchableOpacity>
+                </View>
               )}
-              <Text style={styles.price}>{formatPrice(product.price)}</Text>
-            </View>
+            </>
           )}
         </View>
       </View>
@@ -153,5 +219,48 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
     fontSize: fontSizes.sm,
     fontWeight: '700',
     color: colors.price,
+  },
+  actions: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+  },
+  qtyButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: colors.surface,
+    justifyContent: 'center',
+    alignItems: 'center',
+    borderWidth: 1,
+    borderColor: colors.primary,
+  },
+  addButton: {
+    width: 36,
+    height: 36,
+    borderRadius: 18,
+    backgroundColor: colors.surface,
+    borderWidth: 1,
+    borderColor: colors.primary,
+    justifyContent: 'center',
+    alignItems: 'center',
+    position: 'relative',
+  },
+  badge: {
+    position: 'absolute',
+    top: -5,
+    right: -5,
+    backgroundColor: colors.price,
+    borderRadius: 9,
+    minWidth: 16,
+    height: 16,
+    justifyContent: 'center',
+    alignItems: 'center',
+    paddingHorizontal: 3,
+  },
+  badgeText: {
+    color: colors.surface,
+    fontSize: 10,
+    fontWeight: '700',
   },
 });

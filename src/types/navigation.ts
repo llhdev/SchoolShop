@@ -1,8 +1,8 @@
 import { NavigatorScreenParams } from '@react-navigation/native';
-import { CartItem } from './index';
 
 export type UserTabParamList = {
   Home: undefined;
+  Cart: undefined;
   Orders: undefined;
 };
 
@@ -23,6 +23,6 @@ export type RootStackParamList = {
   AdminStack: NavigatorScreenParams<AdminStackParamList>;
   AdminLogin: { username: string; email: string };
   ProductDetail: { productId: string };
-  Checkout: { items: CartItem[] };
+  Checkout: undefined;
   OrderDetail: { orderId: string };
 };

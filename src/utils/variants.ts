@@ -8,7 +8,7 @@ export function variantKeyOf(item: Pick<CartItem, 'selectedOptions'>): string {
     .join('|');
 }
 
-/** Unique id of one order/checkout line: product + image + variant selection.
+/** Unique id of one cart/order line: product + image + variant selection.
  *  Lines without options keep the legacy "productId:selectedImageIndex"
  *  format, so orders written before variants existed keep working (their
  *  itemStatuses keys still match). */
@@ -20,8 +20,8 @@ export function getCartItemLineId(
   return variantKey ? `${base}:${variantKey}` : base;
 }
 
-/** Unit price of an order/checkout line: the variant price snapshotted when
- *  the buyer tapped Buy, falling back to the product's base price. */
+/** Unit price of a cart/order line: the variant price snapshotted at
+ *  add-to-cart time, falling back to the product's base price. */
 export function getUnitPrice(
   item: Pick<CartItem, 'product' | 'unitPrice'>
 ): number {

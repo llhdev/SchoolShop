@@ -140,8 +140,9 @@ const styles = StyleSheet.create({
     width: '100%',
     height: '100%',
   },
-  // Absolute-positioned chrome: a space-between header row does not paint
-  // reliably inside a react-native-web Modal in the Telegram WebView.
+  // Absolute-positioned chrome (same pattern as ProductViewerModal's close
+  // button): a space-between header row does not paint reliably inside a
+  // react-native-web Modal in the Telegram WebView.
   closeButton: {
     position: 'absolute',
     top: spacing.xl,

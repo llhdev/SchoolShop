@@ -7,7 +7,8 @@ import {
   useState,
 } from 'react';
 import { Alert } from 'react-native';
-import { AppAction, AppState, Order, Product, Role, Shopper, Theme } from '../types';
+import { AppAction, AppState, CartItem, Order, Product, Role, Shopper, Theme } from '../types';
+import { getUnitPrice, variantKeyOf } from '../utils/variants';
 import { loadTheme, saveTheme } from '../utils/storage';
 import { supabase } from '../lib/supabase';
 import {
@@ -43,7 +44,13 @@ import { deleteProductImages } from '../services/images';
 import { fetchOwnProfile } from '../services/account';
 import { getProductCoverImage, getThumbnailUrl } from '../utils/images';
 import { Image as ExpoImage } from 'expo-image';
-import { CACHE_KEYS, getCached, setCached } from '../services/cache';
+import {
+  CACHE_KEYS,
+  getCached,
+  loadCartFromCache,
+  saveCartToCache,
+  setCached,
+} from '../services/cache';
 import { authenticateTelegramShopper } from '../services/telegramAuth';
 import { notifyTelegramOrder } from '../services/telegramOrderNotify';
 import {
@@ -57,6 +64,7 @@ const initialState: AppState = {
   role: 'user',
   theme: 'light',
   products: [],
+  cart: [],
   orders: [],
   categories: [],
 };
@@ -87,6 +95,69 @@ function reducer(state: AppState, action: AppAction): AppState {
         ...state,
         products: state.products.filter((p) => p.id !== action.payload),
       };
+
+    case 'ADD_TO_CART': {
+      const { product, selectedImageIndex, variantKey = '', selectedOptions, unitPrice } = action.payload;
+      const matchesAdd = (item: (typeof state.cart)[number]) =>
+        item.product.id === product.id &&
+        item.selectedImageIndex === selectedImageIndex &&
+        variantKeyOf(item) === variantKey;
+      const existing = state.cart.find(matchesAdd);
+      if (existing) {
+        return {
+          ...state,
+          cart: state.cart.map((item) =>
+            matchesAdd(item) ? { ...item, quantity: item.quantity + 1 } : item
+          ),
+        };
+      }
+      return {
+        ...state,
+        cart: [
+          ...state.cart,
+          { product, quantity: 1, selectedImageIndex, selectedOptions, unitPrice },
+        ],
+      };
+    }
+
+    case 'SET_CART':
+      return { ...state, cart: action.payload };
+
+    case 'REMOVE_FROM_CART':
+      return {
+        ...state,
+        cart: state.cart.filter(
+          (item) =>
+            !(
+              item.product.id === action.payload.productId &&
+              item.selectedImageIndex === action.payload.selectedImageIndex &&
+              variantKeyOf(item) === (action.payload.variantKey ?? '')
+            )
+        ),
+      };
+
+    case 'UPDATE_CART_QUANTITY': {
+      const { productId, selectedImageIndex, variantKey = '', quantity } = action.payload;
+      const matchesQty = (item: (typeof state.cart)[number]) =>
+        item.product.id === productId &&
+        item.selectedImageIndex === selectedImageIndex &&
+        variantKeyOf(item) === variantKey;
+      if (quantity <= 0) {
+        return {
+          ...state,
+          cart: state.cart.filter((item) => !matchesQty(item)),
+        };
+      }
+      return {
+        ...state,
+        cart: state.cart.map((item) =>
+          matchesQty(item) ? { ...item, quantity } : item
+        ),
+      };
+    }
+
+    case 'CLEAR_CART':
+      return { ...state, cart: [] };
 
     case 'SET_ORDERS':
       return { ...state, orders: action.payload };
@@ -149,12 +220,28 @@ interface AppContextValue extends AppState {
   addProduct: (product: Product) => Promise<void>;
   updateProduct: (product: Product) => Promise<void>;
   deleteProduct: (id: string) => Promise<void>;
+  addToCart: (
+    product: Product,
+    selectedImageIndex?: number,
+    selectedOptions?: CartItem['selectedOptions'],
+    unitPrice?: number
+  ) => void;
+  removeFromCart: (productId: string, selectedImageIndex: number, variantKey?: string) => void;
+  updateCartQuantity: (
+    productId: string,
+    selectedImageIndex: number,
+    variantKey: string | undefined,
+    quantity: number
+  ) => void;
+  clearCart: () => void;
   addOrder: (order: Order) => Promise<void>;
   updateOrderStatus: (orderId: string, status: Order['status']) => Promise<void>;
   updateOrderItemStatus: (orderId: string, itemKey: string, status: Order['status']) => Promise<void>;
   setCategories: (categories: string[]) => void;
   addCategory: (category: string) => Promise<void>;
   removeCategory: (category: string) => Promise<void>;
+  cartTotal: number;
+  cartCount: number;
 }
 
 const AppContext = createContext<AppContextValue | undefined>(undefined);
@@ -176,10 +263,11 @@ export function AppProvider({ children }: { children: ReactNode }) {
         dispatch({ type: 'SET_THEME', payload: storedTheme });
       }
 
-      const [cachedProducts, cachedOrders, cachedCategories] = await Promise.all([
+      const [cachedProducts, cachedOrders, cachedCategories, cachedCart] = await Promise.all([
         loadProductsFromCache(),
         loadOrdersFromCache(),
         loadCategoriesFromCache(),
+        loadCartFromCache(),
       ]);
 
       const migratedProducts = migrateLegacyProducts(cachedProducts);
@@ -187,6 +275,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       dispatch({ type: 'SET_PRODUCTS', payload: migratedProducts });
       dispatch({ type: 'SET_ORDERS', payload: cachedOrders });
       dispatch({ type: 'SET_CATEGORIES', payload: cachedCategories });
+      dispatch({ type: 'SET_CART', payload: cachedCart });
 
       setIsHydrated(true);
 
@@ -300,6 +389,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     // signOutAdmin only touches stable references (dispatch, supabase).
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [isHydrated, state.role, currentUserId]);
+
+  // Persist cart changes so the cart survives app restarts.
+  useEffect(() => {
+    if (!isHydrated) return;
+    saveCartToCache(state.cart);
+  }, [state.cart, isHydrated]);
 
   useEffect(() => {
     if (!isHydrated) return;
@@ -486,6 +581,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
     applyTelegramColors(palette.background, palette.background);
   }, [state.theme, isHydrated]);
 
+  const cartTotal = state.cart.reduce(
+    (sum, item) => sum + getUnitPrice(item) * item.quantity,
+    0
+  );
+  const cartCount = state.cart.reduce((sum, item) => sum + item.quantity, 0);
+
   const value: AppContextValue = {
     ...state,
     currentUserId,
@@ -559,6 +660,33 @@ export function AppProvider({ children }: { children: ReactNode }) {
         deleteProductImages(product.images).catch(() => {});
       }
     },
+    addToCart: (product, selectedImageIndex = product.coverImageIndex ?? 0, selectedOptions, unitPrice) => {
+      // Free download posts (price 0, migration 044) are never purchasable.
+      if (product.price <= 0) return;
+      dispatch({
+        type: 'ADD_TO_CART',
+        payload: {
+          product,
+          selectedImageIndex,
+          variantKey: selectedOptions && selectedOptions.length > 0
+            ? variantKeyOf({ selectedOptions })
+            : '',
+          selectedOptions,
+          unitPrice,
+        },
+      });
+    },
+    removeFromCart: (productId, selectedImageIndex, variantKey) =>
+      dispatch({
+        type: 'REMOVE_FROM_CART',
+        payload: { productId, selectedImageIndex, variantKey },
+      }),
+    updateCartQuantity: (productId, selectedImageIndex, variantKey, quantity) =>
+      dispatch({
+        type: 'UPDATE_CART_QUANTITY',
+        payload: { productId, selectedImageIndex, variantKey, quantity },
+      }),
+    clearCart: () => dispatch({ type: 'CLEAR_CART' }),
     addOrder: async (order) => {
       const previous = state.orders;
       const optimistic = [order, ...previous];
@@ -647,6 +775,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
         throw new Error('Failed to remove category');
       }
     },
+    cartTotal,
+    cartCount,
   };
 
   return <AppContext.Provider value={value}>{children}</AppContext.Provider>;
