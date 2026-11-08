@@ -44,7 +44,9 @@
     "ios": "expo start --ios",
     "web": "expo start --web",
     "build:web": "expo export --platform web",
-    "deploy:web": "npm run build:web && node scripts/prep-dist.js && gh-pages -d dist -b gh-pages"
+    "deploy:web": "npm run build:web && node scripts/prep-dist.js && gh-pages -d dist -b gh-pages",
+    "deploy:staging": "node scripts/deploy-staging.js",
+    "deploy:prod": "vercel deploy --prod"
   },
   "private": true
 }

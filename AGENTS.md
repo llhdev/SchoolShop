@@ -61,6 +61,7 @@ Docs: <https://docs.expo.dev/versions/v54.0.0/>
 │   │   └── verify-et-webhook/       # completes queued verifications (signed, idempotent)
 │   └── migrations/                  # 001–043, in order; header comments document each
 ├── docs/telegram-mini-app.md        # TMA runbook
+├── docs/staging-setup.md            # staging env runbook (dev branch → preview → staging Supabase)
 ├── .github/workflows/deploy-web.yml # CI: web export -> gh-pages on push to main
 ├── scripts/                         # prep-dist.js, setup-admin.js, reset-data.js,
 │                                    # clean-database.js, test-reference-verification.js
@@ -109,6 +110,12 @@ npm run build:web   # static web export to dist/ (website + Telegram Mini App sh
 The production deploy target is **Vercel**: `vercel.json` builds with `expo export --platform web`, serves `dist/`, and rewrites all paths to `index.html`. Deploy with `vercel deploy --prod`; `EXPO_PUBLIC_SUPABASE_URL` and `EXPO_PUBLIC_SUPABASE_ANON_KEY` must be set on the Vercel project (inlined at build time).
 
 The legacy GitHub Pages pipeline still exists: `npm run deploy:web` publishes `dist/` to `gh-pages`, and `.github/workflows/deploy-web.yml` does the same on push to `main`.
+
+---
+
+## Staging and release workflow
+
+Production has live users, so day-to-day work never touches it. Develop on the `dev` branch against the staging stack (staging Supabase project `timor-shop-staging`, staging R2 buckets, test Telegram bot) and deploy previews with `npm run deploy:staging` — a Vercel preview build (Preview-scoped env vars point it at staging) plus re-aliasing `https://timor-shop-staging.vercel.app`, which the test bot serves. Release only after staging passes: merge `dev` → `main`, apply new migrations to prod **first** (`supabase db push` — the CLI stays linked to prod; staging pushes always use `--db-url` with the staging pooler URL), redeploy any changed edge functions, then `npm run deploy:prod`. Full setup, credentials, and gotchas: `docs/staging-setup.md`.
 
 ---
 

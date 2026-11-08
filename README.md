@@ -66,6 +66,15 @@ npm run web       # Web browser
 npx tsc --noEmit
 ```
 
+## Environments and deployment
+
+The production app (website + Telegram Mini App) has live users, so all development happens against a separate **staging** stack and only reaches production through the release flow below.
+
+- **Staging**: `dev` branch → `npm run deploy:staging` → Vercel preview at `https://timor-shop-staging.vercel.app` (also served by the test Telegram bot) → staging Supabase project + staging R2 buckets. Break anything here; production is untouched.
+- **Production**: merge `dev` → `main`, then in order: apply new migrations to prod (`supabase db push`), redeploy any changed edge functions, and `npm run deploy:prod` (Vercel production, `https://shop.timor.et`).
+
+Full setup, credentials handling, and migration discipline: [`docs/staging-setup.md`](docs/staging-setup.md).
+
 ## Project structure
 
 ```
