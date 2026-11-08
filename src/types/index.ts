@@ -33,7 +33,38 @@ export interface VariantGroup {
   options: VariantOption[];
 }
 
-export type OrderStatus = 'pending' | 'paid' | 'on_the_way' | 'completed';
+/** Lifecycle (migration 045): pending -> received (branch staff) -> paid
+ *  (financial staff) -> on_the_way -> completed (branch). cancelled is a
+ *  terminal side-exit from pending/received. Old 'paid' ("Order Received")
+ *  orders backfilled to 'received'. */
+export type OrderStatus = 'pending' | 'received' | 'paid' | 'on_the_way' | 'completed' | 'cancelled';
+
+/** A branch of a tenant shop (branches table, migration 045). Shops without
+ *  branches behave as before. */
+export interface Branch {
+  id: string;
+  name: string;
+  deliveryLocation?: string;
+  phone?: string;
+}
+
+/** What a shop staff account may do (profiles.staff_* columns, migration 045).
+ *  Tenant owner accounts hold all three (= the old full tenant admin). */
+export interface StaffCapabilities {
+  financial: boolean;
+  shop: boolean;
+  branch: boolean;
+}
+
+/** The signed-in admin's shop scope: which tenant they act for (themselves or
+ *  their parent shop), their capabilities, and their branch (branch-scoped
+ *  staff only; NULL = sees all of the shop's items). */
+export interface StaffSession {
+  tenantId: string;
+  capabilities: StaffCapabilities;
+  branchId: string | null;
+  label: string | null;
+}
 
 /** A tenant-defined question the buyer answers at checkout (migration 036).
  *  type 'text' = free text input; type 'dropdown' = pick one of `options`. */
@@ -109,6 +140,11 @@ export interface CartItem {
   /** Buyer's answers to the product's checkout questions, snapshotted on the
    *  order item (absent/empty = product has no questions or none answered). */
   fieldAnswers?: { label: string; value: string }[];
+  /** Branch the buyer picked at checkout (migration 045), re-validated and
+   *  re-stamped server-side by stamp_order_tenants. Absent = shop has no
+   *  branches. */
+  branchId?: string;
+  branchName?: string;
 }
 
 export interface Order {

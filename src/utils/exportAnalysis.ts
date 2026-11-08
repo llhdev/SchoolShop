@@ -1,17 +1,22 @@
 import { Platform } from 'react-native';
 import { ORDER_STATUS_LABELS } from '../constants/orderStatus';
 import { AnalysisRow } from '../screens/admin/AdminAnalysisScreen';
+import { formatPrice } from './format';
 
 /**
  * Web-only: build an .xlsx from the analysis rows (same column order and values
  * as the on-screen table) and trigger a browser download.
  * `xlsx` is imported lazily so it never lands in native bundles.
+ * Money columns are included only for financial-capable viewers (`canSeeMoney`);
+ * the Branch column appears only when at least one row has a branch.
  */
 export async function downloadAnalysisExcel(
   rows: AnalysisRow[],
   questionLabels: string[],
   questionDisplay: Map<string, string>,
-  telegramNameFor: (row: AnalysisRow) => string
+  telegramNameFor: (row: AnalysisRow) => string,
+  canSeeMoney: boolean,
+  hasBranches: boolean
 ): Promise<void> {
   if (Platform.OS !== 'web' || rows.length === 0) return;
 
@@ -24,8 +29,10 @@ export async function downloadAnalysisExcel(
     'Telegram Name',
     'Student name',
     'Product',
+    ...(hasBranches ? ['Branch'] : []),
     'Quantity',
     'Status',
+    ...(canSeeMoney ? ['Line total'] : []),
     ...questionLabels.map((label) => questionDisplay.get(label) ?? label),
     'Location',
   ];
@@ -36,8 +43,10 @@ export async function downloadAnalysisExcel(
     telegramNameFor(row),
     row.studentName || '—',
     row.productLabel,
+    ...(hasBranches ? [row.branchName || '—'] : []),
     row.quantity,
     ORDER_STATUS_LABELS[row.status],
+    ...(canSeeMoney ? [formatPrice(row.lineTotal)] : []),
     ...questionLabels.map((label) => row.answers[label] ?? '—'),
     row.location || '—',
   ]);

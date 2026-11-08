@@ -116,6 +116,20 @@ export function getOrderItemsForTenant(order: Order, tenantId: string): Order['i
   });
 }
 
+/** Line items visible to one staff account: the tenant's items, further
+ *  narrowed to one branch for branch-scoped staff (migration 045). Items
+ *  with no branch stamp are only visible to unscoped (branchId undefined)
+ *  staff. */
+export function getOrderItemsForScope(
+  order: Order,
+  tenantId: string,
+  branchId?: string | null
+): Order['items'] {
+  const items = getOrderItemsForTenant(order, tenantId);
+  if (!branchId) return items;
+  return items.filter((item) => item.branchId === branchId);
+}
+
 /** Orders placed by one Telegram shopper, newest first. */
 export async function fetchOrdersByTelegramId(telegramId: number): Promise<Order[]> {
   return fetchAllOrderPages(() =>

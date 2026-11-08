@@ -10,7 +10,7 @@ import { TelegramChatButton } from '../../components/TelegramChatButton';
 import { Button } from '../../components/Button';
 import { VerificationBadge } from '../../components/VerificationBadge';
 import { useApp } from '../../context/AppContext';
-import { getItemKey, getItemStatus, getOrderItemsForTenant } from '../../services/orders';
+import { getItemKey, getItemStatus, getOrderItemsForScope } from '../../services/orders';
 import {
   approvePaymentVerification,
   fetchVerificationsForOrders,
@@ -23,7 +23,7 @@ import { useResponsive } from '../../hooks/useResponsive';
 import { formatFileSize, formatPrice } from '../../utils/format';
 import { formatVariantLabel, getUnitPrice } from '../../utils/variants';
 import { confirmAction } from '../../utils/confirm';
-import { ORDER_STATUSES, ORDER_STATUS_LABELS } from '../../constants/orderStatus';
+import { ORDER_STATUS_LABELS } from '../../constants/orderStatus';
 import { OrderStatus, PaymentVerification } from '../../types';
 import { RootStackParamList } from '../../types/navigation';
 import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../../constants/theme';
@@ -48,7 +48,7 @@ export function OrderDetailScreen() {
   const route = useRoute();
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const { orderId } = route.params as { orderId: string };
-  const { orders, role, currentUserId, updateOrderItemStatus } = useApp();
+  const { orders, role, staffSession, effectiveTenantId, updateOrderItemStatus } = useApp();
   const { isPhone } = useResponsive();
   const colors = useThemeColors();
   const styles = makeStyles(colors);
@@ -60,26 +60,43 @@ export function OrderDetailScreen() {
 
   const order = orders.find((o) => o.id === orderId);
   const isWeb = Platform.OS === 'web';
-  // Both admin roles can drive the status flow. Tenant admins only ever see
-  // orders containing their own products (fetch is scoped by tenant_ids), and
-  // RLS rejects their updates on any other order.
+  const isSuperAdmin = role === 'super_admin';
+  const capabilities = staffSession?.capabilities;
+  // Staff drive the status flow only within their capabilities (migration
+  // 045); the server RPC re-checks every transition, the UI only offers the
+  // valid ones. Shoppers never manage status.
   const canManageStatus =
-    (role === 'super_admin' || role === 'admin') && !!order;
+    !!order &&
+    (isSuperAdmin ||
+      (role === 'admin' &&
+        !!capabilities &&
+        (capabilities.financial || capabilities.shop || capabilities.branch)));
+  // Money is visible to the super admin and financial staff; shoppers always
+  // see their own order totals.
+  const canSeeMoney = !canManageStatus || isSuperAdmin || !!capabilities?.financial;
+  // Proofs: super admin, financial, and branch staff — not shop-only staff.
+  const canSeeProofs = isSuperAdmin || !!capabilities?.financial || !!capabilities?.branch;
+  // verify.et payment verification: super admin and financial staff only.
+  const canSeeVerification = isSuperAdmin || !!capabilities?.financial;
 
-  // Tenant admins see only their shop's line items inside a mixed order.
-  const isTenantAdmin = role === 'admin' && !!currentUserId;
-  const visibleItems = order && isTenantAdmin ? getOrderItemsForTenant(order, currentUserId) : order?.items;
+  // Staff see only their shop's line items inside a mixed order, narrowed to
+  // their branch when branch-scoped.
+  const isStaffViewer = role === 'admin' && !!effectiveTenantId;
+  const visibleItems =
+    order && isStaffViewer
+      ? getOrderItemsForScope(order, effectiveTenantId, staffSession?.branchId)
+      : order?.items;
   const visibleTotal =
     visibleItems?.reduce((sum, item) => sum + getUnitPrice(item) * item.quantity, 0) ?? 0;
 
-  // Payment proofs are admin-only (migration 040): the super admin sees every
-  // shop's proof, a tenant admin sees only their own. Refs are private-bucket
+  // Payment proofs are staff-only (migration 040): the super admin sees every
+  // shop's proof, staff see only their own shop's. Refs are private-bucket
   // paths for new orders and full public URLs for legacy ones.
   const visibleProofRefs =
-    order && canManageStatus
-      ? isTenantAdmin
+    order && canSeeProofs
+      ? isStaffViewer
         ? Object.entries(order.paymentProofs ?? {})
-            .filter(([ownerId]) => ownerId === currentUserId)
+            .filter(([ownerId]) => ownerId === effectiveTenantId)
             .map(([, ref]) => ref)
         : Object.values(order.paymentProofs ?? {})
       : [];
@@ -89,7 +106,7 @@ export function OrderDetailScreen() {
   const proofRefsKey = visibleProofRefs.join('|');
 
   // Paid digital downloads (migration 044), shopper view only: files of each
-  // item whose status reached "Order Received", revealed by sign-book-get.
+  // item whose status reached "Paid", revealed by sign-book-get.
   const [bookFiles, setBookFiles] = useState<Record<string, PurchasedBookFile[]>>({});
   const unlockKey =
     order && !canManageStatus
@@ -144,11 +161,11 @@ export function OrderDetailScreen() {
     };
   }, [proofRefsKey]);
 
-  // verify.et payment verification (admin-only, migration 040). RLS scopes the
-  // read: a tenant admin receives only their shop's attempt, the super admin
-  // receives every merchant's attempt on the order.
+  // verify.et payment verification (financial staff only, migrations 040/045).
+  // RLS scopes the read: a shop account receives only their shop's attempt,
+  // the super admin receives every merchant's attempt on the order.
   useEffect(() => {
-    if (!order || !canManageStatus) return;
+    if (!order || !canSeeVerification) return;
     let cancelled = false;
     const load = () =>
       fetchVerificationsForOrders([order.id])
@@ -163,7 +180,7 @@ export function OrderDetailScreen() {
       unsubscribe();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [order?.id, canManageStatus]);
+  }, [order?.id, canSeeVerification]);
 
   const shopNameFor = (tenantId: string): string => {
     const item = order?.items.find((i) => {
@@ -204,8 +221,8 @@ export function OrderDetailScreen() {
     );
   };
 
-  // Admins drive the status of each line item individually (per-item chips
-  // under every item below); shoppers only see the read-only per-item status.
+  // Admins drive the status of each line item individually (per-item action
+  // buttons under every item below); shoppers only see the read-only status.
   const changeItemStatus = async (itemKey: string, status: OrderStatus) => {
     if (!order) return;
     setStatusBusy(true);
@@ -217,6 +234,29 @@ export function OrderDetailScreen() {
     } finally {
       setStatusBusy(false);
     }
+  };
+
+  // Forward transitions offered for one item, gated by the viewer's
+  // capabilities (migration 045 — the server RPC enforces the same rules).
+  // The super admin may perform every transition.
+  const statusActionsFor = (
+    status: OrderStatus
+  ): { target: OrderStatus; label: string; destructive?: boolean }[] => {
+    const branch = isSuperAdmin || !!capabilities?.branch;
+    const financial = isSuperAdmin || !!capabilities?.financial;
+    const actions: { target: OrderStatus; label: string; destructive?: boolean }[] = [];
+    if (status === 'pending') {
+      if (branch) actions.push({ target: 'received', label: 'Mark Received' });
+      if (branch) actions.push({ target: 'cancelled', label: 'Cancel Order', destructive: true });
+    } else if (status === 'received') {
+      if (financial) actions.push({ target: 'paid', label: 'Mark Paid' });
+      if (branch) actions.push({ target: 'cancelled', label: 'Cancel Order', destructive: true });
+    } else if (status === 'paid') {
+      if (branch) actions.push({ target: 'on_the_way', label: 'Mark Shipped' });
+    } else if (status === 'on_the_way') {
+      if (branch) actions.push({ target: 'completed', label: 'Mark Completed' });
+    }
+    return actions;
   };
 
   if (!order) {
@@ -262,8 +302,10 @@ export function OrderDetailScreen() {
                 styles.badge,
                 order.status === 'paid' && styles.paidBadge,
                 order.status === 'pending' && styles.pendingBadge,
+                order.status === 'received' && styles.receivedBadge,
                 order.status === 'on_the_way' && styles.onTheWayBadge,
                 order.status === 'completed' && styles.completedBadge,
+                order.status === 'cancelled' && styles.cancelledBadge,
               ]}
             >
               <Text style={styles.badgeText}>{ORDER_STATUS_LABELS[order.status]}</Text>
@@ -310,27 +352,36 @@ export function OrderDetailScreen() {
                     </Text>
                   ))}
                   {canManageStatus ? (
-                    <View style={styles.statusChips}>
-                      {ORDER_STATUSES.map((status) => {
-                        const active = itemStatus === status;
-                        return (
-                          <TouchableOpacity
-                            key={status}
-                            style={[styles.statusChip, active && styles.statusChipActive]}
-                            disabled={statusBusy}
-                            onPress={() => changeItemStatus(itemKey, status).catch(() => {})}
-                          >
-                            <Text
+                    <View style={styles.statusActions}>
+                      <Text style={styles.itemStatusLabel}>
+                        Status: {ORDER_STATUS_LABELS[itemStatus]}
+                      </Text>
+                      {statusActionsFor(itemStatus).length > 0 && (
+                        <View style={styles.statusChips}>
+                          {statusActionsFor(itemStatus).map((action) => (
+                            <TouchableOpacity
+                              key={action.target}
                               style={[
-                                styles.statusChipText,
-                                active && styles.statusChipTextActive,
+                                styles.statusChip,
+                                action.destructive && styles.statusChipDestructive,
                               ]}
+                              disabled={statusBusy}
+                              onPress={() =>
+                                changeItemStatus(itemKey, action.target).catch(() => {})
+                              }
                             >
-                              {ORDER_STATUS_LABELS[status]}
-                            </Text>
-                          </TouchableOpacity>
-                        );
-                      })}
+                              <Text
+                                style={[
+                                  styles.statusChipText,
+                                  action.destructive && styles.statusChipTextDestructive,
+                                ]}
+                              >
+                                {action.label}
+                              </Text>
+                            </TouchableOpacity>
+                          ))}
+                        </View>
+                      )}
                     </View>
                   ) : (
                     <Text style={styles.itemStatusLabel}>
@@ -338,7 +389,7 @@ export function OrderDetailScreen() {
                     </Text>
                   )}
                   {/* Paid digital downloads (migration 044) — shopper view;
-                      only populated for items past "Order Received". */}
+                      only populated for items past "Paid". */}
                   {(bookFiles[itemKey] ?? []).map((file) => (
                     <TouchableOpacity
                       key={file.url}
@@ -357,18 +408,20 @@ export function OrderDetailScreen() {
                 </View>
               );
             })}
-            {isTenantAdmin && visibleItems && visibleItems.length < order.items.length && (
+            {isStaffViewer && visibleItems && visibleItems.length < order.items.length && (
               <Text style={styles.sharedHint}>
                 Showing {visibleItems.length} of {order.items.length} items — only your shop's
                 items are visible.
               </Text>
             )}
-            <View style={styles.totalRow}>
-              <Text style={styles.totalLabel}>Total</Text>
-              <Text style={styles.totalValue}>
-                {formatPrice(isTenantAdmin ? visibleTotal : order.total)}
-              </Text>
-            </View>
+            {canSeeMoney && (
+              <View style={styles.totalRow}>
+                <Text style={styles.totalLabel}>Total</Text>
+                <Text style={styles.totalValue}>
+                  {formatPrice(isStaffViewer ? visibleTotal : order.total)}
+                </Text>
+              </View>
+            )}
             {canManageStatus && !!statusError && (
               <Text style={styles.statusError}>{statusError}</Text>
             )}
@@ -405,7 +458,7 @@ export function OrderDetailScreen() {
             )}
           </View>
 
-          {canManageStatus && verifications.length > 0 && (
+          {canSeeVerification && verifications.length > 0 && (
             <View style={styles.section}>
               <Text style={styles.sectionTitle}>Payment Verification</Text>
               {verifications.map((verification) => (
@@ -585,6 +638,9 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
   pendingBadge: {
     backgroundColor: colors.warning,
   },
+  receivedBadge: {
+    backgroundColor: colors.primary,
+  },
   paidBadge: {
     backgroundColor: colors.success,
   },
@@ -597,10 +653,19 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
   completedBadge: {
     backgroundColor: colors.success,
   },
+  cancelledBadge: {
+    backgroundColor: colors.danger,
+  },
   badgeText: {
     fontSize: fontSizes.xs,
     fontWeight: '600',
     color: colors.surface,
+  },
+  statusActions: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    alignItems: 'center',
+    gap: spacing.sm,
   },
   statusChips: {
     flexDirection: 'row',
@@ -615,16 +680,16 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
     borderColor: colors.border,
     backgroundColor: colors.background,
   },
-  statusChipActive: {
-    borderColor: colors.primary,
-    backgroundColor: colors.primary,
+  statusChipDestructive: {
+    borderColor: colors.danger,
+    backgroundColor: colors.danger,
   },
   statusChipText: {
     fontSize: fontSizes.sm,
     fontWeight: '600',
     color: colors.textSecondary,
   },
-  statusChipTextActive: {
+  statusChipTextDestructive: {
     color: colors.surface,
   },
   proofGrid: {

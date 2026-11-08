@@ -35,6 +35,7 @@ import {
   verifyPaymentReference,
 } from '../../services/paymentVerificationCheckout';
 import { fetchPaymentVerificationEnabled } from '../../services/settings';
+import { fetchBranches, TenantBranch } from '../../services/branches';
 import { LANDMARKS } from '../../constants/landmarks';
 import {
   configureTelegramMainButton,
@@ -132,9 +133,15 @@ export function CheckoutScreen() {
   /** Answers to tenant-defined checkout questions, keyed by cart line id then
    *  question label. */
   const [answersByLine, setAnswersByLine] = useState<Record<string, Record<string, string>>>({});
-  /** Which dropdown question is expanded, keyed `${lineId}:${label}` — only
-   *  one open at a time. */
+  /** Which dropdown is expanded, keyed `${lineId}:${label}` for checkout
+   *  questions and `branch:${tenantKey}` for branch pickers — only one open
+   *  at a time. */
   const [openDropdown, setOpenDropdown] = useState<string | null>(null);
+  /** Branches of the shops in the cart, keyed by tenant group key (migration
+   *  045). Shops without branches have no entry and no dropdown. */
+  const [branchesByTenant, setBranchesByTenant] = useState<Record<string, TenantBranch[]>>({});
+  /** The shopper's chosen branch per shop, tenant group key → branch id. */
+  const [branchByTenant, setBranchByTenant] = useState<Record<string, string>>({});
   const [zoomedImage, setZoomedImage] = useState<string | null>(null);
   const [placingOrder, setPlacingOrder] = useState(false);
   /** Fresh catalog fetched on mount. Cart items snapshot the product as it
@@ -217,6 +224,52 @@ export function CheckoutScreen() {
     return [...map.values()];
   }, [cart, catalog]);
 
+  // Load the branches of every shop in the cart (migration 045). Re-runs when
+  // the tenant set changes — including when the fresh catalog resolves an
+  // owner the cart snapshot lacked. A failed read means no branch dropdowns,
+  // never a blocked checkout.
+  const tenantKeys = tenantGroups.map((group) => group.key).join('|');
+  useEffect(() => {
+    const keys = tenantKeys
+      .split('|')
+      .filter((key) => key.length > 0 && key !== UNKNOWN_TENANT_KEY);
+    if (keys.length === 0) {
+      setBranchesByTenant({});
+      setBranchByTenant({});
+      return;
+    }
+    let cancelled = false;
+    fetchBranches(keys)
+      .then((list) => {
+        if (cancelled) return;
+        const map: Record<string, TenantBranch[]> = {};
+        for (const branch of list) {
+          (map[branch.tenantId] ??= []).push(branch);
+        }
+        setBranchesByTenant(map);
+        // A shop with a single branch needs no choice — preselect it. Also
+        // drop selections whose branch disappeared since the last load.
+        setBranchByTenant((prev) => {
+          const next: Record<string, string> = {};
+          for (const key of keys) {
+            const branches = map[key] ?? [];
+            if (branches.length === 1) {
+              next[key] = branches[0].id;
+            } else if (prev[key] && branches.some((b) => b.id === prev[key])) {
+              next[key] = prev[key];
+            }
+          }
+          return next;
+        });
+      })
+      .catch(() => {
+        if (!cancelled) setBranchesByTenant({});
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [tenantKeys]);
+
   // Each shop in the cart charges its flat shipping fee once per order.
   const shippingTotal = tenantGroups.reduce((sum, group) => sum + group.shippingFee, 0);
   const orderTotal = cartTotal + shippingTotal;
@@ -255,6 +308,10 @@ export function CheckoutScreen() {
   const isGroupVerificationRequired = (group: TenantPaymentGroup) =>
     verificationEnabled && group.paymentVerificationEnabled;
 
+  // A shop with branches requires a chosen branch before ordering.
+  const branchMissing = (group: TenantPaymentGroup) =>
+    (branchesByTenant[group.key] ?? []).length > 0 && !branchByTenant[group.key];
+
   const canPlaceOrder =
     cart.length > 0 &&
     phoneValid &&
@@ -263,6 +320,7 @@ export function CheckoutScreen() {
     !anyProofUploading &&
     tenantGroups.length > 0 &&
     tenantGroups.every((group) => !!proofsByTenant[group.key]) &&
+    !tenantGroups.some(branchMissing) &&
     tenantGroups.every(
       (group) =>
         !isGroupVerificationRequired(group) || verifyStates[group.key] === 'verified'
@@ -514,12 +572,15 @@ export function CheckoutScreen() {
       setPhoneTouched(true);
       setShowValidation(true);
       const allProofsUploaded = tenantGroups.every((group) => !!proofsByTenant[group.key]);
+      const missingBranchShop = tenantGroups.find(branchMissing);
       const message =
         unansweredRequired.length > 0
           ? `Please answer the shop's questions: ${unansweredRequired.join(', ')}.`
-          : allProofsUploaded && tenantGroups.some((g) => isGroupVerificationRequired(g))
-            ? 'Payment verification is incomplete — verify each shop\'s payment before placing the order.'
-            : 'Please fill in all required info: phone number and a payment proof for each shop.';
+          : missingBranchShop
+            ? `Please choose a branch for ${missingBranchShop.shopName}.`
+            : allProofsUploaded && tenantGroups.some((g) => isGroupVerificationRequired(g))
+              ? 'Payment verification is incomplete — verify each shop\'s payment before placing the order.'
+              : 'Please fill in all required info: phone number and a payment proof for each shop.';
       if (!showTelegramPopup('Missing Information', message)) {
         Alert.alert('Missing Information', message);
       }
@@ -528,13 +589,25 @@ export function CheckoutScreen() {
 
     const order: Order = {
       id: generateOrderCode(),
-      // Snapshot each line with the buyer's answers to the shop's questions.
+      // Snapshot each line with the buyer's answers to the shop's questions
+      // and the branch chosen for its shop (re-validated server-side by
+      // stamp_order_tenants).
       items: cart.map((item) => {
         const answers = answersByLine[getCartItemLineId(item)];
         const fieldAnswers = Object.entries(answers ?? {})
           .map(([label, value]) => ({ label, value: value.trim() }))
           .filter((a) => a.value.length > 0);
-        return fieldAnswers.length > 0 ? { ...item, fieldAnswers } : item;
+        const current: Product =
+          catalog.find((p) => p.id === item.product.id) ?? item.product;
+        const tenantKey = current.ownerId ?? item.product.ownerId ?? UNKNOWN_TENANT_KEY;
+        const branch = (branchesByTenant[tenantKey] ?? []).find(
+          (b) => b.id === branchByTenant[tenantKey]
+        );
+        return {
+          ...item,
+          ...(fieldAnswers.length > 0 ? { fieldAnswers } : {}),
+          ...(branch ? { branchId: branch.id, branchName: branch.name } : {}),
+        };
       }),
       total: orderTotal,
       paymentMethod: 'bank_transfer',
@@ -816,6 +889,21 @@ export function CheckoutScreen() {
                       verifyState === 'not_found' ||
                       verifyState === 'unavailable');
                   const paidAmount = verifyPaidAmounts[group.key];
+                  const groupBranches = branchesByTenant[group.key] ?? [];
+                  const selectedBranch = groupBranches.find(
+                    (b) => b.id === branchByTenant[group.key]
+                  );
+                  const branchDropdownKey = `branch:${group.key}`;
+                  const branchHint = selectedBranch
+                    ? [
+                        selectedBranch.deliveryLocation
+                          ? `Delivery: ${selectedBranch.deliveryLocation}`
+                          : null,
+                        selectedBranch.phone ? `Phone: ${selectedBranch.phone}` : null,
+                      ]
+                        .filter((part): part is string => !!part)
+                        .join(' · ')
+                    : '';
                   const chip = verifyState ? VERIFY_CHIP_LABELS[verifyState] : undefined;
                   const chipColor =
                     verifyState === 'verified'
@@ -833,6 +921,91 @@ export function CheckoutScreen() {
                         <Text style={styles.tenantName}>{group.shopName}</Text>
                         <Text style={styles.tenantSubtotal}>{formatPrice(group.total)}</Text>
                       </View>
+
+                      {groupBranches.length > 0 && (
+                        <View>
+                          <Text style={styles.questionLabel}>Branch</Text>
+                          <TouchableOpacity
+                            style={[
+                              styles.dropdownField,
+                              showValidation && !selectedBranch && styles.inputError,
+                            ]}
+                            onPress={() =>
+                              setOpenDropdown((cur) =>
+                                cur === branchDropdownKey ? null : branchDropdownKey
+                              )
+                            }
+                            activeOpacity={0.7}
+                          >
+                            <Text
+                              style={[
+                                styles.dropdownValue,
+                                !selectedBranch && styles.dropdownValuePlaceholder,
+                              ]}
+                              numberOfLines={1}
+                            >
+                              {selectedBranch?.name ?? 'Select a branch'}
+                            </Text>
+                            <Ionicons
+                              name={
+                                openDropdown === branchDropdownKey ? 'chevron-up' : 'chevron-down'
+                              }
+                              size={18}
+                              color={colors.textSecondary}
+                            />
+                          </TouchableOpacity>
+                          {openDropdown === branchDropdownKey && (
+                            <ScrollView
+                              style={styles.dropdownList}
+                              nestedScrollEnabled
+                              keyboardShouldPersistTaps="handled"
+                            >
+                              {groupBranches.map((branch) => (
+                                <TouchableOpacity
+                                  key={branch.id}
+                                  style={[
+                                    styles.dropdownOption,
+                                    selectedBranch?.id === branch.id &&
+                                      styles.dropdownOptionActive,
+                                  ]}
+                                  onPress={() => {
+                                    setBranchByTenant((prev) => ({
+                                      ...prev,
+                                      [group.key]: branch.id,
+                                    }));
+                                    setOpenDropdown(null);
+                                  }}
+                                  activeOpacity={0.7}
+                                >
+                                  <Text
+                                    style={[
+                                      styles.dropdownOptionText,
+                                      selectedBranch?.id === branch.id &&
+                                        styles.dropdownOptionTextActive,
+                                    ]}
+                                    numberOfLines={1}
+                                  >
+                                    {branch.name}
+                                  </Text>
+                                  {selectedBranch?.id === branch.id && (
+                                    <Ionicons
+                                      name="checkmark"
+                                      size={16}
+                                      color={colors.primary}
+                                    />
+                                  )}
+                                </TouchableOpacity>
+                              ))}
+                            </ScrollView>
+                          )}
+                          {branchHint.length > 0 && (
+                            <Text style={styles.branchHint}>{branchHint}</Text>
+                          )}
+                          {showValidation && !selectedBranch && (
+                            <Text style={styles.errorText}>Choose a branch</Text>
+                          )}
+                        </View>
+                      )}
 
                       {group.items.map((item) => (
                         <View key={getCartItemLineId(item)} style={styles.tenantItemRow}>
@@ -1595,6 +1768,11 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
     fontSize: fontSizes.sm,
     fontWeight: '400',
     color: colors.textSecondary,
+  },
+  branchHint: {
+    fontSize: fontSizes.xs,
+    color: colors.textSecondary,
+    marginTop: spacing.xs,
   },
   errorText: {
     fontSize: fontSizes.sm,

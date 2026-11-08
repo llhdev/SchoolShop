@@ -1,6 +1,6 @@
 import { createClient } from '@supabase/supabase-js';
 import { supabase } from '../lib/supabase';
-import { BankAccount } from '../types';
+import { BankAccount, StaffCapabilities } from '../types';
 
 export interface Tenant {
   id: string;
@@ -431,4 +431,178 @@ export async function adminSetTenantTelegramUsername(
     .update({ telegram_username: clean || null })
     .eq('id', id);
   if (error) throw new Error(error.message || 'Failed to update Telegram username.');
+}
+
+// ---------------------------------------------------------------------------
+// Staff accounts (migration 045): extra auth users with role='admin' and
+// profiles.parent_tenant_id pointing at the shop owner. They share the shop's
+// gateway username — the per-account password picks the account at login.
+// ---------------------------------------------------------------------------
+
+export interface StaffAccount {
+  id: string;
+  label: string | null;
+  email: string | null;
+  capabilities: StaffCapabilities;
+  branchId: string | null;
+  createdAt: string;
+}
+
+interface DbStaffProfile {
+  id: string;
+  email: string | null;
+  staff_label: string | null;
+  staff_financial: boolean;
+  staff_shop: boolean;
+  staff_branch: boolean;
+  branch_id: string | null;
+  created_at: string;
+}
+
+const STAFF_SELECT =
+  'id, email, staff_label, staff_financial, staff_shop, staff_branch, branch_id, created_at';
+
+function toStaffAccount(db: DbStaffProfile): StaffAccount {
+  return {
+    id: db.id,
+    label: db.staff_label,
+    email: db.email,
+    capabilities: {
+      financial: db.staff_financial,
+      shop: db.staff_shop,
+      branch: db.staff_branch,
+    },
+    branchId: db.branch_id,
+    createdAt: db.created_at,
+  };
+}
+
+/** Super admin lists a shop's staff accounts (the super-admin profiles read
+ *  policy covers every profile). */
+export async function fetchStaff(tenantId: string): Promise<StaffAccount[]> {
+  const { data, error } = await supabase
+    .from('profiles')
+    .select(STAFF_SELECT)
+    .eq('parent_tenant_id', tenantId)
+    .order('created_at', { ascending: true });
+
+  if (error) throw error;
+  return ((data ?? []) as DbStaffProfile[]).map(toStaffAccount);
+}
+
+/** Super admin creates a staff account for a shop. The signup goes through
+ *  the secondary in-memory client so the super admin's session survives, and
+ *  carries NO shop_name metadata so the signup trigger creates a plain
+ *  'user' profile — the main client then promotes it to shop staff (allowed
+ *  by the super-admin profiles update policy and the role-change guard). */
+export async function createStaffAccount(
+  tenant: { id: string; username: string | null },
+  args: {
+    label: string;
+    password: string;
+    capabilities: StaffCapabilities;
+    branchId: string | null;
+  }
+): Promise<StaffAccount> {
+  const label = args.label.trim();
+  if (args.password.length < 6) {
+    throw new Error('Password must be at least 6 characters.');
+  }
+  if (!args.capabilities.financial && !args.capabilities.shop && !args.capabilities.branch) {
+    throw new Error('Turn on at least one capability.');
+  }
+  if (!tenant.username) {
+    throw new Error('This shop has no username, so staff accounts cannot be created.');
+  }
+
+  const email = `${tenant.username}+staff+${Date.now().toString(36)}@${TENANT_EMAIL_DOMAIN}`;
+  const signupClient = createSignupClient();
+
+  const { data, error } = await signupClient.auth.signUp({
+    email,
+    password: args.password,
+  });
+
+  if (error) {
+    throw new Error(error.message || 'Failed to create staff account.');
+  }
+  if (!data.user) {
+    throw new Error('Failed to create staff account. No user was returned.');
+  }
+
+  // The profile row is created synchronously by the on_auth_user_created
+  // trigger, so it can be promoted right away.
+  const { error: profileError } = await supabase
+    .from('profiles')
+    .update({
+      role: 'admin',
+      parent_tenant_id: tenant.id,
+      staff_financial: args.capabilities.financial,
+      staff_shop: args.capabilities.shop,
+      staff_branch: args.capabilities.branch,
+      branch_id: args.capabilities.branch ? args.branchId : null,
+      staff_label: label || null,
+    })
+    .eq('id', data.user.id);
+  if (profileError) {
+    throw new Error(
+      `The staff account was created, but saving its role failed: ${profileError.message}. ` +
+        'Remove it and try again.'
+    );
+  }
+
+  return {
+    id: data.user.id,
+    label: label || null,
+    email,
+    capabilities: args.capabilities,
+    branchId: args.capabilities.branch ? args.branchId : null,
+    createdAt: new Date().toISOString(),
+  };
+}
+
+/** Super admin edits a staff account's label, capabilities, and branch. */
+export async function updateStaffAccount(
+  staffId: string,
+  args: {
+    label: string;
+    capabilities: StaffCapabilities;
+    branchId: string | null;
+  }
+): Promise<void> {
+  const { error } = await supabase
+    .from('profiles')
+    .update({
+      staff_label: args.label.trim() || null,
+      staff_financial: args.capabilities.financial,
+      staff_shop: args.capabilities.shop,
+      staff_branch: args.capabilities.branch,
+      branch_id: args.capabilities.branch ? args.branchId : null,
+    })
+    .eq('id', staffId);
+  if (error) throw new Error(error.message || 'Failed to update staff account.');
+}
+
+/** Super admin resets a staff account's password
+ *  (admin_set_tenant_password works for any user id). */
+export async function setStaffPassword(
+  staffId: string,
+  newPassword: string
+): Promise<void> {
+  if (newPassword.length < 6) {
+    throw new Error('Password must be at least 6 characters.');
+  }
+  const { error } = await supabase.rpc('admin_set_tenant_password', {
+    tenant_id: staffId,
+    new_password: newPassword,
+  });
+  if (error) throw new Error(error.message || 'Failed to set password.');
+}
+
+/** Super admin removes a staff account (products and orders are untouched). */
+export async function deleteStaffAccount(staffId: string): Promise<void> {
+  const { error } = await supabase.rpc('admin_delete_staff', {
+    staff_id: staffId,
+  });
+  if (error) throw new Error(error.message || 'Failed to remove staff account.');
 }

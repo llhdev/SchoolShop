@@ -15,6 +15,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { Screen } from '../../components/Screen';
 import { Button } from '../../components/Button';
+import { EmptyState } from '../../components/EmptyState';
 import { AdminHeader } from '../../components/AdminHeader';
 import { ProductImage } from '../../components/ProductImage';
 import { useApp } from '../../context/AppContext';
@@ -84,15 +85,18 @@ export function AddEditItemScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<AdminStackParamList>>();
   const route = useRoute();
   const { productId } = (route.params as { productId?: string }) ?? {};
-  const { products, categories, addProduct, updateProduct, role, currentUserId } = useApp();
+  const { products, categories, addProduct, updateProduct, role, staffSession, effectiveTenantId } = useApp();
   const { isDesktop, isPhone } = useResponsive();
   const colors = useThemeColors();
   const styles = makeStyles(colors);
 
   const existing = productId ? products.find((p) => p.id === productId) : undefined;
   const isSuperAdmin = role === 'super_admin';
+  // Staff roles (migration 045): without the shop capability the account is
+  // read-only for the catalog.
+  const canManageProducts = isSuperAdmin || !!staffSession?.capabilities.shop;
   const canEditExisting =
-    !existing || isSuperAdmin || existing.ownerId === currentUserId;
+    !existing || isSuperAdmin || (canManageProducts && existing.ownerId === effectiveTenantId);
 
   const [name, setName] = useState(existing?.name ?? '');
   const [price, setPrice] = useState(existing?.price.toString() ?? '');
@@ -493,6 +497,7 @@ export function AddEditItemScreen() {
   async function handleSave() {
     if (!isValid) return;
     if (!existing && isSuperAdmin) return;
+    if (!canManageProducts) return;
 
     const variants = buildVariants();
     if (variants.error) {
@@ -519,7 +524,7 @@ export function AddEditItemScreen() {
       variantGroups: priceOnRequest ? undefined : variants.groups,
       checkoutFields: questions.fields,
       createdAt: existing?.createdAt ?? new Date().toISOString(),
-      ownerId: existing?.ownerId ?? currentUserId ?? undefined,
+      ownerId: existing?.ownerId ?? effectiveTenantId ?? undefined,
     };
 
     try {
@@ -588,6 +593,22 @@ export function AddEditItemScreen() {
   };
   const coverUri = getProductCoverImage(previewProduct);
   const isWeb = Platform.OS === 'web';
+
+  // Staff without the shop capability get a read-only catalog (045) — the
+  // add/edit screen is off-limits to them. The super admin is still blocked
+  // from creating below, exactly as before.
+  if (!isSuperAdmin && !canManageProducts) {
+    return (
+      <>
+        {isWeb && <AdminHeader />}
+        <Screen noPadding edges={['top', 'left', 'right']}>
+          <View style={styles.container}>
+            <EmptyState message="No access — your account can't manage products. Ask the shop owner to enable the shop capability." />
+          </View>
+        </Screen>
+      </>
+    );
+  }
 
   return (
     <>

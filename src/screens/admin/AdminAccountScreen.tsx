@@ -35,7 +35,7 @@ import { BankAccount } from '../../types';
 const MAX_WIDTH = 640;
 
 export function AdminAccountScreen() {
-  const { role } = useApp();
+  const { role, staffSession, currentUserId } = useApp();
   const { isPhone } = useResponsive();
   const colors = useThemeColors();
   const styles = makeStyles(colors);
@@ -235,6 +235,22 @@ export function AdminAccountScreen() {
   // Temporary kill-switch (MERCHANT_ACCOUNT_EDITING_ENABLED): merchants see a
   // notice instead of the editing cards; super admin is unaffected.
   const editingDisabled = role === 'admin' && !MERCHANT_ACCOUNT_EDITING_ENABLED;
+  // Staff roles (045): shop-settings editing (description, Telegram username,
+  // bank details, shipping fee) belongs to the shop owner alone — staff
+  // accounts (parent_tenant_id set, i.e. tenantId !== their auth id) never
+  // see those cards.
+  const isShopOwner = !!staffSession && staffSession.tenantId === currentUserId;
+  const isStaffAccount = !!staffSession && staffSession.tenantId !== currentUserId;
+  const staffSubtitle =
+    isStaffAccount && staffSession
+      ? [
+          staffSession.capabilities.financial && 'Financial Admin',
+          staffSession.capabilities.shop && 'Shop Admin',
+          staffSession.capabilities.branch && 'Branch Admin',
+        ]
+          .filter(Boolean)
+          .join(' + ') + (staffSession.label ? ` · ${staffSession.label}` : '')
+      : null;
 
   return (
     <>
@@ -246,6 +262,7 @@ export function AdminAccountScreen() {
           </Text>
           {role === 'super_admin' && <Text style={styles.subtitle}>Super admin</Text>}
           {profile?.shopName && <Text style={styles.subtitle}>{profile.shopName}</Text>}
+          {staffSubtitle && <Text style={styles.subtitle}>{staffSubtitle}</Text>}
           <Text style={styles.gateway}>
             Current gateway: @{profile?.username ?? '—'}
           </Text>
@@ -300,7 +317,7 @@ export function AdminAccountScreen() {
             />
           </View>
 
-          {role === 'admin' && (
+          {role === 'admin' && isShopOwner && (
             <View style={styles.card}>
               <View style={styles.cardHeader}>
                 <Ionicons name="storefront-outline" size={20} color={colors.primary} />
@@ -340,7 +357,7 @@ export function AdminAccountScreen() {
             </View>
           )}
 
-          {role === 'admin' && (
+          {role === 'admin' && isShopOwner && (
             <View style={styles.card}>
               <View style={styles.cardHeader}>
                 <Ionicons name="chatbubble-ellipses-outline" size={20} color={colors.primary} />
@@ -379,7 +396,7 @@ export function AdminAccountScreen() {
             </View>
           )}
 
-          {role === 'admin' && (
+          {role === 'admin' && isShopOwner && (
             <View style={styles.card}>
               <View style={styles.cardHeader}>
                 <Ionicons name="card-outline" size={20} color={colors.primary} />
@@ -410,7 +427,7 @@ export function AdminAccountScreen() {
             </View>
           )}
 
-          {role === 'admin' && (
+          {role === 'admin' && isShopOwner && (
             <View style={styles.card}>
               <View style={styles.cardHeader}>
                 <Ionicons name="bicycle-outline" size={20} color={colors.primary} />

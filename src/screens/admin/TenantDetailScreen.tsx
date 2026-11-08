@@ -5,6 +5,7 @@ import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import {
   Alert,
   Image,
+  Modal,
   ScrollView,
   StyleSheet,
   Switch,
@@ -17,6 +18,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { Screen } from '../../components/Screen';
 import { AdminHeader } from '../../components/AdminHeader';
 import { BankAccountsEditor } from '../../components/BankAccountsEditor';
+import { BranchesEditor, EditableBranch } from '../../components/BranchesEditor';
 import { Button } from '../../components/Button';
 import {
   fetchTenantById,
@@ -30,16 +32,46 @@ import {
   adminSetTenantShopLogo,
   adminSetTenantShopDescription,
   adminSetTenantActive,
+  fetchStaff,
+  createStaffAccount,
+  updateStaffAccount,
+  setStaffPassword,
+  deleteStaffAccount,
+  StaffAccount,
   Tenant,
 } from '../../services/tenants';
+import { fetchBranches, setTenantBranches, TenantBranch } from '../../services/branches';
 import { uploadShopLogo } from '../../services/images';
 import { confirmAction } from '../../utils/confirm';
 import { AdminStackParamList } from '../../types/navigation';
-import { BankAccount } from '../../types';
+import { BankAccount, StaffCapabilities } from '../../types';
 import { useResponsive } from '../../hooks/useResponsive';
 import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../../constants/theme';
 
 const MAX_WIDTH = 800;
+
+/** Staff capability toggles with their one-line descriptions (migration 045). */
+const STAFF_CAPABILITIES: {
+  key: keyof StaffCapabilities;
+  title: string;
+  description: string;
+}[] = [
+  {
+    key: 'financial',
+    title: 'Financial Admin',
+    description: 'Verifies payments and marks orders paid.',
+  },
+  {
+    key: 'shop',
+    title: 'Shop Admin',
+    description: "Manages the shop's products and catalog.",
+  },
+  {
+    key: 'branch',
+    title: 'Branch Admin',
+    description: 'Receives, ships, completes, and cancels orders for one branch.',
+  },
+];
 
 type Navigation = NativeStackNavigationProp<AdminStackParamList>;
 
@@ -71,6 +103,29 @@ export function TenantDetailScreen() {
     text: string;
   } | null>(null);
   const [saving, setSaving] = useState(false);
+
+  // Branches (migration 045): edited with the BranchesEditor and saved with
+  // its own button — the account edit form above only touches profile fields.
+  const [branches, setBranches] = useState<TenantBranch[]>([]);
+  const [editableBranches, setEditableBranches] = useState<EditableBranch[]>([]);
+  const [savingBranches, setSavingBranches] = useState(false);
+
+  // Staff accounts (migration 045): separate auth users scoped to this shop.
+  const [staff, setStaff] = useState<StaffAccount[]>([]);
+  const [staffModal, setStaffModal] = useState<{
+    mode: 'create' | 'edit' | 'password';
+    staff?: StaffAccount;
+  } | null>(null);
+  const [staffLabel, setStaffLabel] = useState('');
+  const [staffPasswordInput, setStaffPasswordInput] = useState('');
+  const [staffCaps, setStaffCaps] = useState<StaffCapabilities>({
+    financial: false,
+    shop: false,
+    branch: false,
+  });
+  const [staffBranchId, setStaffBranchId] = useState<string | null>(null);
+  const [staffSaving, setStaffSaving] = useState(false);
+  const [staffError, setStaffError] = useState<string | null>(null);
 
   function startEditing() {
     if (!tenant) return;
@@ -222,9 +277,160 @@ export function TenantDetailScreen() {
     }
   }, [tenantId]);
 
+  const loadBranches = useCallback(async () => {
+    try {
+      const list = await fetchBranches([tenantId]);
+      setBranches(list);
+      setEditableBranches(
+        list.map((b) => ({
+          id: b.id,
+          name: b.name,
+          deliveryLocation: b.deliveryLocation,
+          phone: b.phone,
+        }))
+      );
+    } catch (error) {
+      console.error('Failed to load branches:', error);
+    }
+  }, [tenantId]);
+
+  const loadStaff = useCallback(async () => {
+    try {
+      setStaff(await fetchStaff(tenantId));
+    } catch (error) {
+      console.error('Failed to load staff:', error);
+    }
+  }, [tenantId]);
+
   useEffect(() => {
     loadTenant();
-  }, [loadTenant]);
+    loadBranches();
+    loadStaff();
+  }, [loadTenant, loadBranches, loadStaff]);
+
+  /** Branch rows with an empty name are dropped silently, matching the
+   *  create-tenant form. */
+  async function handleSaveBranches() {
+    if (!tenant) return;
+    setSavingBranches(true);
+    try {
+      await setTenantBranches(
+        tenant.id,
+        editableBranches.filter((b) => b.name.trim())
+      );
+      await loadBranches();
+      Alert.alert('Branches Saved', 'The shop branches were updated.');
+    } catch (error) {
+      Alert.alert(
+        'Error',
+        error instanceof Error ? error.message : 'Failed to save branches.'
+      );
+    } finally {
+      setSavingBranches(false);
+    }
+  }
+
+  function openCreateStaff() {
+    setStaffLabel('');
+    setStaffPasswordInput('');
+    setStaffCaps({ financial: false, shop: false, branch: false });
+    setStaffBranchId(null);
+    setStaffError(null);
+    setStaffModal({ mode: 'create' });
+  }
+
+  function openEditStaff(account: StaffAccount) {
+    setStaffLabel(account.label ?? '');
+    setStaffPasswordInput('');
+    setStaffCaps(account.capabilities);
+    setStaffBranchId(account.branchId);
+    setStaffError(null);
+    setStaffModal({ mode: 'edit', staff: account });
+  }
+
+  function openPasswordStaff(account: StaffAccount) {
+    setStaffPasswordInput('');
+    setStaffError(null);
+    setStaffModal({ mode: 'password', staff: account });
+  }
+
+  async function handleStaffSubmit() {
+    if (!tenant || !staffModal) return;
+    const { mode, staff: target } = staffModal;
+    // A branch pick is only possible (and required) when the shop has
+    // branches; without them a branch admin simply sees all of the shop.
+    const needsBranch = staffCaps.branch && branches.length > 0;
+    if (mode !== 'password') {
+      if (!staffCaps.financial && !staffCaps.shop && !staffCaps.branch) {
+        setStaffError('Turn on at least one capability.');
+        return;
+      }
+      if (needsBranch && !staffBranchId) {
+        setStaffError('Pick the branch this account manages.');
+        return;
+      }
+    }
+    if (mode !== 'edit' && staffPasswordInput.length < 6) {
+      setStaffError('Password must be at least 6 characters.');
+      return;
+    }
+    setStaffSaving(true);
+    setStaffError(null);
+    try {
+      if (mode === 'create') {
+        await createStaffAccount(
+          { id: tenant.id, username: tenant.username },
+          {
+            label: staffLabel,
+            password: staffPasswordInput,
+            capabilities: staffCaps,
+            branchId: needsBranch ? staffBranchId : null,
+          }
+        );
+      } else if (mode === 'edit' && target) {
+        await updateStaffAccount(target.id, {
+          label: staffLabel,
+          capabilities: staffCaps,
+          branchId: needsBranch ? staffBranchId : null,
+        });
+      } else if (mode === 'password' && target) {
+        await setStaffPassword(target.id, staffPasswordInput);
+      }
+      setStaffModal(null);
+      await loadStaff();
+      Alert.alert(
+        'Success',
+        mode === 'password'
+          ? 'Password updated.'
+          : mode === 'create'
+            ? 'Staff account created. Staff log in with the shop username and this password.'
+            : 'Staff account updated.'
+      );
+    } catch (error) {
+      setStaffError(error instanceof Error ? error.message : 'Failed to save staff account.');
+    } finally {
+      setStaffSaving(false);
+    }
+  }
+
+  function handleRemoveStaff(account: StaffAccount) {
+    confirmAction(
+      'Remove staff account?',
+      `"${account.label ?? account.email ?? account.id}" will no longer be able to log in. Products and orders are not affected.`,
+      'Remove',
+      async () => {
+        try {
+          await deleteStaffAccount(account.id);
+          await loadStaff();
+        } catch (error) {
+          Alert.alert(
+            'Error',
+            error instanceof Error ? error.message : 'Failed to remove staff account.'
+          );
+        }
+      }
+    );
+  }
 
   async function performDelete() {
     if (!tenant) return;
@@ -549,6 +755,209 @@ export function TenantDetailScreen() {
               </>
             )}
 
+            <View style={styles.card}>
+              <View style={styles.sectionBody}>
+                <Text style={styles.sectionTitle}>Branches</Text>
+                <Text style={styles.sectionHint}>
+                  Shoppers pick a branch at checkout; branch staff only see their own branch's orders.
+                </Text>
+                <BranchesEditor value={editableBranches} onChange={setEditableBranches} />
+                <Button
+                  title={savingBranches ? 'Saving...' : 'Save Branches'}
+                  onPress={handleSaveBranches}
+                  disabled={savingBranches}
+                  style={styles.sectionSaveButton}
+                />
+              </View>
+            </View>
+
+            <View style={styles.card}>
+              <View style={styles.sectionBody}>
+                <Text style={styles.sectionTitle}>Staff Accounts</Text>
+                <Text style={styles.sectionHint}>
+                  Staff log in with the shop username (@{tenant.username ?? 'unknown'}) and their own
+                  password — the password picks the account.
+                </Text>
+                {staff.map((account) => {
+                  const branchName =
+                    account.capabilities.branch && account.branchId
+                      ? branches.find((b) => b.id === account.branchId)?.name ?? null
+                      : null;
+                  return (
+                    <View key={account.id} style={styles.staffRow}>
+                      <View style={styles.staffInfo}>
+                        <Text style={styles.staffName} numberOfLines={1}>
+                          {account.label || account.email || 'Staff'}
+                        </Text>
+                        {account.label && account.email ? (
+                          <Text style={styles.staffEmail} numberOfLines={1}>
+                            {account.email}
+                          </Text>
+                        ) : null}
+                        <View style={styles.badgeRow}>
+                          {account.capabilities.financial && (
+                            <Text style={styles.badge}>Financial</Text>
+                          )}
+                          {account.capabilities.shop && <Text style={styles.badge}>Shop</Text>}
+                          {account.capabilities.branch && (
+                            <Text style={styles.badge}>
+                              {branchName ? `Branch: ${branchName}` : 'Branch'}
+                            </Text>
+                          )}
+                        </View>
+                      </View>
+                      <View style={styles.staffActions}>
+                        <TouchableOpacity
+                          style={styles.staffActionButton}
+                          onPress={() => openEditStaff(account)}
+                        >
+                          <Ionicons name="create-outline" size={18} color={colors.primary} />
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={styles.staffActionButton}
+                          onPress={() => openPasswordStaff(account)}
+                        >
+                          <Ionicons name="key-outline" size={18} color={colors.primary} />
+                        </TouchableOpacity>
+                        <TouchableOpacity
+                          style={styles.staffActionButton}
+                          onPress={() => handleRemoveStaff(account)}
+                        >
+                          <Ionicons name="trash-outline" size={18} color={colors.danger} />
+                        </TouchableOpacity>
+                      </View>
+                    </View>
+                  );
+                })}
+                {staff.length === 0 && (
+                  <Text style={styles.sectionHint}>No staff accounts yet.</Text>
+                )}
+                <Button
+                  title="Add Staff"
+                  onPress={openCreateStaff}
+                  variant="outline"
+                  style={styles.sectionSaveButton}
+                />
+              </View>
+            </View>
+
+            <Modal
+              visible={staffModal !== null}
+              transparent
+              animationType="fade"
+              onRequestClose={() => setStaffModal(null)}
+            >
+              <View style={styles.modalOverlay}>
+                <View style={styles.modalCard}>
+                  <Text style={styles.editTitle}>
+                    {staffModal?.mode === 'create'
+                      ? 'Add Staff Account'
+                      : staffModal?.mode === 'edit'
+                        ? 'Edit Staff Account'
+                        : 'Reset Password'}
+                  </Text>
+                  {staffModal?.mode !== 'password' && (
+                    <>
+                      <Text style={styles.editLabel}>Label (optional)</Text>
+                      <TextInput
+                        style={styles.editInput}
+                        value={staffLabel}
+                        onChangeText={setStaffLabel}
+                        placeholder="e.g. Accountant, Bole branch manager"
+                        placeholderTextColor={colors.textSecondary}
+                        autoCapitalize="words"
+                      />
+                      {STAFF_CAPABILITIES.map((capability) => (
+                        <View key={capability.key} style={styles.capabilityRow}>
+                          <View style={styles.capabilityText}>
+                            <Text style={styles.capabilityTitle}>{capability.title}</Text>
+                            <Text style={styles.capabilityDescription}>
+                              {capability.description}
+                            </Text>
+                          </View>
+                          <Switch
+                            value={staffCaps[capability.key]}
+                            onValueChange={(value) =>
+                              setStaffCaps((prev) => ({ ...prev, [capability.key]: value }))
+                            }
+                            trackColor={{ false: colors.border, true: colors.primary }}
+                          />
+                        </View>
+                      ))}
+                      {staffCaps.branch && branches.length > 0 && (
+                        <>
+                          <Text style={styles.editLabel}>Branch</Text>
+                          {branches.map((branch) => (
+                            <TouchableOpacity
+                              key={branch.id}
+                              style={styles.branchOption}
+                              onPress={() => setStaffBranchId(branch.id)}
+                            >
+                              <Ionicons
+                                name={
+                                  staffBranchId === branch.id
+                                    ? 'radio-button-on'
+                                    : 'radio-button-off'
+                                }
+                                size={18}
+                                color={
+                                  staffBranchId === branch.id
+                                    ? colors.primary
+                                    : colors.textSecondary
+                                }
+                              />
+                              <Text style={styles.branchOptionText}>{branch.name}</Text>
+                            </TouchableOpacity>
+                          ))}
+                        </>
+                      )}
+                      {staffCaps.branch && branches.length === 0 && (
+                        <Text style={styles.sectionHint}>
+                          This shop has no branches yet — this account will see all of the shop's
+                          orders.
+                        </Text>
+                      )}
+                    </>
+                  )}
+                  {staffModal?.mode !== 'edit' && (
+                    <>
+                      <Text style={styles.editLabel}>
+                        {staffModal?.mode === 'password' ? 'New password' : 'Password'}
+                      </Text>
+                      <TextInput
+                        style={styles.editInput}
+                        value={staffPasswordInput}
+                        onChangeText={setStaffPasswordInput}
+                        placeholder="Min 6 characters"
+                        placeholderTextColor={colors.textSecondary}
+                        secureTextEntry
+                        autoCapitalize="none"
+                        autoCorrect={false}
+                      />
+                    </>
+                  )}
+                  {staffError && (
+                    <Text style={[styles.editMessage, styles.editError]}>{staffError}</Text>
+                  )}
+                  <View style={styles.editActions}>
+                    <Button
+                      title={staffModal?.mode === 'password' ? 'Set Password' : 'Save'}
+                      onPress={handleStaffSubmit}
+                      loading={staffSaving}
+                      disabled={staffSaving}
+                      style={styles.editSaveButton}
+                    />
+                    <Button
+                      title="Cancel"
+                      onPress={() => setStaffModal(null)}
+                      variant="outline"
+                      disabled={staffSaving}
+                    />
+                  </View>
+                </View>
+              </View>
+            </Modal>
+
             <View style={styles.actions}>
               {!editing && (
                 <Button
@@ -765,5 +1174,124 @@ const makeStyles = (colors: ColorPalette) =>
     },
     backButton: {
       marginTop: spacing.md,
+    },
+    sectionBody: {
+      padding: spacing.md,
+      gap: spacing.sm,
+    },
+    sectionTitle: {
+      fontSize: fontSizes.lg,
+      fontWeight: '700',
+      color: colors.text,
+    },
+    sectionHint: {
+      fontSize: fontSizes.sm,
+      color: colors.textSecondary,
+      lineHeight: 18,
+    },
+    sectionSaveButton: {
+      marginTop: spacing.sm,
+    },
+    staffRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      borderWidth: 1,
+      borderColor: colors.border,
+      borderRadius: borderRadius.sm,
+      backgroundColor: colors.background,
+      padding: spacing.sm,
+      gap: spacing.sm,
+    },
+    staffInfo: {
+      flex: 1,
+      gap: spacing.xs,
+    },
+    staffName: {
+      fontSize: fontSizes.md,
+      fontWeight: '600',
+      color: colors.text,
+    },
+    staffEmail: {
+      fontSize: fontSizes.sm,
+      color: colors.textSecondary,
+    },
+    badgeRow: {
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      gap: spacing.xs,
+    },
+    badge: {
+      fontSize: fontSizes.sm,
+      fontWeight: '600',
+      color: colors.primary,
+      backgroundColor: colors.surface,
+      borderWidth: 1,
+      borderColor: colors.primary,
+      borderRadius: borderRadius.sm,
+      paddingHorizontal: spacing.sm,
+      paddingVertical: 2,
+      overflow: 'hidden',
+    },
+    staffActions: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: spacing.xs,
+    },
+    staffActionButton: {
+      width: 36,
+      height: 36,
+      borderRadius: borderRadius.sm,
+      backgroundColor: colors.surface,
+      borderWidth: 1,
+      borderColor: colors.border,
+      justifyContent: 'center',
+      alignItems: 'center',
+    },
+    modalOverlay: {
+      flex: 1,
+      backgroundColor: 'rgba(0, 0, 0, 0.5)',
+      justifyContent: 'center',
+      alignItems: 'center',
+      padding: spacing.lg,
+    },
+    modalCard: {
+      width: '100%',
+      maxWidth: 480,
+      backgroundColor: colors.surface,
+      borderRadius: borderRadius.md,
+      borderWidth: 1,
+      borderColor: colors.border,
+      padding: spacing.md,
+    },
+    capabilityRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      gap: spacing.md,
+      marginBottom: spacing.sm,
+    },
+    capabilityText: {
+      flex: 1,
+    },
+    capabilityTitle: {
+      fontSize: fontSizes.md,
+      fontWeight: '600',
+      color: colors.text,
+    },
+    capabilityDescription: {
+      fontSize: fontSizes.sm,
+      color: colors.textSecondary,
+      marginTop: 2,
+    },
+    branchOption: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: spacing.sm,
+      paddingVertical: spacing.xs,
+      marginBottom: spacing.xs,
+    },
+    branchOptionText: {
+      fontSize: fontSizes.md,
+      color: colors.text,
     },
   });

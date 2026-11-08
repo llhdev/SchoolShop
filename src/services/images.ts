@@ -136,6 +136,23 @@ async function uploadR2Image(uri: string, prefix: 'products' | 'logos' | 'qrs'):
   return upload.publicUrl;
 }
 
+/** Read-back check after a PUT: a presigned PUT can report success yet the
+ *  object never lands (or vanishes later) — the product record would then
+ *  store a URL that 404s forever. HEAD the public URL (one retry for CDN
+ *  propagation) and fail the upload so nothing broken gets saved. */
+async function verifyR2Object(publicUrl: string): Promise<void> {
+  for (let attempt = 0; attempt < 2; attempt++) {
+    try {
+      const response = await fetch(publicUrl, { method: 'HEAD' });
+      if (response.ok) return;
+    } catch {
+      // Network error on our side says nothing about the object — retry once.
+    }
+    if (attempt === 0) await new Promise((resolve) => setTimeout(resolve, 1000));
+  }
+  throw new Error('The image upload did not persist. Please try again.');
+}
+
 export async function uploadProductImage(uri: string): Promise<string> {
   const baseName = newFileName();
   const key = `products/${baseName}`;
@@ -149,6 +166,7 @@ export async function uploadProductImage(uri: string): Promise<string> {
   const [full, thumb] = await signR2Uploads([key, thumbKey]);
 
   await putToR2(full.uploadUrl, fullBuffer);
+  await verifyR2Object(full.publicUrl);
   // A missing thumbnail only hurts bandwidth, not correctness.
   try {
     await putToR2(thumb.uploadUrl, thumbBuffer);

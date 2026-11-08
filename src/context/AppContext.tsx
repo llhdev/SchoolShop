@@ -7,7 +7,7 @@ import {
   useState,
 } from 'react';
 import { Alert } from 'react-native';
-import { AppAction, AppState, CartItem, Order, Product, Role, Shopper, Theme } from '../types';
+import { AppAction, AppState, CartItem, Order, Product, Role, Shopper, StaffSession, Theme } from '../types';
 import { getUnitPrice, variantKeyOf } from '../utils/variants';
 import { loadTheme, saveTheme } from '../utils/storage';
 import { supabase } from '../lib/supabase';
@@ -214,7 +214,16 @@ function migrateLegacyProducts(products: Product[]): Product[] {
 interface AppContextValue extends AppState {
   currentUserId: string | null;
   shopper: Shopper | null;
+  /** Staff identity of the signed-in shop account (migration 045): which
+   *  tenant they act for, their capability toggles, and their branch scope.
+   *  Tenant owners hold all capabilities with branchId NULL. NULL for
+   *  shoppers and the super admin. */
+  staffSession: StaffSession | null;
+  /** Tenant id used for all shop scoping (orders, products, analysis):
+   *  staffSession.tenantId for shop accounts, NULL for super admin/shopper. */
+  effectiveTenantId: string | null;
   setRole: (role: Role) => void;
+  setStaffSession: (session: StaffSession | null) => void;
   signOutAdmin: () => Promise<void>;
   toggleTheme: () => void;
   addProduct: (product: Product) => Promise<void>;
@@ -251,6 +260,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
   const [isHydrated, setIsHydrated] = useState(false);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [shopper, setShopper] = useState<Shopper | null>(null);
+  const [staffSession, setStaffSession] = useState<StaffSession | null>(null);
 
   useEffect(() => {
     async function hydrate() {
@@ -287,16 +297,48 @@ export function AppProvider({ children }: { children: ReactNode }) {
         if (session?.user) {
           const { data: profile } = await supabase
             .from('profiles')
-            .select('role, is_active')
+            .select(
+              'role, is_active, parent_tenant_id, staff_financial, staff_shop, staff_branch, branch_id, staff_label'
+            )
             .eq('id', session.user.id)
             .single();
           // A switched-off tenant keeps no session: sign them out instead of
-          // restoring the admin role (migration 037).
+          // restoring the admin role (migration 037). Staff accounts inherit
+          // the switch from their parent shop (checked below).
           if (profile?.role === 'admin' && profile.is_active === false) {
             await supabase.auth.signOut();
           } else if (profile?.role === 'super_admin' || profile?.role === 'admin') {
-            setCurrentUserId(session.user.id);
-            dispatch({ type: 'SET_ROLE', payload: profile.role });
+            let staffSwitchedOff = false;
+            let restoredSession: StaffSession | null = null;
+            if (profile.role === 'admin') {
+              const tenantId = profile.parent_tenant_id ?? session.user.id;
+              if (profile.parent_tenant_id) {
+                // Staff account: the parent shop's switch governs them.
+                const { data: parent } = await supabase
+                  .from('profiles')
+                  .select('is_active')
+                  .eq('id', profile.parent_tenant_id)
+                  .single();
+                if (parent?.is_active === false) staffSwitchedOff = true;
+              }
+              restoredSession = {
+                tenantId,
+                capabilities: {
+                  financial: !!profile.staff_financial,
+                  shop: !!profile.staff_shop,
+                  branch: !!profile.staff_branch,
+                },
+                branchId: profile.branch_id ?? null,
+                label: profile.staff_label ?? null,
+              };
+            }
+            if (staffSwitchedOff) {
+              await supabase.auth.signOut();
+            } else {
+              setCurrentUserId(session.user.id);
+              setStaffSession(restoredSession);
+              dispatch({ type: 'SET_ROLE', payload: profile.role });
+            }
           } else {
             setCurrentUserId(session.user.id);
           }
@@ -350,27 +392,29 @@ export function AppProvider({ children }: { children: ReactNode }) {
       console.error('Failed to sign out admin:', error);
     }
     setCurrentUserId(null);
+    setStaffSession(null);
     dispatch({ type: 'SET_ROLE', payload: 'user' });
     // Drop the admin order list so it does not leak into shopper mode.
     dispatch({ type: 'SET_ORDERS', payload: [] });
     await saveOrdersToCache([]);
   }
 
-  // Live kick: if the super admin switches this tenant's shop off while they
-  // are signed in, their own profile row flips is_active to false — sign them
-  // out immediately (migration 037). Only tenants (role 'admin') can be
-  // switched off; the super admin is never affected.
+  // Live kick: if the super admin switches this shop off while a staff
+  // account is signed in, the SHOP OWNER's profile row flips is_active to
+  // false — sign every account of that shop out immediately (037 + 045).
+  // The super admin is never affected.
+  const staffTenantId = state.role === 'admin' ? staffSession?.tenantId ?? currentUserId : null;
   useEffect(() => {
-    if (!isHydrated || state.role !== 'admin' || !currentUserId) return;
+    if (!isHydrated || !staffTenantId) return;
     const channel = supabase
-      .channel(`own-profile-active:${currentUserId}`)
+      .channel(`own-profile-active:${staffTenantId}`)
       .on(
         'postgres_changes',
         {
           event: 'UPDATE',
           schema: 'public',
           table: 'profiles',
-          filter: `id=eq.${currentUserId}`,
+          filter: `id=eq.${staffTenantId}`,
         },
         (payload) => {
           if ((payload.new as { is_active?: boolean }).is_active === false) {
@@ -388,7 +432,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     };
     // signOutAdmin only touches stable references (dispatch, supabase).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [isHydrated, state.role, currentUserId]);
+  }, [isHydrated, staffTenantId]);
 
   // Persist cart changes so the cart survives app restarts.
   useEffect(() => {
@@ -418,13 +462,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // Orders are admin-only: fetch once and subscribe to realtime changes only
   // while the role is admin/super_admin. Shoppers keep device-local history
   // (their own placed orders) and never download the global order list.
-  // Tenant admins are scoped to orders containing their products (tenant_ids,
-  // filled by the stamp_order_tenants trigger); the super admin sees all.
+  // Shop accounts are scoped to orders containing their shop's products
+  // (tenant_ids, filled by the stamp_order_tenants trigger); staff accounts
+  // use their parent shop's id (migration 045); the super admin sees all.
   useEffect(() => {
     if (!isHydrated) return;
     const isAdmin = state.role === 'admin' || state.role === 'super_admin';
     if (!isAdmin) return;
-    const tenantFilter = state.role === 'admin' ? currentUserId : undefined;
+    const tenantFilter = state.role === 'admin' ? staffTenantId : undefined;
     // A tenant admin's id comes from the auth session; wait for it so the
     // first fetch is already scoped rather than briefly leaking all orders.
     if (state.role === 'admin' && !tenantFilter) return;
@@ -453,7 +498,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       cancelled = true;
       unsubscribeOrders?.();
     };
-  }, [isHydrated, state.role, currentUserId]);
+  }, [isHydrated, state.role, staffTenantId]);
 
   // Telegram Mini App identity: show any cached shopper immediately, then
   // exchange the signed initData for the verified record (works offline on
@@ -591,7 +636,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     ...state,
     currentUserId,
     shopper,
+    staffSession,
+    effectiveTenantId: state.role === 'admin' ? staffTenantId : null,
     setRole: (role) => dispatch({ type: 'SET_ROLE', payload: role }),
+    setStaffSession,
     signOutAdmin,
     toggleTheme: () =>
       dispatch({ type: 'SET_THEME', payload: state.theme === 'dark' ? 'light' : 'dark' }),

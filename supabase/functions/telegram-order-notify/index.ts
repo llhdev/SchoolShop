@@ -61,6 +61,8 @@ interface OrderItem {
   unitPrice?: number;
   /** Buyer's answers to the tenant's checkout questions (migration 036). */
   fieldAnswers?: { label?: string; value?: string }[];
+  /** Branch chosen at checkout, re-stamped server-side (migration 045). */
+  branchName?: string;
 }
 
 interface OrderPayload {
@@ -127,6 +129,25 @@ function itemCoverUrl(item: OrderItem): string | null {
   return images[index] ?? images[0] ?? null;
 }
 
+/** A product image whose object is missing from R2 (404) makes Telegram
+ *  reject the WHOLE album — including the payment proof riding in it. HEAD
+ *  the public URL first and skip dead ones so one bad image only costs its
+ *  own photo. Network errors keep the URL: they say nothing about the
+ *  object, and the text-summary fallback below still covers a real failure.
+ *  Only used for public product URLs — never presigned proof URLs, whose
+ *  signature is method-bound (HEAD would 403 a perfectly good GET URL). */
+async function isReachablePublicUrl(url: string): Promise<boolean> {
+  try {
+    const response = await fetch(url, {
+      method: 'HEAD',
+      signal: AbortSignal.timeout(5000),
+    });
+    return response.ok;
+  } catch {
+    return true;
+  }
+}
+
 /** Line items subtotal for one tenant's slice of the order. */
 function sliceTotal(items: OrderItem[]): number {
   return items.reduce(
@@ -144,6 +165,8 @@ function buildSummary(
   const lines: string[] = [];
   lines.push('<b>🛒 New Order</b>');
   lines.push(`🏪 ${escapeHtml(shopName)}`);
+  const branchName = items.find((item) => item.branchName)?.branchName;
+  if (branchName) lines.push(`🏬 Branch: ${escapeHtml(branchName)}`);
   if (order.id) lines.push(`<code>#${escapeHtml(order.id.slice(0, 8))}</code>`);
   if (order.created_at) {
     const date = new Date(order.created_at);
@@ -253,7 +276,9 @@ async function sendToTenant(
   const urls: string[] = [];
   for (const item of items) {
     const url = itemCoverUrl(item);
-    if (url && !urls.includes(url)) urls.push(url);
+    if (url && !urls.includes(url) && (await isReachablePublicUrl(url))) {
+      urls.push(url);
+    }
   }
   const photos = urls.slice(0, MAX_ALBUM_PHOTOS - 1);
 

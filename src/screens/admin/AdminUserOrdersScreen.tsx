@@ -12,7 +12,7 @@ import { useApp } from '../../context/AppContext';
 import { useResponsive } from '../../hooks/useResponsive';
 import { formatPrice } from '../../utils/format';
 import { formatVariantLabel, getUnitPrice } from '../../utils/variants';
-import { getOrderItemsForTenant } from '../../services/orders';
+import { getOrderItemsForScope, getOrderItemsForTenant } from '../../services/orders';
 import { fetchVerificationsForOrders, subscribeToVerifications } from '../../services/paymentVerifications';
 import { getProductCoverImage } from '../../utils/images';
 import { ORDER_STATUS_LABELS } from '../../constants/orderStatus';
@@ -26,17 +26,23 @@ export function AdminUserOrdersScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const route = useRoute();
   const { phoneNumber, tenantId } = route.params as { phoneNumber: string; tenantId?: string };
-  const { orders, role, currentUserId } = useApp();
+  const { orders, role, staffSession, effectiveTenantId } = useApp();
   const { isPhone } = useResponsive();
   const colors = useThemeColors();
   const styles = makeStyles(colors);
 
-  // Tenant admins see only their shop's line items within these orders; the
-  // super admin browsing a picked shop (tenantId param) is scoped the same way.
-  const isTenantAdmin = role === 'admin' && !!currentUserId;
-  const scopedTenantId = tenantId ?? (isTenantAdmin ? currentUserId : null);
-  const itemsOf = (order: (typeof orders)[number]) =>
-    scopedTenantId ? getOrderItemsForTenant(order, scopedTenantId) : order.items;
+  // Staff see only their shop's line items within these orders — narrowed to
+  // their branch when branch-scoped; the super admin browsing a picked shop
+  // (tenantId param) is scoped to that shop's items.
+  const isSuperAdmin = role === 'super_admin';
+  const canSeeMoney = isSuperAdmin || !!staffSession?.capabilities.financial;
+  const scopedTenantId = tenantId ?? effectiveTenantId;
+  const itemsOf = (order: (typeof orders)[number]) => {
+    if (!scopedTenantId) return order.items;
+    return tenantId
+      ? getOrderItemsForTenant(order, tenantId)
+      : getOrderItemsForScope(order, scopedTenantId, staffSession?.branchId);
+  };
   const tenantTotal = (order: (typeof orders)[number]) =>
     itemsOf(order).reduce((sum, item) => sum + getUnitPrice(item) * item.quantity, 0);
 
@@ -123,7 +129,11 @@ export function AdminUserOrdersScreen() {
                 </View>
                 <View style={styles.details}>
                   <View style={styles.header}>
-                    <Text style={styles.total}>{formatPrice(tenantTotal(item))}</Text>
+                    {canSeeMoney ? (
+                      <Text style={styles.total}>{formatPrice(tenantTotal(item))}</Text>
+                    ) : (
+                      <View />
+                    )}
                     <Text style={styles.date}>
                       {new Date(item.createdAt).toLocaleDateString()}
                     </Text>
@@ -144,13 +154,15 @@ export function AdminUserOrdersScreen() {
                       styles.badge,
                       item.status === 'paid' && styles.paidBadge,
                       item.status === 'pending' && styles.pendingBadge,
+                      item.status === 'received' && styles.receivedBadge,
                       item.status === 'on_the_way' && styles.onTheWayBadge,
                       item.status === 'completed' && styles.completedBadge,
+                      item.status === 'cancelled' && styles.cancelledBadge,
                     ]}
                   >
                     <Text style={styles.badgeText}>{ORDER_STATUS_LABELS[item.status]}</Text>
                   </View>
-                  {verificationFor(item.id) && (
+                  {canSeeMoney && verificationFor(item.id) && (
                     <VerificationBadge status={verificationFor(item.id)!.status} />
                   )}
                 </View>
@@ -263,6 +275,9 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
   pendingBadge: {
     backgroundColor: colors.warning,
   },
+  receivedBadge: {
+    backgroundColor: colors.primary,
+  },
   paidBadge: {
     backgroundColor: colors.success,
   },
@@ -271,6 +286,9 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
   },
   completedBadge: {
     backgroundColor: colors.success,
+  },
+  cancelledBadge: {
+    backgroundColor: colors.danger,
   },
   badgeText: {
     fontSize: fontSizes.xs,

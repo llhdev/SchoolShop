@@ -20,9 +20,9 @@ import { useResponsive } from '../../hooks/useResponsive';
 import { formatPrice } from '../../utils/format';
 import { downloadAnalysisExcel } from '../../utils/exportAnalysis';
 import { formatVariantLabel, getUnitPrice } from '../../utils/variants';
-import { getItemStatus, getOrderItemsForTenant } from '../../services/orders';
+import { getItemStatus, getOrderItemsForScope } from '../../services/orders';
 import { fetchShoppersByTelegramIds } from '../../services/telegramAuth';
-import { ORDER_STATUSES, ORDER_STATUS_LABELS } from '../../constants/orderStatus';
+import { ALL_ORDER_STATUSES, ORDER_STATUS_LABELS } from '../../constants/orderStatus';
 import { OrderStatus, Shopper } from '../../types';
 import { RootStackParamList } from '../../types/navigation';
 import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../../constants/theme';
@@ -53,6 +53,8 @@ export interface AnalysisRow {
   quantity: number;
   /** unitPrice × quantity, for per-store revenue on the super-admin store list. */
   lineTotal: number;
+  /** Branch stamped on the item snapshot (035 branch staff scoping); '' when the shop has no branches. */
+  branchName: string;
   studentName: string;
   /** Effective per-item status (falls back to the order-level status). */
   status: OrderStatus;
@@ -125,7 +127,7 @@ function telegramName(shopper: Shopper | undefined): string {
 
 export function AdminAnalysisScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
-  const { orders, role, currentUserId } = useApp();
+  const { orders, role, staffSession, effectiveTenantId } = useApp();
   const { isPhone } = useResponsive();
   const colors = useThemeColors();
   const styles = makeStyles(colors);
@@ -140,9 +142,14 @@ export function AdminAnalysisScreen() {
   const [page, setPage] = useState(1);
   const [telegramNames, setTelegramNames] = useState<Map<number, Shopper>>(new Map());
 
-  // Tenant admins are scoped to their own line items (mixed orders included);
-  // the super admin sees every shop's items.
-  const scopedTenantId = role === 'admin' ? currentUserId : null;
+  // Shop accounts are scoped to their own line items (mixed orders included);
+  // branch-scoped staff further to their branch only. The super admin sees
+  // every shop's items.
+  const scopedTenantId = effectiveTenantId;
+  const scopedBranchId = staffSession?.branchId ?? null;
+  // Money (revenue, line totals) is visible to the super admin and to staff
+  // with the financial capability.
+  const canSeeMoney = role === 'super_admin' || !!staffSession?.capabilities.financial;
 
   const dateRange = useMemo(
     () => computeDateRange(dateFilter, customStart, customEnd),
@@ -168,7 +175,7 @@ export function AdminAnalysisScreen() {
     );
     for (const order of sorted) {
       const items = scopedTenantId
-        ? getOrderItemsForTenant(order, scopedTenantId)
+        ? getOrderItemsForScope(order, scopedTenantId, scopedBranchId)
         : order.items;
       items.forEach((item, index) => {
         const variant = formatVariantLabel(item);
@@ -200,6 +207,7 @@ export function AdminAnalysisScreen() {
           productLabel: `${item.product.name}${variant ? ` (${variant})` : ''}`,
           quantity: item.quantity,
           lineTotal: getUnitPrice(item) * item.quantity,
+          branchName: item.branchName ?? '',
           studentName,
           status: getItemStatus(order, item),
           answers,
@@ -207,7 +215,7 @@ export function AdminAnalysisScreen() {
       });
     }
     return { rows, questionLabels, questionDisplay };
-  }, [orders, scopedTenantId]);
+  }, [orders, scopedTenantId, scopedBranchId]);
 
   // Resolve Telegram usernames/names for Mini App orders (public-read table).
   const telegramIdsKey = useMemo(
@@ -237,7 +245,7 @@ export function AdminAnalysisScreen() {
     for (const order of orders) {
       if (!inDateRange(order.createdAt)) continue;
       const items = scopedTenantId
-        ? getOrderItemsForTenant(order, scopedTenantId)
+        ? getOrderItemsForScope(order, scopedTenantId, scopedBranchId)
         : order.items;
       if (items.length === 0) continue;
       orderCount += 1;
@@ -255,7 +263,7 @@ export function AdminAnalysisScreen() {
     return { shoppers: phones.size, orders: orderCount, revenue };
     // inDateRange only reads dateRange (a dep).
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [orders, scopedTenantId, dateRange]);
+  }, [orders, scopedTenantId, scopedBranchId, dateRange]);
 
   const telegramNameFor = (row: AnalysisRow) =>
     telegramName(row.telegramId != null ? telegramNames.get(row.telegramId) : undefined);
@@ -281,7 +289,8 @@ export function AdminAnalysisScreen() {
       });
     }
     if (!sort) return base;
-    // Status sorts by lifecycle order (pending -> completed), not alphabetically.
+    // Status sorts by lifecycle order (pending -> completed, cancelled last),
+    // not alphabetically.
     const value = (r: AnalysisRow): string => {
       switch (sort.key) {
         case 'order': return r.orderId;
@@ -291,8 +300,9 @@ export function AdminAnalysisScreen() {
         case 'name': return telegramNameFor(r);
         case 'student': return r.studentName;
         case 'product': return r.productLabel;
+        case 'branch': return r.branchName;
         case 'quantity': return String(r.quantity).padStart(8, '0');
-        case 'status': return String(ORDER_STATUSES.indexOf(r.status));
+        case 'status': return String(ALL_ORDER_STATUSES.indexOf(r.status));
         default: return r.answers[sort.key] ?? '';
       }
     };
@@ -333,6 +343,12 @@ export function AdminAnalysisScreen() {
     [filtered, selectedStore]
   );
 
+  // The Branch column only appears when at least one visible row has one.
+  const hasBranches = useMemo(
+    () => displayedRows.some((r) => r.branchName !== ''),
+    [displayedRows]
+  );
+
   // Any filter/search/sort/store/page-size change goes back to page 1.
   useEffect(() => {
     setPage(1);
@@ -359,7 +375,14 @@ export function AdminAnalysisScreen() {
   async function handleDownload() {
     setDownloading(true);
     try {
-      await downloadAnalysisExcel(displayedRows, questionLabels, questionDisplay, telegramNameFor);
+      await downloadAnalysisExcel(
+        displayedRows,
+        questionLabels,
+        questionDisplay,
+        telegramNameFor,
+        canSeeMoney,
+        hasBranches
+      );
     } finally {
       setDownloading(false);
     }
@@ -373,6 +396,7 @@ export function AdminAnalysisScreen() {
       ['Telegram Name', telegramNameFor(row)],
       ['Student name', row.studentName || '—'],
       ['Product', row.productLabel],
+      ...(hasBranches ? ([['Branch', row.branchName || '—']] as [string, string][]) : []),
       ['Quantity', String(row.quantity)],
       ['Status', ORDER_STATUS_LABELS[row.status]],
       ...questionLabels.map(
@@ -455,8 +479,8 @@ export function AdminAnalysisScreen() {
               <Text style={styles.statValue}>{summary.orders}</Text>
               <Text style={styles.statLabel}>Orders</Text>
             </View>
-            {/* Revenue is super-admin-only for now; merchants see Shoppers + Orders. */}
-            {role === 'super_admin' && (
+            {/* Revenue requires the financial capability (super admin always has it). */}
+            {canSeeMoney && (
               <View style={styles.statCard}>
                 <Text style={styles.statValue}>{formatPrice(summary.revenue)}</Text>
                 <Text style={styles.statLabel}>Revenue</Text>
@@ -595,6 +619,7 @@ export function AdminAnalysisScreen() {
                   {headerCell('Telegram Name', 'name', styles.wName)}
                   {headerCell('Student name', 'student', styles.wName)}
                   {headerCell('Product', 'product', styles.wProduct)}
+                  {hasBranches && headerCell('Branch', 'branch', styles.wName)}
                   {headerCell('Quantity', 'quantity', styles.wQty)}
                   {headerCell('Status', 'status', styles.wStatus)}
                   {questionLabels.map((label) =>
@@ -614,6 +639,7 @@ export function AdminAnalysisScreen() {
                     {cell(telegramNameFor(row), styles.wName, `${row.key}-name`)}
                     {cell(row.studentName || '—', styles.wName, `${row.key}-student`)}
                     {cell(row.productLabel, styles.wProduct, `${row.key}-product`)}
+                    {hasBranches && cell(row.branchName || '—', styles.wName, `${row.key}-branch`)}
                     {cell(String(row.quantity), styles.wQty, `${row.key}-qty`)}
                     {cell(ORDER_STATUS_LABELS[row.status], styles.wStatus, `${row.key}-status`)}
                     {questionLabels.map((label) =>

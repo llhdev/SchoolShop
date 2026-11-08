@@ -23,8 +23,8 @@ type Navigation = NativeStackNavigationProp<RootStackParamList>;
 export function AdminLoginScreen() {
   const navigation = useNavigation<Navigation>();
   const route = useRoute();
-  const { username, email } = route.params as { username: string; email: string };
-  const { setRole } = useApp();
+  const { username, emails } = route.params as { username: string; emails: string[] };
+  const { setRole, setStaffSession } = useApp();
   const colors = useThemeColors();
   const styles = makeStyles(colors);
 
@@ -39,17 +39,23 @@ export function AdminLoginScreen() {
   async function handleLogin() {
     if (isLocked) return;
 
-    if (!email || !password) {
+    if (!emails || emails.length === 0 || !password) {
       Alert.alert('Not configured', 'Admin credentials are not set.');
       return;
     }
 
-    const { data, error } = await supabase.auth.signInWithPassword({
-      email,
-      password,
-    });
+    // One gateway username fronts several accounts (owner + staff): try each
+    // email with the typed password — the password picks the account.
+    let data: { user: { id: string } | null } | null = null;
+    for (const email of emails) {
+      const attempt = await supabase.auth.signInWithPassword({ email, password });
+      if (!attempt.error && attempt.data.user) {
+        data = attempt.data;
+        break;
+      }
+    }
 
-    if (error || !data.user) {
+    if (!data?.user) {
       const nextAttempts = attempts + 1;
       setAttempts(nextAttempts);
 
@@ -77,7 +83,9 @@ export function AdminLoginScreen() {
     // Confirm the signed-in user is marked as admin or super admin.
     const { data: profile, error: profileError } = await supabase
       .from('profiles')
-      .select('role, is_active')
+      .select(
+        'role, is_active, parent_tenant_id, staff_financial, staff_shop, staff_branch, branch_id, staff_label'
+      )
       .eq('id', data.user.id)
       .single();
 
@@ -89,20 +97,45 @@ export function AdminLoginScreen() {
       return;
     }
 
-    // A tenant whose shop was switched off by the super admin cannot log in
-    // until it is switched back on (migration 037).
-    if (profile!.role === 'admin' && profile!.is_active === false) {
-      await supabase.auth.signOut();
-      Alert.alert(
-        'Shop switched off',
-        'This shop has been switched off. Please contact the administrator.'
-      );
-      setPassword('');
-      return;
+    // A shop switched off by the super admin logs nobody in — neither the
+    // owner nor its staff (migration 037 + 045).
+    if (profile!.role === 'admin') {
+      let switchedOff = profile!.is_active === false;
+      if (!switchedOff && profile!.parent_tenant_id) {
+        const { data: parent } = await supabase
+          .from('profiles')
+          .select('is_active')
+          .eq('id', profile!.parent_tenant_id)
+          .single();
+        switchedOff = parent?.is_active === false;
+      }
+      if (switchedOff) {
+        await supabase.auth.signOut();
+        Alert.alert(
+          'Shop switched off',
+          'This shop has been switched off. Please contact the administrator.'
+        );
+        setPassword('');
+        return;
+      }
     }
 
     setPassword('');
     setAttempts(0);
+    if (profile!.role === 'admin') {
+      setStaffSession({
+        tenantId: profile!.parent_tenant_id ?? data.user.id,
+        capabilities: {
+          financial: !!profile!.staff_financial,
+          shop: !!profile!.staff_shop,
+          branch: !!profile!.staff_branch,
+        },
+        branchId: profile!.branch_id ?? null,
+        label: profile!.staff_label ?? null,
+      });
+    } else {
+      setStaffSession(null);
+    }
     // Switching role lets AppNavigator render the admin stack automatically.
     setRole(profile!.role as 'admin' | 'super_admin');
   }

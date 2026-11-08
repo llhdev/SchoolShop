@@ -68,11 +68,14 @@ const headerRightStyles = StyleSheet.create({
 
 export function AdminDashboardScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<AdminStackParamList>>();
-  const { products, categories, deleteProduct, addCategory, removeCategory, role, currentUserId } = useApp();
+  const { products, categories, deleteProduct, addCategory, removeCategory, role, staffSession, effectiveTenantId } = useApp();
   const isSuperAdmin = role === 'super_admin';
+  // Staff roles (migration 045): only shop-capable accounts (and the super
+  // admin) may add/edit/delete items; other staff see the catalog read-only.
+  const canManageProducts = isSuperAdmin || !!staffSession?.capabilities.shop;
   const visibleProducts = isSuperAdmin
     ? products
-    : products.filter((p) => p.ownerId === currentUserId);
+    : products.filter((p) => p.ownerId === effectiveTenantId);
   const { isDesktop } = useResponsive();
   const colors = useThemeColors();
   const styles = makeStyles(colors);
@@ -149,7 +152,7 @@ export function AdminDashboardScreen() {
             <Text style={styles.statValue}>{visibleProducts.length}</Text>
             <Text style={styles.statLabel}>Products</Text>
           </View>
-          {!isSuperAdmin && (
+          {!isSuperAdmin && canManageProducts && (
             <View style={styles.actionButtonWrapper}>
               <Button
                 title="Add New Item"
@@ -241,7 +244,8 @@ export function AdminDashboardScreen() {
                         isDesktop && styles.productInfoTouchableDesktop,
                       ]}
                       onPress={() => navigation.navigate('AddEditItem', { productId: item.id })}
-                      activeOpacity={0.7}
+                      activeOpacity={canManageProducts ? 0.7 : 1}
+                      disabled={!canManageProducts}
                     >
                       {!isDesktop && (
                         <View style={styles.mobileContent}>
@@ -291,7 +295,7 @@ export function AdminDashboardScreen() {
                       )}
                     </TouchableOpacity>
 
-                    {(isSuperAdmin || item.ownerId === currentUserId) && (
+                    {(canManageProducts && (isSuperAdmin || item.ownerId === effectiveTenantId)) && (
                       <View style={[styles.productActions, isDesktop && styles.colActions]}>
                         <TouchableOpacity
                           style={[styles.iconButton, styles.deleteButton]}

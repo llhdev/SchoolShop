@@ -20,8 +20,10 @@ import { Screen } from '../../components/Screen';
 import { EmptyState } from '../../components/EmptyState';
 import { AdminHeader } from '../../components/AdminHeader';
 import { BankAccountsEditor } from '../../components/BankAccountsEditor';
+import { BranchesEditor, EditableBranch } from '../../components/BranchesEditor';
 import { Button } from '../../components/Button';
 import { fetchTenants, createTenant, adminSetTenantActive, adminSetTenantPaymentVerification, Tenant } from '../../services/tenants';
+import { setTenantBranches } from '../../services/branches';
 import { fetchPaymentVerificationEnabled, setPaymentVerificationEnabled } from '../../services/settings';
 import { uploadShopLogo } from '../../services/images';
 import { confirmAction } from '../../utils/confirm';
@@ -73,6 +75,7 @@ export function TenantManagementScreen() {
   const [telegramChatId, setTelegramChatId] = useState('');
   const [telegramUsername, setTelegramUsername] = useState('');
   const [bankAccounts, setBankAccounts] = useState<BankAccount[]>([{ accountNumber: '' }]);
+  const [branches, setBranches] = useState<EditableBranch[]>([]);
   const [shippingFee, setShippingFee] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -108,6 +111,7 @@ export function TenantManagementScreen() {
     setTelegramChatId('');
     setTelegramUsername('');
     setBankAccounts([{ accountNumber: '' }]);
+    setBranches([]);
     setShippingFee('');
     setPassword('');
     setConfirmPassword('');
@@ -198,9 +202,26 @@ export function TenantManagementScreen() {
         shopDescription,
         telegramUsername
       );
+      // Branch rows with an empty name are dropped silently; a failed branch
+      // save surfaces an alert but the tenant stays created.
+      const cleanBranches = branches.filter((b) => b.name.trim());
+      let branchesFailed = false;
+      if (cleanBranches.length > 0) {
+        try {
+          await setTenantBranches(tenant.id, cleanBranches);
+        } catch (error) {
+          branchesFailed = true;
+          console.error('Failed to save branches:', error);
+        }
+      }
       setTenants((prev) => [tenant, ...prev]);
       resetForm();
-      Alert.alert('Success', `Tenant @${tenant.username} created.`);
+      Alert.alert(
+        branchesFailed ? 'Tenant Created — Branches Failed' : 'Success',
+        branchesFailed
+          ? `Tenant @${tenant.username} was created, but saving the branches failed. Open the tenant and add them there.`
+          : `Tenant @${tenant.username} created.`
+      );
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to create tenant';
       Alert.alert('Error', message);
@@ -420,6 +441,11 @@ export function TenantManagementScreen() {
                 <View style={styles.field}>
                   <Text style={styles.label}>Bank Accounts</Text>
                   <BankAccountsEditor value={bankAccounts} onChange={setBankAccounts} />
+                </View>
+
+                <View style={styles.field}>
+                  <Text style={styles.label}>Branches (optional)</Text>
+                  <BranchesEditor value={branches} onChange={setBranches} />
                 </View>
 
                 <View style={styles.field}>

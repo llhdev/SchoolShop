@@ -32,6 +32,7 @@ Staging credentials (DB password, service role key, generated function secrets) 
 
 - New migrations are written against staging, applied there (`supabase db push --db-url "<staging pooler URL>"` or temporarily `supabase link --project-ref bszipcuuxqxrhsexdevi`), tested, then replayed on prod at release time — never the reverse.
 - If staging and prod schemas drift, reset staging: it's disposable. **Never** copy real user data (phones, payment proofs) into staging.
+- **Data backfills ship inside migrations.** Example: `045_staff_roles_branches.sql` rewrites the order lifecycle (`paid` → `received` backfill on `orders.status` and `item_statuses`, owner capability backfill on `profiles`). Replaying it on prod migrates live orders automatically — apply it to prod *before* deploying the client that expects the new statuses.
 
 ## Staging-only divergence (keep in mind)
 

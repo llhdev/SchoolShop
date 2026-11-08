@@ -11,11 +11,11 @@ import { useApp } from '../../context/AppContext';
 import { useResponsive } from '../../hooks/useResponsive';
 import { formatPrice } from '../../utils/format';
 import { getUnitPrice } from '../../utils/variants';
-import { getOrderItemsForTenant } from '../../services/orders';
+import { getOrderItemsForScope, getOrderItemsForTenant } from '../../services/orders';
 import { fetchTenants, Tenant } from '../../services/tenants';
 import { AdminStackParamList } from '../../types/navigation';
 import { Order, OrderStatus } from '../../types';
-import { ORDER_STATUSES, ORDER_STATUS_LABELS } from '../../constants/orderStatus';
+import { ALL_ORDER_STATUSES, ORDER_STATUSES, ORDER_STATUS_LABELS } from '../../constants/orderStatus';
 import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../../constants/theme';
 
 const MAX_WIDTH = 1000;
@@ -33,15 +33,23 @@ interface UserOrderGroup {
 
 const FILTERS: { key: StatusFilter; label: string }[] = [
   { key: 'all', label: 'All' },
-  ...ORDER_STATUSES.map((status) => ({ key: status, label: ORDER_STATUS_LABELS[status] })),
+  ...ALL_ORDER_STATUSES.map((status) => ({ key: status, label: ORDER_STATUS_LABELS[status] })),
 ];
 
 export function AdminOrdersScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<AdminStackParamList>>();
-  const { orders, role, currentUserId } = useApp();
+  const { orders, role, staffSession, effectiveTenantId } = useApp();
   const { isPhone } = useResponsive();
   const colors = useThemeColors();
   const styles = makeStyles(colors);
+  // Accent color per lifecycle status on the summary cards below.
+  const STAT_STYLES = {
+    pending: styles.pendingStat,
+    received: styles.receivedStat,
+    paid: styles.paidStat,
+    on_the_way: styles.onTheWayStat,
+    completed: styles.completedStat,
+  } as const;
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   // Super admin: orders are separated per tenant — pick a shop first, then
   // browse that shop's orders (grouped by customer phone as usual).
@@ -50,7 +58,9 @@ export function AdminOrdersScreen() {
   const [selectedTenantId, setSelectedTenantId] = useState<string | null>(null);
 
   const isSuperAdmin = role === 'super_admin';
-  const isTenantAdmin = role === 'admin' && !!currentUserId;
+  const isTenantAdmin = role === 'admin' && !!effectiveTenantId;
+  // Money is visible to the super admin and financial staff only (045).
+  const canSeeMoney = isSuperAdmin || !!staffSession?.capabilities.financial;
 
   useEffect(() => {
     if (!isSuperAdmin) return;
@@ -71,20 +81,25 @@ export function AdminOrdersScreen() {
     ? tenants.find((t) => t.id === selectedTenantId) ?? null
     : null;
 
-  // Tenant admins only see orders containing their products (already scoped
+  // Staff only see orders containing their shop's products (already scoped
   // server-side via tenant_ids); the super admin (inside a picked shop) is
-  // scoped the same way client-side. Totals/counts use only that shop's line
-  // items when an order mixes shops.
+  // scoped the same way client-side. Branch-scoped staff are further narrowed
+  // to their branch's line items. Totals/counts use only those line items
+  // when an order mixes shops.
   const activeTenantId = isSuperAdmin
     ? selectedTenantId
     : isTenantAdmin
-      ? currentUserId
+      ? effectiveTenantId
       : null;
+  const itemsOf = (order: Order) => {
+    if (!activeTenantId) return order.items;
+    return isSuperAdmin
+      ? getOrderItemsForTenant(order, activeTenantId)
+      : getOrderItemsForScope(order, activeTenantId, staffSession?.branchId);
+  };
   const visibleOrders = activeTenantId
-    ? orders.filter((o) => getOrderItemsForTenant(o, activeTenantId).length > 0)
+    ? orders.filter((o) => itemsOf(o).length > 0)
     : orders;
-  const itemsOf = (order: Order) =>
-    activeTenantId ? getOrderItemsForTenant(order, activeTenantId) : order.items;
 
   const tenantOrderCounts = useMemo(() => {
     const counts = new Map<string, number>();
@@ -98,16 +113,15 @@ export function AdminOrdersScreen() {
     return counts;
   }, [isSuperAdmin, tenants, orders]);
 
-  // Check-and-balance summary over the full order list (not the filter).
-  const counts = useMemo(
-    () => ({
-      pending: visibleOrders.filter((o) => o.status === 'pending').length,
-      paid: visibleOrders.filter((o) => o.status === 'paid').length,
-      onTheWay: visibleOrders.filter((o) => o.status === 'on_the_way').length,
-      completed: visibleOrders.filter((o) => o.status === 'completed').length,
-    }),
-    [visibleOrders]
-  );
+  // Check-and-balance summary over the full order list (not the filter), one
+  // count per lifecycle status (cancelled stays a filter chip only).
+  const counts = useMemo(() => {
+    const result = {} as Record<(typeof ORDER_STATUSES)[number], number>;
+    for (const status of ORDER_STATUSES) {
+      result[status] = visibleOrders.filter((o) => o.status === status).length;
+    }
+    return result;
+  }, [visibleOrders]);
 
   const filteredOrders =
     statusFilter === 'all'
@@ -231,22 +245,14 @@ export function AdminOrdersScreen() {
         </Text>
 
         <View style={styles.statsRow}>
-          <View style={[styles.statCard, styles.pendingStat]}>
-            <Text style={styles.statValue}>{counts.pending}</Text>
-            <Text style={styles.statLabel}>Pending</Text>
-          </View>
-          <View style={[styles.statCard, styles.paidStat]}>
-            <Text style={styles.statValue}>{counts.paid}</Text>
-            <Text style={styles.statLabel}>Paid</Text>
-          </View>
-          <View style={[styles.statCard, styles.onTheWayStat]}>
-            <Text style={styles.statValue}>{counts.onTheWay}</Text>
-            <Text style={styles.statLabel}>On the way</Text>
-          </View>
-          <View style={[styles.statCard, styles.completedStat]}>
-            <Text style={styles.statValue}>{counts.completed}</Text>
-            <Text style={styles.statLabel}>Completed</Text>
-          </View>
+          {(Object.keys(STAT_STYLES) as (keyof typeof STAT_STYLES)[]).map((status) => (
+            <View key={status} style={[styles.statCard, STAT_STYLES[status]]}>
+              <Text style={styles.statValue}>{counts[status]}</Text>
+              <Text style={styles.statLabel} numberOfLines={1}>
+                {ORDER_STATUS_LABELS[status]}
+              </Text>
+            </View>
+          ))}
         </View>
 
         <View style={styles.filterRow}>
@@ -294,12 +300,17 @@ export function AdminOrdersScreen() {
               </View>
 
               <View style={styles.cardFooter}>
-                <Text style={styles.total}>{formatPrice(item.total)}</Text>
+                {canSeeMoney ? (
+                  <Text style={styles.total}>{formatPrice(item.total)}</Text>
+                ) : (
+                  <View />
+                )}
                 <Text style={styles.date}>
                   Order date: {item.latestDate.toLocaleDateString()}
                 </Text>
               </View>
               {activeTenantId &&
+                canSeeMoney &&
                 item.orders.some((o) => itemsOf(o).length < o.items.length) && (
                   <Text style={styles.sharedHint}>
                     Totals reflect only this shop's items in these orders.
@@ -402,6 +413,10 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
   pendingStat: {
     borderLeftWidth: 3,
     borderLeftColor: colors.warning,
+  },
+  receivedStat: {
+    borderLeftWidth: 3,
+    borderLeftColor: colors.primary,
   },
   paidStat: {
     borderLeftWidth: 3,

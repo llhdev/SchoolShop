@@ -52,18 +52,22 @@ export function HomeScreen() {
     let cancelled = false;
 
     async function checkAdminUsername() {
-      const { data, error } = await supabase.rpc('get_admin_by_username', {
+      // One gateway username resolves to every login account of the shop
+      // (owner + staff, migration 045); the password picks the account.
+      const { data, error } = await supabase.rpc('get_accounts_by_username', {
         username: trimmed,
       });
 
       if (cancelled || error || !data || data.length === 0) return;
 
-      const admin = data[0] as { email: string; role: string };
-      if (admin.email && admin.role) {
+      const emails = (data as { email: string }[])
+        .map((row) => row.email)
+        .filter((email): email is string => !!email);
+      if (emails.length > 0) {
         setQuery('');
         navigation.navigate('AdminLogin', {
           username: trimmed,
-          email: admin.email,
+          emails,
         });
       }
     }

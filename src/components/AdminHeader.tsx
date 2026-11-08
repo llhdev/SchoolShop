@@ -38,7 +38,7 @@ export function AdminHeader() {
   const styles = makeStyles(colors);
   const navigation = useNavigation<AdminNav>();
   const route = useRoute();
-  const { signOutAdmin, role } = useApp();
+  const { signOutAdmin, role, staffSession } = useApp();
   const { isDesktop } = useResponsive();
   const current = route.name;
   const isSuperAdmin = role === 'super_admin';
@@ -85,7 +85,7 @@ export function AdminHeader() {
               onPress={() => navigation.navigate('AdminAccount')}
             />
           )}
-          {!isSuperAdmin && (
+          {!isSuperAdmin && !!staffSession?.capabilities.shop && (
             <NavLink
               name="AddEditItem"
               label="Add Item"
