@@ -1,7 +1,9 @@
 import { useEffect, useState } from 'react';
 import {
+  Alert,
   Platform,
   StyleSheet,
+  Switch,
   Text,
   TextInput,
   View,
@@ -11,6 +13,7 @@ import { Screen } from '../../components/Screen';
 import { Button } from '../../components/Button';
 import { AdminHeader } from '../../components/AdminHeader';
 import { BankAccountsEditor } from '../../components/BankAccountsEditor';
+import { StaffManager } from '../../components/StaffManager';
 import { useApp } from '../../context/AppContext';
 import { useResponsive } from '../../hooks/useResponsive';
 import {
@@ -22,6 +25,7 @@ import {
   updateOwnShopDescription,
   updateOwnTelegramUsername,
 } from '../../services/account';
+import { updateOwnCapabilities } from '../../services/tenants';
 import {
   useThemeColors,
   spacing,
@@ -30,12 +34,36 @@ import {
   ColorPalette,
 } from '../../constants/theme';
 import { MERCHANT_ACCOUNT_EDITING_ENABLED } from '../../constants/featureFlags';
-import { BankAccount } from '../../types';
+import { BankAccount, StaffCapabilities } from '../../types';
 
 const MAX_WIDTH = 640;
 
+/** The owner's own capability toggles (migration 048). All off = pure
+ *  manager; all on = the old full tenant admin (one-man shop). */
+const OWNER_CAPABILITIES: {
+  key: keyof StaffCapabilities;
+  title: string;
+  description: string;
+}[] = [
+  {
+    key: 'financial',
+    title: 'Financial Admin',
+    description: 'Also verify payments and mark orders paid yourself.',
+  },
+  {
+    key: 'shop',
+    title: 'Shop Admin',
+    description: "Also manage the shop's products and catalog yourself.",
+  },
+  {
+    key: 'branch',
+    title: 'Branch Admin',
+    description: 'Also receive, ship, complete, and cancel orders yourself (shop-wide).',
+  },
+];
+
 export function AdminAccountScreen() {
-  const { role, staffSession, currentUserId } = useApp();
+  const { role, staffSession, currentUserId, refreshStaffSession } = useApp();
   const { isPhone } = useResponsive();
   const colors = useThemeColors();
   const styles = makeStyles(colors);
@@ -45,6 +73,14 @@ export function AdminAccountScreen() {
     shopName: string | null;
   } | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
+
+  // Owner's own capability toggles (048), mirroring staffSession.capabilities.
+  const [ownCaps, setOwnCaps] = useState<StaffCapabilities>({
+    financial: false,
+    shop: false,
+    branch: false,
+  });
+  const [capsBusy, setCapsBusy] = useState(false);
 
   const [bankAccounts, setBankAccounts] = useState<BankAccount[]>([]);
   const [bankMessage, setBankMessage] = useState<{
@@ -102,6 +138,32 @@ export function AdminAccountScreen() {
       })
       .catch(() => setLoadError('Could not load your account details.'));
   }, []);
+
+  useEffect(() => {
+    if (staffSession) setOwnCaps(staffSession.capabilities);
+  }, [staffSession]);
+
+  /** Owner flips one of its own capability toggles (048): optimistic, saved
+   *  via update_own_capabilities, then staffSession is rebuilt so every
+   *  capability gate in the app updates immediately. */
+  async function handleOwnCapability(key: keyof StaffCapabilities, value: boolean) {
+    const previous = ownCaps;
+    const next = { ...ownCaps, [key]: value };
+    setOwnCaps(next);
+    setCapsBusy(true);
+    try {
+      await updateOwnCapabilities(next);
+      await refreshStaffSession();
+    } catch (error) {
+      setOwnCaps(previous);
+      Alert.alert(
+        'Error',
+        error instanceof Error ? error.message : 'Failed to update capabilities.'
+      );
+    } finally {
+      setCapsBusy(false);
+    }
+  }
 
   async function handleSaveBankDetails() {
     const accounts = bankAccounts.filter((a) => a.accountNumber.trim());
@@ -232,15 +294,18 @@ export function AdminAccountScreen() {
   }
 
   const isWeb = Platform.OS === 'web';
-  // Temporary kill-switch (MERCHANT_ACCOUNT_EDITING_ENABLED): merchants see a
-  // notice instead of the editing cards; super admin is unaffected.
-  const editingDisabled = role === 'admin' && !MERCHANT_ACCOUNT_EDITING_ENABLED;
   // Staff roles (045): shop-settings editing (description, Telegram username,
   // bank details, shipping fee) belongs to the shop owner alone — staff
   // accounts (parent_tenant_id set, i.e. tenantId !== their auth id) never
   // see those cards.
   const isShopOwner = !!staffSession && staffSession.tenantId === currentUserId;
   const isStaffAccount = !!staffSession && staffSession.tenantId !== currentUserId;
+  // Temporary kill-switch (MERCHANT_ACCOUNT_EDITING_ENABLED): STAFF accounts
+  // see a notice instead of the editing cards; the shop owner always gets in
+  // (048 — the owner manages the shop's settings and staff), super admin
+  // unaffected.
+  const editingDisabled =
+    role === 'admin' && !isShopOwner && !MERCHANT_ACCOUNT_EDITING_ENABLED;
   const staffSubtitle =
     isStaffAccount && staffSession
       ? [
@@ -261,6 +326,7 @@ export function AdminAccountScreen() {
             Account & Security
           </Text>
           {role === 'super_admin' && <Text style={styles.subtitle}>Super admin</Text>}
+          {role === 'admin' && isShopOwner && <Text style={styles.subtitle}>Shop owner</Text>}
           {profile?.shopName && <Text style={styles.subtitle}>{profile.shopName}</Text>}
           {staffSubtitle && <Text style={styles.subtitle}>{staffSubtitle}</Text>}
           <Text style={styles.gateway}>
@@ -282,6 +348,38 @@ export function AdminAccountScreen() {
           )}
 
           {!editingDisabled && (<>
+          {role === 'admin' && isShopOwner && staffSession && (
+            <View style={styles.card}>
+              <View style={styles.cardHeader}>
+                <Ionicons name="person-outline" size={20} color={colors.primary} />
+                <Text style={styles.cardTitle}>My Capabilities</Text>
+              </View>
+              <Text style={styles.cardHint}>
+                By default you only manage the shop's staff and settings. Turn
+                a role on to also do that work yourself — useful for a one-man
+                shop.
+              </Text>
+              {OWNER_CAPABILITIES.map((capability) => (
+                <View key={capability.key} style={styles.capabilityRow}>
+                  <View style={styles.capabilityText}>
+                    <Text style={styles.capabilityTitle}>{capability.title}</Text>
+                    <Text style={styles.cardHint}>{capability.description}</Text>
+                  </View>
+                  <Switch
+                    value={ownCaps[capability.key]}
+                    onValueChange={(value) => void handleOwnCapability(capability.key, value)}
+                    disabled={capsBusy}
+                    trackColor={{ false: colors.border, true: colors.primary }}
+                  />
+                </View>
+              ))}
+            </View>
+          )}
+
+          {role === 'admin' && isShopOwner && currentUserId && (
+            <StaffManager tenant={{ id: currentUserId, username: profile?.username ?? null }} />
+          )}
+
           <View style={styles.card}>
             <View style={styles.cardHeader}>
               <Ionicons name="key-outline" size={20} color={colors.primary} />
@@ -605,5 +703,19 @@ const makeStyles = (colors: ColorPalette) =>
       fontSize: fontSizes.sm,
       color: colors.danger,
       fontWeight: '600',
+    },
+    capabilityRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      gap: spacing.md,
+    },
+    capabilityText: {
+      flex: 1,
+    },
+    capabilityTitle: {
+      fontSize: fontSizes.md,
+      fontWeight: '600',
+      color: colors.text,
     },
   });

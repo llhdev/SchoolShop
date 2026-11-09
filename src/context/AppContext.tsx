@@ -216,7 +216,7 @@ interface AppContextValue extends AppState {
   shopper: Shopper | null;
   /** Staff identity of the signed-in shop account (migration 045): which
    *  tenant they act for, their capability toggles, and their branch scope.
-   *  Tenant owners hold all capabilities with branchId NULL. NULL for
+   *  Owners carry their own toggles (all off = pure manager, 048). NULL for
    *  shoppers and the super admin. */
   staffSession: StaffSession | null;
   /** Tenant id used for all shop scoping (orders, products, analysis):
@@ -224,6 +224,9 @@ interface AppContextValue extends AppState {
   effectiveTenantId: string | null;
   setRole: (role: Role) => void;
   setStaffSession: (session: StaffSession | null) => void;
+  /** Refetch the signed-in shop account's profile and rebuild staffSession
+   *  (used after the owner flips its own capability toggles, 048). */
+  refreshStaffSession: () => Promise<void>;
   signOutAdmin: () => Promise<void>;
   toggleTheme: () => void;
   addProduct: (product: Product) => Promise<void>;
@@ -409,6 +412,41 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // false — sign every account of that shop out immediately (037 + 045).
   // The super admin is never affected.
   const staffTenantId = state.role === 'admin' ? staffSession?.tenantId ?? currentUserId : null;
+
+  // Rebuild staffSession from the profile row (same mapping as the session
+  // restore above). Called after the owner flips its own capability toggles
+  // (048) so every capability gate updates without a re-login.
+  async function refreshStaffSession() {
+    if (state.role !== 'admin' || !currentUserId) return;
+    const { data: profile } = await supabase
+      .from('profiles')
+      .select(
+        'parent_tenant_id, staff_financial, staff_shop, staff_branch, branch_id, staff_label, branch_selection_enabled'
+      )
+      .eq('id', currentUserId)
+      .single();
+    if (!profile) return;
+    let branchSelectionEnabled = profile.branch_selection_enabled !== false;
+    if (profile.parent_tenant_id) {
+      const { data: parent } = await supabase
+        .from('profiles')
+        .select('branch_selection_enabled')
+        .eq('id', profile.parent_tenant_id)
+        .single();
+      if (parent) branchSelectionEnabled = parent.branch_selection_enabled !== false;
+    }
+    setStaffSession({
+      tenantId: profile.parent_tenant_id ?? currentUserId,
+      capabilities: {
+        financial: !!profile.staff_financial,
+        shop: !!profile.staff_shop,
+        branch: !!profile.staff_branch,
+      },
+      branchId: profile.branch_id ?? null,
+      label: profile.staff_label ?? null,
+      branchSelectionEnabled,
+    });
+  }
   useEffect(() => {
     if (!isHydrated || !staffTenantId) return;
     const channel = supabase
@@ -645,6 +683,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     effectiveTenantId: state.role === 'admin' ? staffTenantId : null,
     setRole: (role) => dispatch({ type: 'SET_ROLE', payload: role }),
     setStaffSession,
+    refreshStaffSession,
     signOutAdmin,
     toggleTheme: () =>
       dispatch({ type: 'SET_THEME', payload: state.theme === 'dark' ? 'light' : 'dark' }),

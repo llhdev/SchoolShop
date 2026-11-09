@@ -30,12 +30,15 @@ const MAX_WIDTH = 1200;
 
 function AdminHeaderRight() {
   const navigation = useNavigation<NativeStackNavigationProp<AdminStackParamList>>();
-  const { signOutAdmin, role } = useApp();
+  const { signOutAdmin, role, staffSession, currentUserId } = useApp();
   const colors = useThemeColors();
+  // The shop owner always gets the Account screen (it manages staff and
+  // settings there, 048); staff accounts only when merchant editing is on.
+  const isShopOwner = !!staffSession && staffSession.tenantId === currentUserId;
 
   return (
     <View style={headerRightStyles.container}>
-      {(role === 'super_admin' || MERCHANT_ACCOUNT_EDITING_ENABLED) && (
+      {(role === 'super_admin' || isShopOwner || MERCHANT_ACCOUNT_EDITING_ENABLED) && (
         <TouchableOpacity
           onPress={() => navigation.navigate('AdminAccount')}
           accessibilityLabel="Account and security"

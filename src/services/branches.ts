@@ -37,7 +37,8 @@ export async function fetchBranches(tenantIds: string[]): Promise<TenantBranch[]
   return (data ?? []).map((row) => toBranch(row as DbBranch));
 }
 
-/** Create a branch for a shop (super admin only, via RLS). Since migration
+/** Create a branch for a shop (super admin or the shop owner, via RLS —
+ *  migration 048). Since migration
  *  046 branches exist only as the counterpart of a Branch Admin staff
  *  account — the staff label is the branch name. Returns the new branch id. */
 export async function createBranch(tenantId: string, name: string): Promise<string> {

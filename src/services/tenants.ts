@@ -490,8 +490,8 @@ function toStaffAccount(db: DbStaffProfile): StaffAccount {
   };
 }
 
-/** Super admin lists a shop's staff accounts (the super-admin profiles read
- *  policy covers every profile). */
+/** Super admin or the shop owner lists a shop's staff accounts (the
+ *  admin profiles read policy covers every profile). */
 export async function fetchStaff(tenantId: string): Promise<StaffAccount[]> {
   const { data, error } = await supabase
     .from('profiles')
@@ -503,11 +503,12 @@ export async function fetchStaff(tenantId: string): Promise<StaffAccount[]> {
   return ((data ?? []) as DbStaffProfile[]).map(toStaffAccount);
 }
 
-/** Super admin creates a staff account for a shop. The signup goes through
- *  the secondary in-memory client so the super admin's session survives, and
- *  carries NO shop_name metadata so the signup trigger creates a plain
- *  'user' profile — the main client then promotes it to shop staff (allowed
- *  by the super-admin profiles update policy and the role-change guard).
+/** Super admin or the shop owner creates a staff account for a shop. The
+ *  signup goes through the secondary in-memory client so the caller's session
+ *  survives, and carries NO shop_name metadata so the signup trigger creates
+ *  a plain 'user' profile — the main client then promotes it to shop staff
+ *  (allowed by the profiles guard trigger: super admin always, owner for its
+ *  own shop — migration 048).
  *
  *  Branches (046): a Branch Admin account IS a branch — when the branch
  *  capability is on, a branch named after the account's label is created and
@@ -587,7 +588,8 @@ export async function createStaffAccount(
   };
 }
 
-/** Super admin edits a staff account's label and capabilities, keeping the
+/** Super admin or the shop owner edits a staff account's label and
+ *  capabilities, keeping the
  *  1:1 branch link in sync (046): Branch toggled on creates the branch,
  *  toggled off deletes it, and a label change renames it. */
 export async function updateStaffAccount(
@@ -627,8 +629,9 @@ export async function updateStaffAccount(
   if (error) throw new Error(error.message || 'Failed to update staff account.');
 }
 
-/** Super admin resets a staff account's password
- *  (admin_set_tenant_password works for any user id). */
+/** Super admin or the shop owner resets a staff account's password
+ *  (admin_set_tenant_password accepts any of the caller's own staff ids,
+ *  migration 048). */
 export async function setStaffPassword(
   staffId: string,
   newPassword: string
@@ -643,7 +646,8 @@ export async function setStaffPassword(
   if (error) throw new Error(error.message || 'Failed to set password.');
 }
 
-/** Super admin removes a staff account and its branch (products and orders
+/** Super admin or the shop owner removes a staff account and its branch
+ *  (products and orders
  *  are untouched; order items keep their stamped branchName). */
 export async function deleteStaffAccount(staff: StaffAccount): Promise<void> {
   if (staff.branchId) {
@@ -668,4 +672,18 @@ export async function adminSetTenantBranchSelection(
     .eq('id', tenantId)
     .eq('role', 'admin');
   if (error) throw new Error(error.message || 'Failed to update branch selection.');
+}
+
+/** Shop owner flips its own Financial/Shop/Branch toggles (048). All off =
+ *  pure manager (the default for new shops); all on = the old full tenant
+ *  admin. Server-side: update_own_capabilities. */
+export async function updateOwnCapabilities(
+  capabilities: StaffCapabilities
+): Promise<void> {
+  const { error } = await supabase.rpc('update_own_capabilities', {
+    p_financial: capabilities.financial,
+    p_shop: capabilities.shop,
+    p_branch: capabilities.branch,
+  });
+  if (error) throw new Error(error.message || 'Failed to update capabilities.');
 }

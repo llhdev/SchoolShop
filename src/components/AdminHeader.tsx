@@ -38,10 +38,13 @@ export function AdminHeader() {
   const styles = makeStyles(colors);
   const navigation = useNavigation<AdminNav>();
   const route = useRoute();
-  const { signOutAdmin, role, staffSession } = useApp();
+  const { signOutAdmin, role, staffSession, currentUserId } = useApp();
   const { isDesktop } = useResponsive();
   const current = route.name;
   const isSuperAdmin = role === 'super_admin';
+  // The shop owner always gets the Account screen (it manages staff and
+  // settings there, 048); staff accounts only when merchant editing is on.
+  const isShopOwner = !!staffSession && staffSession.tenantId === currentUserId;
   const compact = !isDesktop;
 
   if (Platform.OS !== 'web') return null;
@@ -76,7 +79,7 @@ export function AdminHeader() {
             compact={compact}
             onPress={() => navigation.navigate('AdminAnalysis')}
           />
-          {(isSuperAdmin || MERCHANT_ACCOUNT_EDITING_ENABLED) && (
+          {(isSuperAdmin || isShopOwner || MERCHANT_ACCOUNT_EDITING_ENABLED) && (
             <NavLink
               name="AdminAccount"
               label="Account"
