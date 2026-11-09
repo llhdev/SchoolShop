@@ -556,19 +556,19 @@ export async function createStaffAccount(
   }
 
   // The profile row is created synchronously by the on_auth_user_created
-  // trigger, so it can be promoted right away.
-  const { error: profileError } = await supabase
-    .from('profiles')
-    .update({
-      role: 'admin',
-      parent_tenant_id: tenant.id,
-      staff_financial: args.capabilities.financial,
-      staff_shop: args.capabilities.shop,
-      staff_branch: args.capabilities.branch,
-      branch_id: branchId,
-      staff_label: label || null,
-    })
-    .eq('id', data.user.id);
+  // trigger, so it can be promoted right away. Promotion goes through the
+  // promote_staff_account RPC (050): a fresh 'user' profile is invisible to
+  // the shop owner under RLS (Postgres only updates SELECT-visible rows), so
+  // a direct profiles.update would silently match nothing.
+  const { error: profileError } = await supabase.rpc('promote_staff_account', {
+    p_staff_id: data.user.id,
+    p_tenant_id: tenant.id,
+    p_label: label,
+    p_financial: args.capabilities.financial,
+    p_shop: args.capabilities.shop,
+    p_branch: args.capabilities.branch,
+    p_branch_id: branchId,
+  });
   if (profileError) {
     if (branchId) await deleteBranch(branchId).catch(() => {});
     throw new Error(
