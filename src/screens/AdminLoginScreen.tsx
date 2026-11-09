@@ -84,7 +84,7 @@ export function AdminLoginScreen() {
     const { data: profile, error: profileError } = await supabase
       .from('profiles')
       .select(
-        'role, is_active, parent_tenant_id, staff_financial, staff_shop, staff_branch, branch_id, staff_label'
+        'role, is_active, parent_tenant_id, staff_financial, staff_shop, staff_branch, branch_id, staff_label, branch_selection_enabled'
       )
       .eq('id', data.user.id)
       .single();
@@ -99,15 +99,18 @@ export function AdminLoginScreen() {
 
     // A shop switched off by the super admin logs nobody in — neither the
     // owner nor its staff (migration 037 + 045).
+    let branchSelectionEnabled = true;
     if (profile!.role === 'admin') {
       let switchedOff = profile!.is_active === false;
-      if (!switchedOff && profile!.parent_tenant_id) {
+      branchSelectionEnabled = profile!.branch_selection_enabled !== false;
+      if (profile!.parent_tenant_id) {
         const { data: parent } = await supabase
           .from('profiles')
-          .select('is_active')
+          .select('is_active, branch_selection_enabled')
           .eq('id', profile!.parent_tenant_id)
           .single();
-        switchedOff = parent?.is_active === false;
+        switchedOff = switchedOff || parent?.is_active === false;
+        if (parent) branchSelectionEnabled = parent.branch_selection_enabled !== false;
       }
       if (switchedOff) {
         await supabase.auth.signOut();
@@ -132,6 +135,7 @@ export function AdminLoginScreen() {
         },
         branchId: profile!.branch_id ?? null,
         label: profile!.staff_label ?? null,
+        branchSelectionEnabled,
       });
     } else {
       setStaffSession(null);

@@ -20,10 +20,8 @@ import { Screen } from '../../components/Screen';
 import { EmptyState } from '../../components/EmptyState';
 import { AdminHeader } from '../../components/AdminHeader';
 import { BankAccountsEditor } from '../../components/BankAccountsEditor';
-import { BranchesEditor, EditableBranch } from '../../components/BranchesEditor';
 import { Button } from '../../components/Button';
-import { fetchTenants, createTenant, adminSetTenantActive, adminSetTenantPaymentVerification, Tenant } from '../../services/tenants';
-import { setTenantBranches } from '../../services/branches';
+import { fetchTenants, createTenant, adminSetTenantActive, adminSetTenantPaymentVerification, fetchStaff, StaffAccount, Tenant } from '../../services/tenants';
 import { fetchPaymentVerificationEnabled, setPaymentVerificationEnabled } from '../../services/settings';
 import { uploadShopLogo } from '../../services/images';
 import { confirmAction } from '../../utils/confirm';
@@ -43,6 +41,8 @@ export function TenantManagementScreen() {
   const styles = makeStyles(colors);
 
   const [tenants, setTenants] = useState<Tenant[]>([]);
+  /** Staff accounts nested under each shop card (tenant id → accounts). */
+  const [staffByTenant, setStaffByTenant] = useState<Record<string, StaffAccount[]>>({});
   const [loading, setLoading] = useState(true);
   const [isCreating, setIsCreating] = useState(false);
   /** Runtime kill-switch for the payment verification pipeline (042). */
@@ -75,7 +75,6 @@ export function TenantManagementScreen() {
   const [telegramChatId, setTelegramChatId] = useState('');
   const [telegramUsername, setTelegramUsername] = useState('');
   const [bankAccounts, setBankAccounts] = useState<BankAccount[]>([{ accountNumber: '' }]);
-  const [branches, setBranches] = useState<EditableBranch[]>([]);
   const [shippingFee, setShippingFee] = useState('');
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
@@ -86,6 +85,19 @@ export function TenantManagementScreen() {
       setLoading(true);
       const data = await fetchTenants();
       setTenants(data);
+      // Staff for every listed shop, nested under its card. Failures are
+      // non-fatal — the shop list still renders.
+      const staffEntries = await Promise.all(
+        data.map(async (tenant) => {
+          try {
+            return [tenant.id, await fetchStaff(tenant.id)] as const;
+          } catch (error) {
+            console.error(`Failed to load staff for ${tenant.id}:`, error);
+            return [tenant.id, []] as const;
+          }
+        })
+      );
+      setStaffByTenant(Object.fromEntries(staffEntries));
     } catch (error) {
       console.error('Failed to load tenants:', error);
       Alert.alert('Error', 'Failed to load tenants. Please try again.');
@@ -111,7 +123,6 @@ export function TenantManagementScreen() {
     setTelegramChatId('');
     setTelegramUsername('');
     setBankAccounts([{ accountNumber: '' }]);
-    setBranches([]);
     setShippingFee('');
     setPassword('');
     setConfirmPassword('');
@@ -202,26 +213,9 @@ export function TenantManagementScreen() {
         shopDescription,
         telegramUsername
       );
-      // Branch rows with an empty name are dropped silently; a failed branch
-      // save surfaces an alert but the tenant stays created.
-      const cleanBranches = branches.filter((b) => b.name.trim());
-      let branchesFailed = false;
-      if (cleanBranches.length > 0) {
-        try {
-          await setTenantBranches(tenant.id, cleanBranches);
-        } catch (error) {
-          branchesFailed = true;
-          console.error('Failed to save branches:', error);
-        }
-      }
       setTenants((prev) => [tenant, ...prev]);
       resetForm();
-      Alert.alert(
-        branchesFailed ? 'Tenant Created — Branches Failed' : 'Success',
-        branchesFailed
-          ? `Tenant @${tenant.username} was created, but saving the branches failed. Open the tenant and add them there.`
-          : `Tenant @${tenant.username} created.`
-      );
+      Alert.alert('Success', `Tenant @${tenant.username} created.`);
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to create tenant';
       Alert.alert('Error', message);
@@ -444,11 +438,6 @@ export function TenantManagementScreen() {
                 </View>
 
                 <View style={styles.field}>
-                  <Text style={styles.label}>Branches (optional)</Text>
-                  <BranchesEditor value={branches} onChange={setBranches} />
-                </View>
-
-                <View style={styles.field}>
                   <Text style={styles.label}>Shipping Fee (optional)</Text>
                   <TextInput
                     style={styles.input}
@@ -524,39 +513,66 @@ export function TenantManagementScreen() {
                       style={styles.card}
                       onPress={() => handleView(item)}
                     >
-                      <View style={styles.cardInfo}>
-                        <Text style={styles.shopName} numberOfLines={1}>
-                          {item.shopName ?? 'Untitled Shop'}
-                        </Text>
-                        <Text style={styles.meta}>
-                          @{item.username ?? 'unknown'}
-                          {item.code ? ` · ${item.code}` : ''} · Added {new Date(item.createdAt).toLocaleDateString()}
-                        </Text>
-                        {!item.isActive && (
-                          <Text style={styles.inactiveLabel}>Inactive — hidden from the shop</Text>
-                        )}
-                        <View style={styles.verifyRow}>
-                          <Ionicons name="shield-checkmark-outline" size={14} color={colors.textSecondary} />
-                          <Text style={styles.verifyLabel}>Payment verification</Text>
+                      <View style={styles.cardRow}>
+                        <View style={styles.cardInfo}>
+                          <Text style={styles.shopName} numberOfLines={1}>
+                            {item.shopName ?? 'Untitled Shop'}
+                          </Text>
+                          <Text style={styles.meta}>
+                            @{item.username ?? 'unknown'}
+                            {item.code ? ` · ${item.code}` : ''} · Added {new Date(item.createdAt).toLocaleDateString()}
+                          </Text>
+                          {!item.isActive && (
+                            <Text style={styles.inactiveLabel}>Inactive — hidden from the shop</Text>
+                          )}
+                          <View style={styles.verifyRow}>
+                            <Ionicons name="shield-checkmark-outline" size={14} color={colors.textSecondary} />
+                            <Text style={styles.verifyLabel}>Payment verification</Text>
+                            <Switch
+                              value={item.paymentVerificationEnabled}
+                              onValueChange={(value) => handleTogglePaymentVerification(item, value)}
+                              trackColor={{ false: colors.border, true: colors.success }}
+                            />
+                          </View>
+                        </View>
+                        <View style={styles.cardActions}>
                           <Switch
-                            value={item.paymentVerificationEnabled}
-                            onValueChange={(value) => handleTogglePaymentVerification(item, value)}
-                            trackColor={{ false: colors.border, true: colors.success }}
+                            value={item.isActive}
+                            onValueChange={(value) => handleToggleActive(item, value)}
+                            trackColor={{ false: colors.border, true: colors.primary }}
                           />
+                          <TouchableOpacity
+                            style={styles.actionButton}
+                            onPress={() => handleView(item)}
+                          >
+                            <Ionicons name="eye-outline" size={18} color={colors.primary} />
+                          </TouchableOpacity>
                         </View>
                       </View>
-                      <View style={styles.cardActions}>
-                        <Switch
-                          value={item.isActive}
-                          onValueChange={(value) => handleToggleActive(item, value)}
-                          trackColor={{ false: colors.border, true: colors.primary }}
-                        />
-                        <TouchableOpacity
-                          style={styles.actionButton}
-                          onPress={() => handleView(item)}
-                        >
-                          <Ionicons name="eye-outline" size={18} color={colors.primary} />
-                        </TouchableOpacity>
+                      <View style={styles.accountList}>
+                        <View style={styles.accountRow}>
+                          <Ionicons name="person-outline" size={14} color={colors.textSecondary} />
+                          <Text style={styles.accountName} numberOfLines={1}>
+                            Owner — @{item.username ?? 'unknown'}
+                          </Text>
+                        </View>
+                        {(staffByTenant[item.id] ?? []).map((account) => (
+                          <View key={account.id} style={styles.accountRow}>
+                            <Ionicons name="person-outline" size={14} color={colors.textSecondary} />
+                            <Text style={styles.accountName} numberOfLines={1}>
+                              {account.label || account.email || 'Staff'}
+                            </Text>
+                            <View style={styles.badgeRow}>
+                              {account.capabilities.financial && (
+                                <Text style={styles.badge}>Financial</Text>
+                              )}
+                              {account.capabilities.shop && <Text style={styles.badge}>Shop</Text>}
+                              {account.capabilities.branch && (
+                                <Text style={styles.badge}>Branch</Text>
+                              )}
+                            </View>
+                          </View>
+                        ))}
                       </View>
                     </TouchableOpacity>
                   )}
@@ -733,8 +749,6 @@ const makeStyles = (colors: ColorPalette) =>
       marginBottom: spacing.sm,
     },
     card: {
-      flexDirection: 'row',
-      alignItems: 'center',
       backgroundColor: colors.surface,
       borderRadius: borderRadius.md,
       borderWidth: 1,
@@ -747,8 +761,47 @@ const makeStyles = (colors: ColorPalette) =>
           } as any)
         : {}),
     },
+    cardRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+    },
     cardInfo: {
       flex: 1,
+    },
+    accountList: {
+      marginTop: spacing.sm,
+      marginLeft: spacing.lg,
+      gap: spacing.xs,
+      borderTopWidth: 1,
+      borderTopColor: colors.border,
+      paddingTop: spacing.sm,
+    },
+    accountRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: spacing.xs,
+    },
+    accountName: {
+      flex: 1,
+      fontSize: fontSizes.sm,
+      color: colors.textSecondary,
+    },
+    badgeRow: {
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      gap: spacing.xs,
+    },
+    badge: {
+      fontSize: fontSizes.sm,
+      fontWeight: '600',
+      color: colors.primary,
+      backgroundColor: colors.background,
+      borderWidth: 1,
+      borderColor: colors.primary,
+      borderRadius: borderRadius.sm,
+      paddingHorizontal: spacing.sm,
+      paddingVertical: 2,
+      overflow: 'hidden',
     },
     shopName: {
       fontSize: fontSizes.md,

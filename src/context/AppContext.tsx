@@ -298,7 +298,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
           const { data: profile } = await supabase
             .from('profiles')
             .select(
-              'role, is_active, parent_tenant_id, staff_financial, staff_shop, staff_branch, branch_id, staff_label'
+              'role, is_active, parent_tenant_id, staff_financial, staff_shop, staff_branch, branch_id, staff_label, branch_selection_enabled'
             )
             .eq('id', session.user.id)
             .single();
@@ -312,14 +312,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
             let restoredSession: StaffSession | null = null;
             if (profile.role === 'admin') {
               const tenantId = profile.parent_tenant_id ?? session.user.id;
+              // The shop's branch-selection toggle: the owner's own flag, or
+              // the parent shop's for staff (readable since 046).
+              let branchSelectionEnabled = profile.branch_selection_enabled !== false;
               if (profile.parent_tenant_id) {
                 // Staff account: the parent shop's switch governs them.
                 const { data: parent } = await supabase
                   .from('profiles')
-                  .select('is_active')
+                  .select('is_active, branch_selection_enabled')
                   .eq('id', profile.parent_tenant_id)
                   .single();
                 if (parent?.is_active === false) staffSwitchedOff = true;
+                if (parent) branchSelectionEnabled = parent.branch_selection_enabled !== false;
               }
               restoredSession = {
                 tenantId,
@@ -330,6 +334,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
                 },
                 branchId: profile.branch_id ?? null,
                 label: profile.staff_label ?? null,
+                branchSelectionEnabled,
               };
             }
             if (staffSwitchedOff) {

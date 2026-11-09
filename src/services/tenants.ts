@@ -1,6 +1,7 @@
 import { createClient } from '@supabase/supabase-js';
 import { supabase } from '../lib/supabase';
 import { BankAccount, StaffCapabilities } from '../types';
+import { createBranch, deleteBranch, renameBranch } from './branches';
 
 export interface Tenant {
   id: string;
@@ -21,6 +22,9 @@ export interface Tenant {
   /** false = super admin excluded this shop from payment verification:
    *  its orders are placed with proofs only (migration 043). */
   paymentVerificationEnabled: boolean;
+  /** false = shoppers are not asked to pick a branch at checkout; orders
+   *  arrive unstamped and branch staff see the whole shop (migration 046). */
+  branchSelectionEnabled: boolean;
   role: 'admin';
   createdAt: string;
 }
@@ -60,12 +64,13 @@ interface DbProfile {
   telegram_username: string | null;
   is_active: boolean;
   payment_verification_enabled: boolean;
+  branch_selection_enabled: boolean;
   role: 'admin';
   created_at: string;
 }
 
 const TENANT_SELECT =
-  'id, tenant_code, username, email, shop_name, telegram_chat_id, bank_accounts, shipping_fee, shop_logo_url, shop_description, telegram_username, is_active, payment_verification_enabled, role, created_at';
+  'id, tenant_code, username, email, shop_name, telegram_chat_id, bank_accounts, shipping_fee, shop_logo_url, shop_description, telegram_username, is_active, payment_verification_enabled, branch_selection_enabled, role, created_at';
 
 function toTenant(db: DbProfile): Tenant {
   return {
@@ -82,6 +87,7 @@ function toTenant(db: DbProfile): Tenant {
     telegramUsername: db.telegram_username,
     isActive: db.is_active,
     paymentVerificationEnabled: db.payment_verification_enabled ?? true,
+    branchSelectionEnabled: db.branch_selection_enabled ?? true,
     role: db.role,
     createdAt: db.created_at,
   };
@@ -110,10 +116,13 @@ function createSignupClient() {
 }
 
 export async function fetchTenants(): Promise<Tenant[]> {
+  // Shop owners only — staff accounts are also role='admin' but carry a
+  // parent_tenant_id (migration 045); they're listed under their shop.
   const { data, error } = await supabase
     .from('profiles')
     .select(TENANT_SELECT)
     .eq('role', 'admin')
+    .is('parent_tenant_id', null)
     .order('created_at', { ascending: false });
 
   if (error) throw error;
@@ -334,6 +343,7 @@ export async function createTenant(
     telegramUsername: cleanTelegramUsername || null,
     isActive: true,
     paymentVerificationEnabled: true,
+    branchSelectionEnabled: true,
     role: 'admin',
     createdAt: new Date().toISOString(),
   };
@@ -441,6 +451,7 @@ export async function adminSetTenantTelegramUsername(
 
 export interface StaffAccount {
   id: string;
+  parentTenantId: string;
   label: string | null;
   email: string | null;
   capabilities: StaffCapabilities;
@@ -450,6 +461,7 @@ export interface StaffAccount {
 
 interface DbStaffProfile {
   id: string;
+  parent_tenant_id: string;
   email: string | null;
   staff_label: string | null;
   staff_financial: boolean;
@@ -460,11 +472,12 @@ interface DbStaffProfile {
 }
 
 const STAFF_SELECT =
-  'id, email, staff_label, staff_financial, staff_shop, staff_branch, branch_id, created_at';
+  'id, parent_tenant_id, email, staff_label, staff_financial, staff_shop, staff_branch, branch_id, created_at';
 
 function toStaffAccount(db: DbStaffProfile): StaffAccount {
   return {
     id: db.id,
+    parentTenantId: db.parent_tenant_id,
     label: db.staff_label,
     email: db.email,
     capabilities: {
@@ -494,14 +507,17 @@ export async function fetchStaff(tenantId: string): Promise<StaffAccount[]> {
  *  the secondary in-memory client so the super admin's session survives, and
  *  carries NO shop_name metadata so the signup trigger creates a plain
  *  'user' profile — the main client then promotes it to shop staff (allowed
- *  by the super-admin profiles update policy and the role-change guard). */
+ *  by the super-admin profiles update policy and the role-change guard).
+ *
+ *  Branches (046): a Branch Admin account IS a branch — when the branch
+ *  capability is on, a branch named after the account's label is created and
+ *  linked. One branch admin = one branch. */
 export async function createStaffAccount(
   tenant: { id: string; username: string | null },
   args: {
     label: string;
     password: string;
     capabilities: StaffCapabilities;
-    branchId: string | null;
   }
 ): Promise<StaffAccount> {
   const label = args.label.trim();
@@ -510,6 +526,9 @@ export async function createStaffAccount(
   }
   if (!args.capabilities.financial && !args.capabilities.shop && !args.capabilities.branch) {
     throw new Error('Turn on at least one capability.');
+  }
+  if (args.capabilities.branch && !label) {
+    throw new Error('A Branch Admin needs a label — it becomes the branch name.');
   }
   if (!tenant.username) {
     throw new Error('This shop has no username, so staff accounts cannot be created.');
@@ -530,6 +549,11 @@ export async function createStaffAccount(
     throw new Error('Failed to create staff account. No user was returned.');
   }
 
+  let branchId: string | null = null;
+  if (args.capabilities.branch) {
+    branchId = await createBranch(tenant.id, label);
+  }
+
   // The profile row is created synchronously by the on_auth_user_created
   // trigger, so it can be promoted right away.
   const { error: profileError } = await supabase
@@ -540,11 +564,12 @@ export async function createStaffAccount(
       staff_financial: args.capabilities.financial,
       staff_shop: args.capabilities.shop,
       staff_branch: args.capabilities.branch,
-      branch_id: args.capabilities.branch ? args.branchId : null,
+      branch_id: branchId,
       staff_label: label || null,
     })
     .eq('id', data.user.id);
   if (profileError) {
+    if (branchId) await deleteBranch(branchId).catch(() => {});
     throw new Error(
       `The staff account was created, but saving its role failed: ${profileError.message}. ` +
         'Remove it and try again.'
@@ -553,33 +578,52 @@ export async function createStaffAccount(
 
   return {
     id: data.user.id,
+    parentTenantId: tenant.id,
     label: label || null,
     email,
     capabilities: args.capabilities,
-    branchId: args.capabilities.branch ? args.branchId : null,
+    branchId,
     createdAt: new Date().toISOString(),
   };
 }
 
-/** Super admin edits a staff account's label, capabilities, and branch. */
+/** Super admin edits a staff account's label and capabilities, keeping the
+ *  1:1 branch link in sync (046): Branch toggled on creates the branch,
+ *  toggled off deletes it, and a label change renames it. */
 export async function updateStaffAccount(
-  staffId: string,
+  staff: StaffAccount,
   args: {
     label: string;
     capabilities: StaffCapabilities;
-    branchId: string | null;
   }
 ): Promise<void> {
+  const label = args.label.trim();
+  if (!args.capabilities.financial && !args.capabilities.shop && !args.capabilities.branch) {
+    throw new Error('Turn on at least one capability.');
+  }
+  if (args.capabilities.branch && !label) {
+    throw new Error('A Branch Admin needs a label — it becomes the branch name.');
+  }
+
+  let branchId = args.capabilities.branch ? staff.branchId : null;
+  if (args.capabilities.branch && !branchId) {
+    branchId = await createBranch(staff.parentTenantId, label);
+  } else if (!args.capabilities.branch && staff.branchId) {
+    await deleteBranch(staff.branchId);
+  } else if (args.capabilities.branch && branchId && label && label !== staff.label) {
+    await renameBranch(branchId, label);
+  }
+
   const { error } = await supabase
     .from('profiles')
     .update({
-      staff_label: args.label.trim() || null,
+      staff_label: label || null,
       staff_financial: args.capabilities.financial,
       staff_shop: args.capabilities.shop,
       staff_branch: args.capabilities.branch,
-      branch_id: args.capabilities.branch ? args.branchId : null,
+      branch_id: branchId,
     })
-    .eq('id', staffId);
+    .eq('id', staff.id);
   if (error) throw new Error(error.message || 'Failed to update staff account.');
 }
 
@@ -599,10 +643,29 @@ export async function setStaffPassword(
   if (error) throw new Error(error.message || 'Failed to set password.');
 }
 
-/** Super admin removes a staff account (products and orders are untouched). */
-export async function deleteStaffAccount(staffId: string): Promise<void> {
+/** Super admin removes a staff account and its branch (products and orders
+ *  are untouched; order items keep their stamped branchName). */
+export async function deleteStaffAccount(staff: StaffAccount): Promise<void> {
+  if (staff.branchId) {
+    await deleteBranch(staff.branchId).catch(() => {});
+  }
   const { error } = await supabase.rpc('admin_delete_staff', {
-    staff_id: staffId,
+    staff_id: staff.id,
   });
   if (error) throw new Error(error.message || 'Failed to remove staff account.');
+}
+
+/** Super admin flips whether a shop offers branch selection at checkout
+ *  (046). Off = no dropdown; orders arrive unstamped and branch staff see
+ *  the whole shop. */
+export async function adminSetTenantBranchSelection(
+  tenantId: string,
+  enabled: boolean
+): Promise<void> {
+  const { error } = await supabase
+    .from('profiles')
+    .update({ branch_selection_enabled: enabled })
+    .eq('id', tenantId)
+    .eq('role', 'admin');
+  if (error) throw new Error(error.message || 'Failed to update branch selection.');
 }

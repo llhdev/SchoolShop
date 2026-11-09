@@ -95,7 +95,12 @@ export function AdminOrdersScreen() {
     if (!activeTenantId) return order.items;
     return isSuperAdmin
       ? getOrderItemsForTenant(order, activeTenantId)
-      : getOrderItemsForScope(order, activeTenantId, staffSession?.branchId);
+      : getOrderItemsForScope(
+          order,
+          activeTenantId,
+          staffSession?.branchId,
+          staffSession?.branchSelectionEnabled !== false
+        );
   };
   const visibleOrders = activeTenantId
     ? orders.filter((o) => itemsOf(o).length > 0)

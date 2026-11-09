@@ -84,7 +84,12 @@ export function OrderDetailScreen() {
   const isStaffViewer = role === 'admin' && !!effectiveTenantId;
   const visibleItems =
     order && isStaffViewer
-      ? getOrderItemsForScope(order, effectiveTenantId, staffSession?.branchId)
+      ? getOrderItemsForScope(
+          order,
+          effectiveTenantId,
+          staffSession?.branchId,
+          staffSession?.branchSelectionEnabled !== false
+        )
       : order?.items;
   const visibleTotal =
     visibleItems?.reduce((sum, item) => sum + getUnitPrice(item) * item.quantity, 0) ?? 0;

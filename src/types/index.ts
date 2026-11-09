@@ -64,6 +64,9 @@ export interface StaffSession {
   capabilities: StaffCapabilities;
   branchId: string | null;
   label: string | null;
+  /** The shop's checkout branch-selection toggle (migration 046). When false,
+   *  orders carry no branch stamp, so branch-scoped staff see the whole shop. */
+  branchSelectionEnabled: boolean;
 }
 
 /** A tenant-defined question the buyer answers at checkout (migration 036).
@@ -107,6 +110,8 @@ export interface Product {
   ownerTelegramUsername?: string;
   /** Whether this shop requires pre-order payment verification (migration 043); undefined = on. */
   ownerPaymentVerificationEnabled?: boolean;
+  /** Whether this shop offers branch selection at checkout (migration 046); undefined = on. */
+  ownerBranchSelectionEnabled?: boolean;
   /** Optional variant groups ("Size", "Color"); one group may set the price (migration 035). */
   variantGroups?: VariantGroup[];
   /** Tenant-defined questions the buyer answers at checkout (migration 036). */

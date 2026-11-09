@@ -59,6 +59,10 @@ interface TenantPaymentGroup {
    *  migration 043); combined with the global kill-switch (042) to decide
    *  whether this shop's payment must be verified. */
   paymentVerificationEnabled: boolean;
+  /** The shop's own branch-selection switch (profiles.branch_selection_enabled,
+   *  migration 046); off = no checkout branch dropdown even when the shop has
+   *  branches. */
+  branchSelectionEnabled: boolean;
   items: CartItem[];
   subtotal: number;
   /** What the shopper transfers to this shop: subtotal + shipping fee. */
@@ -209,6 +213,10 @@ export function CheckoutScreen() {
           bankAccounts: current.ownerBankAccounts ?? [],
           shippingFee,
           paymentVerificationEnabled: current.ownerPaymentVerificationEnabled ?? true,
+          branchSelectionEnabled:
+            current.ownerBranchSelectionEnabled ??
+            item.product.ownerBranchSelectionEnabled ??
+            true,
           items: [],
           subtotal: 0,
           total: 0,
@@ -308,9 +316,13 @@ export function CheckoutScreen() {
   const isGroupVerificationRequired = (group: TenantPaymentGroup) =>
     verificationEnabled && group.paymentVerificationEnabled;
 
-  // A shop with branches requires a chosen branch before ordering.
+  // A shop shows a branch dropdown only when it HAS branches and its own
+  // branch-selection switch (046) is on. Only visible dropdowns are required.
+  const isBranchSelectionVisible = (group: TenantPaymentGroup) =>
+    group.branchSelectionEnabled && (branchesByTenant[group.key] ?? []).length > 0;
+  const branchGroups = tenantGroups.filter(isBranchSelectionVisible);
   const branchMissing = (group: TenantPaymentGroup) =>
-    (branchesByTenant[group.key] ?? []).length > 0 && !branchByTenant[group.key];
+    isBranchSelectionVisible(group) && !branchByTenant[group.key];
 
   const canPlaceOrder =
     cart.length > 0 &&
@@ -600,9 +612,16 @@ export function CheckoutScreen() {
         const current: Product =
           catalog.find((p) => p.id === item.product.id) ?? item.product;
         const tenantKey = current.ownerId ?? item.product.ownerId ?? UNKNOWN_TENANT_KEY;
-        const branch = (branchesByTenant[tenantKey] ?? []).find(
-          (b) => b.id === branchByTenant[tenantKey]
-        );
+        // Only stamp when the shop actually offered the choice — a shop whose
+        // branch-selection switch (046) is off shows no dropdown and stamps
+        // nothing, even if a single branch was auto-preselected.
+        const group = tenantGroups.find((g) => g.key === tenantKey);
+        const branch =
+          group && isBranchSelectionVisible(group)
+            ? (branchesByTenant[tenantKey] ?? []).find(
+                (b) => b.id === branchByTenant[tenantKey]
+              )
+            : undefined;
         return {
           ...item,
           ...(fieldAnswers.length > 0 ? { fieldAnswers } : {}),
@@ -751,6 +770,111 @@ export function CheckoutScreen() {
                 )}
               </View>
 
+              {branchGroups.length > 0 && (
+                <View style={styles.section}>
+                  {branchGroups.map((group) => {
+                    const groupBranches = branchesByTenant[group.key] ?? [];
+                    const selectedBranch = groupBranches.find(
+                      (b) => b.id === branchByTenant[group.key]
+                    );
+                    const branchDropdownKey = `branch:${group.key}`;
+                    const branchHint = selectedBranch
+                      ? [
+                          selectedBranch.deliveryLocation
+                            ? `Delivery: ${selectedBranch.deliveryLocation}`
+                            : null,
+                          selectedBranch.phone ? `Phone: ${selectedBranch.phone}` : null,
+                        ]
+                          .filter((part): part is string => !!part)
+                          .join(' · ')
+                      : '';
+                    return (
+                      <View key={group.key} style={styles.questionField}>
+                        <Text style={styles.questionLabel}>Branch — {group.shopName}</Text>
+                        <TouchableOpacity
+                          style={[
+                            styles.dropdownField,
+                            showValidation && !selectedBranch && styles.inputError,
+                          ]}
+                          onPress={() =>
+                            setOpenDropdown((cur) =>
+                              cur === branchDropdownKey ? null : branchDropdownKey
+                            )
+                          }
+                          activeOpacity={0.7}
+                        >
+                          <Text
+                            style={[
+                              styles.dropdownValue,
+                              !selectedBranch && styles.dropdownValuePlaceholder,
+                            ]}
+                            numberOfLines={1}
+                          >
+                            {selectedBranch?.name ?? 'Select a branch'}
+                          </Text>
+                          <Ionicons
+                            name={
+                              openDropdown === branchDropdownKey ? 'chevron-up' : 'chevron-down'
+                            }
+                            size={18}
+                            color={colors.textSecondary}
+                          />
+                        </TouchableOpacity>
+                        {openDropdown === branchDropdownKey && (
+                          <ScrollView
+                            style={styles.dropdownList}
+                            nestedScrollEnabled
+                            keyboardShouldPersistTaps="handled"
+                          >
+                            {groupBranches.map((branch) => (
+                              <TouchableOpacity
+                                key={branch.id}
+                                style={[
+                                  styles.dropdownOption,
+                                  selectedBranch?.id === branch.id && styles.dropdownOptionActive,
+                                ]}
+                                onPress={() => {
+                                  setBranchByTenant((prev) => ({
+                                    ...prev,
+                                    [group.key]: branch.id,
+                                  }));
+                                  setOpenDropdown(null);
+                                }}
+                                activeOpacity={0.7}
+                              >
+                                <Text
+                                  style={[
+                                    styles.dropdownOptionText,
+                                    selectedBranch?.id === branch.id &&
+                                      styles.dropdownOptionTextActive,
+                                  ]}
+                                  numberOfLines={1}
+                                >
+                                  {branch.name}
+                                </Text>
+                                {selectedBranch?.id === branch.id && (
+                                  <Ionicons
+                                    name="checkmark"
+                                    size={16}
+                                    color={colors.primary}
+                                  />
+                                )}
+                              </TouchableOpacity>
+                            ))}
+                          </ScrollView>
+                        )}
+                        {branchHint.length > 0 && (
+                          <Text style={styles.branchHint}>{branchHint}</Text>
+                        )}
+                        {showValidation && !selectedBranch && (
+                          <Text style={styles.errorText}>Choose a branch</Text>
+                        )}
+                      </View>
+                    );
+                  })}
+                </View>
+              )}
+
               {questionLines.length > 0 && (
                 <View style={styles.section}>
                   <Text style={styles.sectionTitle}>Questions from the shop</Text>
@@ -889,21 +1013,6 @@ export function CheckoutScreen() {
                       verifyState === 'not_found' ||
                       verifyState === 'unavailable');
                   const paidAmount = verifyPaidAmounts[group.key];
-                  const groupBranches = branchesByTenant[group.key] ?? [];
-                  const selectedBranch = groupBranches.find(
-                    (b) => b.id === branchByTenant[group.key]
-                  );
-                  const branchDropdownKey = `branch:${group.key}`;
-                  const branchHint = selectedBranch
-                    ? [
-                        selectedBranch.deliveryLocation
-                          ? `Delivery: ${selectedBranch.deliveryLocation}`
-                          : null,
-                        selectedBranch.phone ? `Phone: ${selectedBranch.phone}` : null,
-                      ]
-                        .filter((part): part is string => !!part)
-                        .join(' · ')
-                    : '';
                   const chip = verifyState ? VERIFY_CHIP_LABELS[verifyState] : undefined;
                   const chipColor =
                     verifyState === 'verified'
@@ -921,91 +1030,6 @@ export function CheckoutScreen() {
                         <Text style={styles.tenantName}>{group.shopName}</Text>
                         <Text style={styles.tenantSubtotal}>{formatPrice(group.total)}</Text>
                       </View>
-
-                      {groupBranches.length > 0 && (
-                        <View>
-                          <Text style={styles.questionLabel}>Branch</Text>
-                          <TouchableOpacity
-                            style={[
-                              styles.dropdownField,
-                              showValidation && !selectedBranch && styles.inputError,
-                            ]}
-                            onPress={() =>
-                              setOpenDropdown((cur) =>
-                                cur === branchDropdownKey ? null : branchDropdownKey
-                              )
-                            }
-                            activeOpacity={0.7}
-                          >
-                            <Text
-                              style={[
-                                styles.dropdownValue,
-                                !selectedBranch && styles.dropdownValuePlaceholder,
-                              ]}
-                              numberOfLines={1}
-                            >
-                              {selectedBranch?.name ?? 'Select a branch'}
-                            </Text>
-                            <Ionicons
-                              name={
-                                openDropdown === branchDropdownKey ? 'chevron-up' : 'chevron-down'
-                              }
-                              size={18}
-                              color={colors.textSecondary}
-                            />
-                          </TouchableOpacity>
-                          {openDropdown === branchDropdownKey && (
-                            <ScrollView
-                              style={styles.dropdownList}
-                              nestedScrollEnabled
-                              keyboardShouldPersistTaps="handled"
-                            >
-                              {groupBranches.map((branch) => (
-                                <TouchableOpacity
-                                  key={branch.id}
-                                  style={[
-                                    styles.dropdownOption,
-                                    selectedBranch?.id === branch.id &&
-                                      styles.dropdownOptionActive,
-                                  ]}
-                                  onPress={() => {
-                                    setBranchByTenant((prev) => ({
-                                      ...prev,
-                                      [group.key]: branch.id,
-                                    }));
-                                    setOpenDropdown(null);
-                                  }}
-                                  activeOpacity={0.7}
-                                >
-                                  <Text
-                                    style={[
-                                      styles.dropdownOptionText,
-                                      selectedBranch?.id === branch.id &&
-                                        styles.dropdownOptionTextActive,
-                                    ]}
-                                    numberOfLines={1}
-                                  >
-                                    {branch.name}
-                                  </Text>
-                                  {selectedBranch?.id === branch.id && (
-                                    <Ionicons
-                                      name="checkmark"
-                                      size={16}
-                                      color={colors.primary}
-                                    />
-                                  )}
-                                </TouchableOpacity>
-                              ))}
-                            </ScrollView>
-                          )}
-                          {branchHint.length > 0 && (
-                            <Text style={styles.branchHint}>{branchHint}</Text>
-                          )}
-                          {showValidation && !selectedBranch && (
-                            <Text style={styles.errorText}>Choose a branch</Text>
-                          )}
-                        </View>
-                      )}
 
                       {group.items.map((item) => (
                         <View key={getCartItemLineId(item)} style={styles.tenantItemRow}>

@@ -41,7 +41,12 @@ export function AdminUserOrdersScreen() {
     if (!scopedTenantId) return order.items;
     return tenantId
       ? getOrderItemsForTenant(order, tenantId)
-      : getOrderItemsForScope(order, scopedTenantId, staffSession?.branchId);
+      : getOrderItemsForScope(
+          order,
+          scopedTenantId,
+          staffSession?.branchId,
+          staffSession?.branchSelectionEnabled !== false
+        );
   };
   const tenantTotal = (order: (typeof orders)[number]) =>
     itemsOf(order).reduce((sum, item) => sum + getUnitPrice(item) * item.quantity, 0);

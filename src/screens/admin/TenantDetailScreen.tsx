@@ -18,7 +18,6 @@ import { Ionicons } from '@expo/vector-icons';
 import { Screen } from '../../components/Screen';
 import { AdminHeader } from '../../components/AdminHeader';
 import { BankAccountsEditor } from '../../components/BankAccountsEditor';
-import { BranchesEditor, EditableBranch } from '../../components/BranchesEditor';
 import { Button } from '../../components/Button';
 import {
   fetchTenantById,
@@ -32,6 +31,7 @@ import {
   adminSetTenantShopLogo,
   adminSetTenantShopDescription,
   adminSetTenantActive,
+  adminSetTenantBranchSelection,
   fetchStaff,
   createStaffAccount,
   updateStaffAccount,
@@ -40,7 +40,6 @@ import {
   StaffAccount,
   Tenant,
 } from '../../services/tenants';
-import { fetchBranches, setTenantBranches, TenantBranch } from '../../services/branches';
 import { uploadShopLogo } from '../../services/images';
 import { confirmAction } from '../../utils/confirm';
 import { AdminStackParamList } from '../../types/navigation';
@@ -104,13 +103,9 @@ export function TenantDetailScreen() {
   } | null>(null);
   const [saving, setSaving] = useState(false);
 
-  // Branches (migration 045): edited with the BranchesEditor and saved with
-  // its own button — the account edit form above only touches profile fields.
-  const [branches, setBranches] = useState<TenantBranch[]>([]);
-  const [editableBranches, setEditableBranches] = useState<EditableBranch[]>([]);
-  const [savingBranches, setSavingBranches] = useState(false);
-
   // Staff accounts (migration 045): separate auth users scoped to this shop.
+  // Since migration 046 a Branch Admin account IS a branch — the label is the
+  // branch name and the service keeps the branch row in sync.
   const [staff, setStaff] = useState<StaffAccount[]>([]);
   const [staffModal, setStaffModal] = useState<{
     mode: 'create' | 'edit' | 'password';
@@ -123,7 +118,6 @@ export function TenantDetailScreen() {
     shop: false,
     branch: false,
   });
-  const [staffBranchId, setStaffBranchId] = useState<string | null>(null);
   const [staffSaving, setStaffSaving] = useState(false);
   const [staffError, setStaffError] = useState<string | null>(null);
 
@@ -277,23 +271,6 @@ export function TenantDetailScreen() {
     }
   }, [tenantId]);
 
-  const loadBranches = useCallback(async () => {
-    try {
-      const list = await fetchBranches([tenantId]);
-      setBranches(list);
-      setEditableBranches(
-        list.map((b) => ({
-          id: b.id,
-          name: b.name,
-          deliveryLocation: b.deliveryLocation,
-          phone: b.phone,
-        }))
-      );
-    } catch (error) {
-      console.error('Failed to load branches:', error);
-    }
-  }, [tenantId]);
-
   const loadStaff = useCallback(async () => {
     try {
       setStaff(await fetchStaff(tenantId));
@@ -304,29 +281,21 @@ export function TenantDetailScreen() {
 
   useEffect(() => {
     loadTenant();
-    loadBranches();
     loadStaff();
-  }, [loadTenant, loadBranches, loadStaff]);
+  }, [loadTenant, loadStaff]);
 
-  /** Branch rows with an empty name are dropped silently, matching the
-   *  create-tenant form. */
-  async function handleSaveBranches() {
+  /** Super admin flips whether shoppers pick a branch at checkout (046);
+   *  optimistic, same pattern as the shop-active switch. */
+  async function setBranchSelection(next: boolean) {
     if (!tenant) return;
-    setSavingBranches(true);
+    const previous = tenant;
+    setTenant({ ...tenant, branchSelectionEnabled: next });
     try {
-      await setTenantBranches(
-        tenant.id,
-        editableBranches.filter((b) => b.name.trim())
-      );
-      await loadBranches();
-      Alert.alert('Branches Saved', 'The shop branches were updated.');
+      await adminSetTenantBranchSelection(tenant.id, next);
     } catch (error) {
-      Alert.alert(
-        'Error',
-        error instanceof Error ? error.message : 'Failed to save branches.'
-      );
-    } finally {
-      setSavingBranches(false);
+      setTenant(previous);
+      const message = error instanceof Error ? error.message : 'Failed to update branch selection.';
+      Alert.alert('Error', message);
     }
   }
 
@@ -334,7 +303,6 @@ export function TenantDetailScreen() {
     setStaffLabel('');
     setStaffPasswordInput('');
     setStaffCaps({ financial: false, shop: false, branch: false });
-    setStaffBranchId(null);
     setStaffError(null);
     setStaffModal({ mode: 'create' });
   }
@@ -343,7 +311,6 @@ export function TenantDetailScreen() {
     setStaffLabel(account.label ?? '');
     setStaffPasswordInput('');
     setStaffCaps(account.capabilities);
-    setStaffBranchId(account.branchId);
     setStaffError(null);
     setStaffModal({ mode: 'edit', staff: account });
   }
@@ -357,16 +324,14 @@ export function TenantDetailScreen() {
   async function handleStaffSubmit() {
     if (!tenant || !staffModal) return;
     const { mode, staff: target } = staffModal;
-    // A branch pick is only possible (and required) when the shop has
-    // branches; without them a branch admin simply sees all of the shop.
-    const needsBranch = staffCaps.branch && branches.length > 0;
     if (mode !== 'password') {
       if (!staffCaps.financial && !staffCaps.shop && !staffCaps.branch) {
         setStaffError('Turn on at least one capability.');
         return;
       }
-      if (needsBranch && !staffBranchId) {
-        setStaffError('Pick the branch this account manages.');
+      // A Branch Admin's label is the branch name shoppers see at checkout.
+      if (staffCaps.branch && !staffLabel.trim()) {
+        setStaffError('A Branch Admin needs a label — it becomes the branch name.');
         return;
       }
     }
@@ -384,14 +349,12 @@ export function TenantDetailScreen() {
             label: staffLabel,
             password: staffPasswordInput,
             capabilities: staffCaps,
-            branchId: needsBranch ? staffBranchId : null,
           }
         );
       } else if (mode === 'edit' && target) {
-        await updateStaffAccount(target.id, {
+        await updateStaffAccount(target, {
           label: staffLabel,
           capabilities: staffCaps,
-          branchId: needsBranch ? staffBranchId : null,
         });
       } else if (mode === 'password' && target) {
         await setStaffPassword(target.id, staffPasswordInput);
@@ -420,7 +383,7 @@ export function TenantDetailScreen() {
       'Remove',
       async () => {
         try {
-          await deleteStaffAccount(account.id);
+          await deleteStaffAccount(account);
           await loadStaff();
         } catch (error) {
           Alert.alert(
@@ -699,7 +662,7 @@ export function TenantDetailScreen() {
             ) : (
               <>
               <View style={styles.card}>
-                <View style={[styles.row, styles.rowLast]}>
+                <View style={styles.row}>
                   <View style={styles.statusText}>
                     <Text style={styles.rowLabel}>Shop active</Text>
                     <Text style={styles.statusHint}>
@@ -711,6 +674,20 @@ export function TenantDetailScreen() {
                   <Switch
                     value={tenant.isActive}
                     onValueChange={handleToggleActive}
+                    trackColor={{ false: colors.border, true: colors.primary }}
+                  />
+                </View>
+                <View style={[styles.row, styles.rowLast]}>
+                  <View style={styles.statusText}>
+                    <Text style={styles.rowLabel}>Branch selection at checkout</Text>
+                    <Text style={styles.statusHint}>
+                      Let shoppers choose a branch when ordering. Off = branch admins see all shop
+                      orders.
+                    </Text>
+                  </View>
+                  <Switch
+                    value={tenant.branchSelectionEnabled}
+                    onValueChange={(value) => void setBranchSelection(value)}
                     trackColor={{ false: colors.border, true: colors.primary }}
                   />
                 </View>
@@ -757,32 +734,13 @@ export function TenantDetailScreen() {
 
             <View style={styles.card}>
               <View style={styles.sectionBody}>
-                <Text style={styles.sectionTitle}>Branches</Text>
-                <Text style={styles.sectionHint}>
-                  Shoppers pick a branch at checkout; branch staff only see their own branch's orders.
-                </Text>
-                <BranchesEditor value={editableBranches} onChange={setEditableBranches} />
-                <Button
-                  title={savingBranches ? 'Saving...' : 'Save Branches'}
-                  onPress={handleSaveBranches}
-                  disabled={savingBranches}
-                  style={styles.sectionSaveButton}
-                />
-              </View>
-            </View>
-
-            <View style={styles.card}>
-              <View style={styles.sectionBody}>
                 <Text style={styles.sectionTitle}>Staff Accounts</Text>
                 <Text style={styles.sectionHint}>
                   Staff log in with the shop username (@{tenant.username ?? 'unknown'}) and their own
-                  password — the password picks the account.
+                  password — the password picks the account. A Branch Admin's label is the branch
+                  shoppers pick at checkout.
                 </Text>
                 {staff.map((account) => {
-                  const branchName =
-                    account.capabilities.branch && account.branchId
-                      ? branches.find((b) => b.id === account.branchId)?.name ?? null
-                      : null;
                   return (
                     <View key={account.id} style={styles.staffRow}>
                       <View style={styles.staffInfo}>
@@ -800,9 +758,7 @@ export function TenantDetailScreen() {
                           )}
                           {account.capabilities.shop && <Text style={styles.badge}>Shop</Text>}
                           {account.capabilities.branch && (
-                            <Text style={styles.badge}>
-                              {branchName ? `Branch: ${branchName}` : 'Branch'}
-                            </Text>
+                            <Text style={styles.badge}>Branch</Text>
                           )}
                         </View>
                       </View>
@@ -858,7 +814,9 @@ export function TenantDetailScreen() {
                   </Text>
                   {staffModal?.mode !== 'password' && (
                     <>
-                      <Text style={styles.editLabel}>Label (optional)</Text>
+                      <Text style={styles.editLabel}>
+                        {staffCaps.branch ? 'Label (required — branch name)' : 'Label (optional)'}
+                      </Text>
                       <TextInput
                         style={styles.editInput}
                         value={staffLabel}
@@ -867,6 +825,11 @@ export function TenantDetailScreen() {
                         placeholderTextColor={colors.textSecondary}
                         autoCapitalize="words"
                       />
+                      {staffCaps.branch && (
+                        <Text style={styles.sectionHint}>
+                          This label becomes the branch name shoppers pick at checkout.
+                        </Text>
+                      )}
                       {STAFF_CAPABILITIES.map((capability) => (
                         <View key={capability.key} style={styles.capabilityRow}>
                           <View style={styles.capabilityText}>
@@ -884,39 +847,6 @@ export function TenantDetailScreen() {
                           />
                         </View>
                       ))}
-                      {staffCaps.branch && branches.length > 0 && (
-                        <>
-                          <Text style={styles.editLabel}>Branch</Text>
-                          {branches.map((branch) => (
-                            <TouchableOpacity
-                              key={branch.id}
-                              style={styles.branchOption}
-                              onPress={() => setStaffBranchId(branch.id)}
-                            >
-                              <Ionicons
-                                name={
-                                  staffBranchId === branch.id
-                                    ? 'radio-button-on'
-                                    : 'radio-button-off'
-                                }
-                                size={18}
-                                color={
-                                  staffBranchId === branch.id
-                                    ? colors.primary
-                                    : colors.textSecondary
-                                }
-                              />
-                              <Text style={styles.branchOptionText}>{branch.name}</Text>
-                            </TouchableOpacity>
-                          ))}
-                        </>
-                      )}
-                      {staffCaps.branch && branches.length === 0 && (
-                        <Text style={styles.sectionHint}>
-                          This shop has no branches yet — this account will see all of the shop's
-                          orders.
-                        </Text>
-                      )}
                     </>
                   )}
                   {staffModal?.mode !== 'edit' && (
@@ -1282,16 +1212,5 @@ const makeStyles = (colors: ColorPalette) =>
       fontSize: fontSizes.sm,
       color: colors.textSecondary,
       marginTop: 2,
-    },
-    branchOption: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      gap: spacing.sm,
-      paddingVertical: spacing.xs,
-      marginBottom: spacing.xs,
-    },
-    branchOptionText: {
-      fontSize: fontSizes.md,
-      color: colors.text,
     },
   });

@@ -175,7 +175,12 @@ export function AdminAnalysisScreen() {
     );
     for (const order of sorted) {
       const items = scopedTenantId
-        ? getOrderItemsForScope(order, scopedTenantId, scopedBranchId)
+        ? getOrderItemsForScope(
+            order,
+            scopedTenantId,
+            scopedBranchId,
+            staffSession?.branchSelectionEnabled !== false
+          )
         : order.items;
       items.forEach((item, index) => {
         const variant = formatVariantLabel(item);
@@ -245,7 +250,12 @@ export function AdminAnalysisScreen() {
     for (const order of orders) {
       if (!inDateRange(order.createdAt)) continue;
       const items = scopedTenantId
-        ? getOrderItemsForScope(order, scopedTenantId, scopedBranchId)
+        ? getOrderItemsForScope(
+            order,
+            scopedTenantId,
+            scopedBranchId,
+            staffSession?.branchSelectionEnabled !== false
+          )
         : order.items;
       if (items.length === 0) continue;
       orderCount += 1;
