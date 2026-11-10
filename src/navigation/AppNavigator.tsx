@@ -133,10 +133,13 @@ export function AppNavigator() {
   const { role } = useApp();
   const isAdmin = role === 'admin' || role === 'super_admin';
   const navigationRef = useNavigationContainerRef<RootStackParamList>();
-  // In the Mini App the RN header is hidden when Telegram's native BackButton
-  // is available; with a stub WebApp (SDK failed to load) the RN header is the
-  // only way back.
-  const showHeader = !isTelegramMiniApp() || !hasTelegramChrome();
+  // Web screens render their own chrome (WebHeader/AdminHeader plus in-page
+  // back links), so the RN header only exists on native — and there only
+  // when Telegram's BackButton isn't available (outside the Mini App, or the
+  // SDK failed to load). Showing it on web too would double the header and
+  // shift the layout when navigating between screens.
+  const showHeader =
+    Platform.OS !== 'web' && (!isTelegramMiniApp() || !hasTelegramChrome());
 
   return (
     <NavigationContainer ref={navigationRef} linking={linking}>

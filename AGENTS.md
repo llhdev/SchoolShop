@@ -159,7 +159,7 @@ Within the admin stack:
 - `super_admin`: categories, tenants, all products — never posts items (Add Item hidden/blocked). Orders screen lists tenants; tapping a shop shows its orders grouped by customer phone, scoped to its line items.
 - `admin` (tenant): only own products; picks from existing categories.
 
-Param lists in `src/types/navigation.ts`. Web has a `linking` config (`product/:productId`, `cart`, `orders`, `checkout`, `order/:orderId`) anchored at the domain root (`WEB_BASE_PATH`). In the Mini App the RN header is hidden (would overlap Telegram's BackButton), driven from navigation state.
+Param lists in `src/types/navigation.ts`. Web has a `linking` config (`product/:productId`, `cart`, `orders`, `checkout`, `order/:orderId`) anchored at the domain root (`WEB_BASE_PATH`). The RN header never shows on web (screens render `WebHeader`/`AdminHeader` plus in-page back links instead — showing both shifted the layout between pages); on native it's hidden in the Mini App when Telegram's BackButton is available, driven from navigation state.
 
 ### Data model
 

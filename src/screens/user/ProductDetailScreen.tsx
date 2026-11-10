@@ -22,6 +22,8 @@ import { EmptyState } from '../../components/EmptyState';
 import { ProductImage } from '../../components/ProductImage';
 import { ImageViewerModal } from '../../components/ImageViewerModal';
 import { TelegramChatButton } from '../../components/TelegramChatButton';
+import { WebHeader } from '../../components/WebHeader';
+import { AdminHeader } from '../../components/AdminHeader';
 import { useApp } from '../../context/AppContext';
 import { useResponsive } from '../../hooks/useResponsive';
 import { getProductGalleryImages } from '../../utils/images';
@@ -80,7 +82,7 @@ export function ProductDetailScreen() {
   const route = useRoute();
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const { productId } = route.params as { productId: string };
-  const { products, addToCart } = useApp();
+  const { products, addToCart, role } = useApp();
   const { isDesktop } = useResponsive();
   const { width: windowWidth } = useWindowDimensions();
   const colors = useThemeColors();
@@ -110,11 +112,44 @@ export function ProductDetailScreen() {
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [product?.id, isFreeDownload]);
 
+  const isWeb = Platform.OS === 'web';
+  const isWebDesktop = isWeb && isDesktop;
+  // This screen is shared between the shopper and admin navigators (deep
+  // links): admins get the admin chrome, shoppers the store header — the
+  // same pattern as OrderDetail. The RN header is hidden on web (it would
+  // double the in-app header), so the page carries its own way back.
+  const isAdminViewer = role === 'admin' || role === 'super_admin';
+  const webHeader = isAdminViewer ? <AdminHeader /> : <WebHeader showSearch={false} />;
+  const webBackLink = isWeb ? (
+    <View style={styles.webBackRow}>
+      <TouchableOpacity
+        style={styles.webBackLink}
+        onPress={() => {
+          if (isAdminViewer) {
+            if (navigation.canGoBack()) navigation.goBack();
+            else navigation.navigate('AdminStack' as never);
+          } else {
+            navigation.navigate('UserTabs', { screen: 'Home' });
+          }
+        }}
+      >
+        <Ionicons name="arrow-back" size={16} color={colors.primary} />
+        <Text style={styles.webBackText}>
+          {isAdminViewer ? 'Back' : 'Continue Shopping'}
+        </Text>
+      </TouchableOpacity>
+    </View>
+  ) : null;
+
   if (!product) {
     return (
-      <Screen>
-        <EmptyState message="Product not found." icon="alert-circle-outline" />
-      </Screen>
+      <>
+        {isWeb && webHeader}
+        <Screen>
+          {webBackLink}
+          <EmptyState message="Product not found." icon="alert-circle-outline" />
+        </Screen>
+      </>
     );
   }
 
@@ -131,7 +166,6 @@ export function ProductDetailScreen() {
   const discount = variantPriceChosen
     ? null
     : getDiscountPercent(product.price, product.compareAtPrice);
-  const isWebDesktop = Platform.OS === 'web' && isDesktop;
 
   /** Record a picked option; jump the gallery to its photo when it has one. */
   const pickOption = (group: VariantGroup, option: VariantOption) => {
@@ -410,47 +444,51 @@ export function ProductDetailScreen() {
 
   if (isWebDesktop) {
     return (
-      <Screen noPadding edges={['top', 'left', 'right']}>
-        <ScrollView contentContainerStyle={styles.desktopScroll}>
-          <View style={styles.desktopInner}>
-            <View style={styles.desktopGallery}>
-              <View style={styles.desktopMainImage}>
-                <ProductImage
-                  uri={galleryImages[activeIndex] ?? null}
-                  category={product.category}
-                  name={product.name}
-                  style={styles.desktopImage}
-                />
-              </View>
-              {galleryImages.length > 1 && (
-                <View style={styles.thumbnailRow}>
-                  {galleryImages.map((uri, index) => (
-                    <TouchableOpacity
-                      key={index}
-                      style={[
-                        styles.thumbnailButton,
-                        index === activeIndex && styles.thumbnailButtonActive,
-                      ]}
-                      onPress={() => setActiveIndex(index)}
-                    >
-                      <ProductImage
-                        uri={uri}
-                        category={product.category}
-                        name={product.name}
-                        style={styles.thumbnailImage}
-                        contentFit="cover"
-                      />
-                    </TouchableOpacity>
-                  ))}
+      <>
+        {webHeader}
+        <Screen noPadding edges={['top', 'left', 'right']}>
+          <ScrollView contentContainerStyle={styles.desktopScroll}>
+            {webBackLink}
+            <View style={styles.desktopInner}>
+              <View style={styles.desktopGallery}>
+                <View style={styles.desktopMainImage}>
+                  <ProductImage
+                    uri={galleryImages[activeIndex] ?? null}
+                    category={product.category}
+                    name={product.name}
+                    style={styles.desktopImage}
+                  />
                 </View>
-              )}
+                {galleryImages.length > 1 && (
+                  <View style={styles.thumbnailRow}>
+                    {galleryImages.map((uri, index) => (
+                      <TouchableOpacity
+                        key={index}
+                        style={[
+                          styles.thumbnailButton,
+                          index === activeIndex && styles.thumbnailButtonActive,
+                        ]}
+                        onPress={() => setActiveIndex(index)}
+                      >
+                        <ProductImage
+                          uri={uri}
+                          category={product.category}
+                          name={product.name}
+                          style={styles.thumbnailImage}
+                          contentFit="cover"
+                        />
+                      </TouchableOpacity>
+                    ))}
+                  </View>
+                )}
+              </View>
+              {infoSection}
             </View>
-            {infoSection}
-          </View>
-          {downloadsSection}
-          {detailImagesSection}
-        </ScrollView>
-      </Screen>
+            {downloadsSection}
+            {detailImagesSection}
+          </ScrollView>
+        </Screen>
+      </>
     );
   }
 
@@ -570,16 +608,41 @@ export function ProductDetailScreen() {
   }
 
   return (
-    <Screen scroll noPadding edges={['top', 'left', 'right']}>
-      {gallerySection}
-      {infoSection}
-      {downloadsSection}
-      {detailImagesSection}
-    </Screen>
+    <>
+      {isWeb && webHeader}
+      <Screen scroll noPadding edges={['top', 'left', 'right']}>
+        {webBackLink}
+        {gallerySection}
+        {infoSection}
+        {downloadsSection}
+        {detailImagesSection}
+      </Screen>
+    </>
   );
 }
 
 const makeStyles = (colors: ColorPalette) => StyleSheet.create({
+  // Web-only back row (the RN header is hidden on web): sits above the
+  // content, aligned with the same max width as the page.
+  webBackRow: {
+    width: '100%',
+    maxWidth: MAX_WIDTH,
+    alignSelf: 'center',
+    paddingHorizontal: spacing.lg,
+    paddingTop: spacing.md,
+  },
+  webBackLink: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
+    alignSelf: 'flex-start',
+    paddingVertical: spacing.xs,
+  },
+  webBackText: {
+    color: colors.primary,
+    fontSize: fontSizes.sm,
+    fontWeight: '600',
+  },
   desktopScroll: {
     flexGrow: 1,
     backgroundColor: colors.surface,
