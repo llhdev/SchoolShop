@@ -6,6 +6,7 @@ import { Ionicons } from '@expo/vector-icons';
 import { Screen } from '../../components/Screen';
 import { EmptyState } from '../../components/EmptyState';
 import { WebHeader } from '../../components/WebHeader';
+import { AdminHeader } from '../../components/AdminHeader';
 import { TelegramChatButton } from '../../components/TelegramChatButton';
 import { Button } from '../../components/Button';
 import { VerificationBadge } from '../../components/VerificationBadge';
@@ -61,6 +62,10 @@ export function OrderDetailScreen() {
   const order = orders.find((o) => o.id === orderId);
   const isWeb = Platform.OS === 'web';
   const isSuperAdmin = role === 'super_admin';
+  // This screen is shared between the shopper and admin navigators: admins
+  // get the admin chrome and a Back action; shoppers keep Continue Shopping.
+  const isAdminViewer = role !== 'user';
+  const header = isAdminViewer ? <AdminHeader /> : <WebHeader showSearch={false} />;
   const capabilities = staffSession?.capabilities;
   // Staff drive the status flow only within their capabilities (migration
   // 045); the server RPC re-checks every transition, the UI only offers the
@@ -270,7 +275,7 @@ export function OrderDetailScreen() {
   if (!order) {
     return (
       <>
-        {isWeb && <WebHeader showSearch={false} />}
+        {isWeb && header}
         <Screen>
           <EmptyState message="Order not found." icon="alert-circle-outline" />
         </Screen>
@@ -280,13 +285,28 @@ export function OrderDetailScreen() {
 
   return (
     <>
-      {isWeb && <WebHeader showSearch={false} />}
+      {isWeb && header}
       <Screen noPadding edges={['top', 'left', 'right']}>
         <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
         <View style={styles.container}>
           <View style={styles.titleRow}>
             <Text style={[styles.title, isPhone && styles.titleCompact]}>Order Details</Text>
-            {isWeb && (
+            {isWeb && isAdminViewer && (
+              <TouchableOpacity
+                style={styles.homeLink}
+                onPress={() =>
+                  navigation.canGoBack()
+                    ? navigation.goBack()
+                    : navigation.navigate('AdminStack' as never)
+                }
+              >
+                <Ionicons name="arrow-back" size={16} color={colors.primary} />
+                <Text style={[styles.homeLinkText, isPhone && styles.homeLinkTextCompact]}>
+                  Back
+                </Text>
+              </TouchableOpacity>
+            )}
+            {isWeb && !isAdminViewer && (
               <TouchableOpacity
                 style={styles.homeLink}
                 onPress={() => navigation.navigate('UserTabs', { screen: 'Home' })}
