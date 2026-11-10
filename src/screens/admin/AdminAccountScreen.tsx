@@ -564,6 +564,11 @@ export function AdminAccountScreen() {
             </View>
           )}
 
+          </>)}
+
+          {/* Self-service password change stays available even while staff
+              account editing is frozen (MERCHANT_ACCOUNT_EDITING_ENABLED) —
+              every admin must be able to change their own password. */}
           <View style={styles.card}>
             <View style={styles.cardHeader}>
               <Ionicons name="lock-closed-outline" size={20} color={colors.primary} />
@@ -612,7 +617,6 @@ export function AdminAccountScreen() {
               }
             />
           </View>
-          </>)}
         </View>
       </Screen>
     </>
