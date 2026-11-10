@@ -85,18 +85,19 @@ export function AddEditItemScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<AdminStackParamList>>();
   const route = useRoute();
   const { productId } = (route.params as { productId?: string }) ?? {};
-  const { products, categories, addProduct, updateProduct, role, staffSession, effectiveTenantId } = useApp();
+  const { products, categories, addProduct, updateProduct, role, staffSession, currentUserId, effectiveTenantId } = useApp();
   const { isDesktop, isPhone } = useResponsive();
   const colors = useThemeColors();
   const styles = makeStyles(colors);
 
   const existing = productId ? products.find((p) => p.id === productId) : undefined;
   const isSuperAdmin = role === 'super_admin';
+  const isShopOwner = !!staffSession && staffSession.tenantId === currentUserId;
   // Staff roles (migration 045): without the shop capability the account is
-  // read-only for the catalog.
-  const canManageProducts = isSuperAdmin || !!staffSession?.capabilities.shop;
+  // read-only for the catalog. The super admin never posts or edits items.
+  const canManageProducts = !!staffSession?.capabilities.shop;
   const canEditExisting =
-    !existing || isSuperAdmin || (canManageProducts && existing.ownerId === effectiveTenantId);
+    !existing || (canManageProducts && existing.ownerId === effectiveTenantId);
 
   const [name, setName] = useState(existing?.name ?? '');
   const [price, setPrice] = useState(existing?.price.toString() ?? '');
@@ -140,7 +141,7 @@ export function AddEditItemScreen() {
   }, [existing?.id]);
 
   useEffect(() => {
-    if (role !== 'admin' || !MERCHANT_ACCOUNT_EDITING_ENABLED) return;
+    if (role !== 'admin' || !isShopOwner || !MERCHANT_ACCOUNT_EDITING_ENABLED) return;
     fetchOwnProfile()
       .then((own) => {
         const fee = own?.shippingFee ?? null;
@@ -150,7 +151,7 @@ export function AddEditItemScreen() {
       .catch(() => {
         // The field stays editable; a failed load just means no pre-fill.
       });
-  }, [role]);
+  }, [role, isShopOwner]);
 
   useEffect(() => {
     if (categories.length === 0 && !existing) {
@@ -163,21 +164,12 @@ export function AddEditItemScreen() {
   }, [categories.length, existing, navigation]);
 
   useEffect(() => {
-    if (existing && !canEditExisting) {
+    if (existing && !canEditExisting && !isSuperAdmin) {
       Alert.alert('Access denied', 'You can only edit products you uploaded.', [
         { text: 'OK', onPress: () => navigation.navigate('AdminDashboard') },
       ]);
     }
-  }, [existing, canEditExisting, navigation]);
-
-  // The super admin manages the platform but never posts items.
-  useEffect(() => {
-    if (!existing && isSuperAdmin) {
-      Alert.alert('Not available', 'Only tenant admins can add items.', [
-        { text: 'OK', onPress: () => navigation.navigate('AdminDashboard') },
-      ]);
-    }
-  }, [existing, isSuperAdmin, navigation]);
+  }, [existing, canEditExisting, isSuperAdmin, navigation]);
 
   const compareAt = priceOnRequest ? undefined : compareAtPrice.trim() ? Number(compareAtPrice) : undefined;
   // A post with PDFs attached may leave the price empty/0 — it becomes a free
@@ -496,7 +488,7 @@ export function AddEditItemScreen() {
 
   async function handleSave() {
     if (!isValid) return;
-    if (!existing && isSuperAdmin) return;
+    if (isSuperAdmin) return;
     if (!canManageProducts) return;
 
     const variants = buildVariants();
@@ -554,7 +546,7 @@ export function AddEditItemScreen() {
       // Persist the shop's shipping fee when the tenant changed it here.
       // Kept separate from the product save so a fee failure never blocks
       // the item itself.
-      if (role === 'admin' && MERCHANT_ACCOUNT_EDITING_ENABLED) {
+      if (role === 'admin' && isShopOwner && MERCHANT_ACCOUNT_EDITING_ENABLED) {
         const trimmed = shippingFee.trim();
         const fee = trimmed === '' ? null : Number(trimmed);
         if (fee !== null && (!Number.isFinite(fee) || fee < 0)) {
@@ -595,15 +587,21 @@ export function AddEditItemScreen() {
   const isWeb = Platform.OS === 'web';
 
   // Staff without the shop capability get a read-only catalog (045) — the
-  // add/edit screen is off-limits to them. The super admin is still blocked
-  // from creating below, exactly as before.
-  if (!isSuperAdmin && !canManageProducts) {
+  // add/edit screen is off-limits to them. The super admin manages the
+  // platform but never posts or edits items.
+  if (!canManageProducts) {
     return (
       <>
         {isWeb && <AdminHeader />}
         <Screen noPadding edges={['top', 'left', 'right']}>
           <View style={styles.container}>
-            <EmptyState message="No access — your account can't manage products. Ask the shop owner to enable the shop capability." />
+            <EmptyState
+              message={
+                isSuperAdmin
+                  ? 'No access — the super admin manages the platform but never posts or edits items.'
+                  : "No access — your account can't manage products. Ask the shop owner to enable the shop capability."
+              }
+            />
           </View>
         </Screen>
       </>
@@ -1098,7 +1096,7 @@ export function AddEditItemScreen() {
             </TouchableOpacity>
           </View>
 
-          {role === 'admin' && MERCHANT_ACCOUNT_EDITING_ENABLED && (
+          {role === 'admin' && isShopOwner && MERCHANT_ACCOUNT_EDITING_ENABLED && (
             <View style={styles.field}>
               <Text style={styles.label}>Shipping Fee (ETB)</Text>
               <Text style={styles.detailHint}>

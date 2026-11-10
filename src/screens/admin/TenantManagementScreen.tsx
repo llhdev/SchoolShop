@@ -28,6 +28,7 @@ import { confirmAction } from '../../utils/confirm';
 import { AdminStackParamList } from '../../types/navigation';
 import { BankAccount } from '../../types';
 import { useResponsive } from '../../hooks/useResponsive';
+import { useApp } from '../../context/AppContext';
 import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../../constants/theme';
 
 const MAX_WIDTH = 800;
@@ -36,6 +37,7 @@ type Navigation = NativeStackNavigationProp<AdminStackParamList>;
 
 export function TenantManagementScreen() {
   const navigation = useNavigation<Navigation>();
+  const { role } = useApp();
   const { isPhone } = useResponsive();
   const colors = useThemeColors();
   const styles = makeStyles(colors);
@@ -284,6 +286,21 @@ export function TenantManagementScreen() {
 
   const isWeb = Platform.OS === 'web';
   const keyboardVerticalOffset = Platform.OS === 'ios' ? 64 : 0;
+
+  // Super admin only: this screen renders admin_* RPC forms and the staff
+  // list; other roles must not land here.
+  if (role !== 'super_admin') {
+    return (
+      <>
+        {isWeb && <AdminHeader />}
+        <Screen noPadding edges={['top', 'left', 'right']}>
+          <View style={styles.container}>
+            <EmptyState message="No access — tenant management is super-admin only." />
+          </View>
+        </Screen>
+      </>
+    );
+  }
 
   return (
     <>

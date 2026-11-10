@@ -73,7 +73,7 @@ export function OrderDetailScreen() {
         (capabilities.financial || capabilities.shop || capabilities.branch)));
   // Money is visible to the super admin and financial staff; shoppers always
   // see their own order totals.
-  const canSeeMoney = !canManageStatus || isSuperAdmin || !!capabilities?.financial;
+  const canSeeMoney = role === 'user' || isSuperAdmin || !!capabilities?.financial;
   // Proofs: super admin, financial, and branch staff — not shop-only staff.
   const canSeeProofs = isSuperAdmin || !!capabilities?.financial || !!capabilities?.branch;
   // verify.et payment verification: super admin and financial staff only.
@@ -92,7 +92,10 @@ export function OrderDetailScreen() {
         )
       : order?.items;
   const visibleTotal =
-    visibleItems?.reduce((sum, item) => sum + getUnitPrice(item) * item.quantity, 0) ?? 0;
+    (visibleItems?.reduce((sum, item) => sum + getUnitPrice(item) * item.quantity, 0) ?? 0) +
+    // Staff see what the shopper paid for their shop's slice, including the
+    // shop's flat shipping fee (migration 031).
+    (isStaffViewer && effectiveTenantId ? order?.shippingFees?.[effectiveTenantId] ?? 0 : 0);
 
   // Payment proofs are staff-only (migration 040): the super admin sees every
   // shop's proof, staff see only their own shop's. Refs are private-bucket
@@ -114,7 +117,7 @@ export function OrderDetailScreen() {
   // item whose status reached "Paid", revealed by sign-book-get.
   const [bookFiles, setBookFiles] = useState<Record<string, PurchasedBookFile[]>>({});
   const unlockKey =
-    order && !canManageStatus
+    order && role === 'user'
       ? (visibleItems ?? [])
           .map((item) => `${getItemKey(item)}=${getItemStatus(order, item)}`)
           .join('|')
@@ -340,7 +343,7 @@ export function OrderDetailScreen() {
                           orders that haven't been re-read from the DB yet.
                           Items with neither (orders placed before 025, or a
                           shop with no username) render no button. */}
-                      {!canManageStatus && (
+                      {role === 'user' && (
                         <TelegramChatButton
                           username={
                             (item.product as { telegram_username?: string }).telegram_username ||

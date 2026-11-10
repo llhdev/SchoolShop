@@ -7,8 +7,10 @@
 // Payment proofs live in the PRIVATE R2_PROOFS_BUCKET (no public access):
 //   - sign-proof-upload: anonymous (shoppers aren't signed in), presigned
 //     PUT, flat <name>.jpg keys only, max 4 per request.
-//   - sign-proof-get:    admin-only, presigned GET. Falls back to a Supabase
-//     signed URL for proofs not yet migrated off payment-proofs-private.
+//   - sign-proof-get:    presigned GET for the super admin or an active shop
+//     account with the financial or branch capability. Falls back to a
+//     Supabase signed URL for proofs not yet migrated off
+//     payment-proofs-private.
 //
 // Digital-book PDFs (migration 044) live in the PUBLIC bucket under books/:
 // admins upload/delete them via the normal sign/delete actions; the anonymous
@@ -18,7 +20,12 @@
 // verify_jwt is off at the gateway (the app calls this with the user's own
 // access token, and OPTIONS must be answered for browsers), so the function
 // authenticates the caller itself for the admin actions: bearer token ->
-// auth.getUser -> profiles role must be 'admin' or 'super_admin'.
+// auth.getUser -> profiles. Capability rules (staff roles, migration 045+):
+//   - sign/delete:    super_admin passes; an active (is_active) shop account
+//     needs staff_shop for products/ and books/ keys, and must be the shop
+//     owner (no parent_tenant_id) for logos/ and qrs/ keys.
+//   - sign-proof-get: super_admin, or an active shop account with
+//     staff_financial or staff_branch.
 //
 // Required secrets: R2_ACCOUNT_ID, R2_ACCESS_KEY_ID, R2_SECRET_ACCESS_KEY,
 // R2_BUCKET, R2_PUBLIC_BASE_URL, R2_PROOFS_BUCKET. SUPABASE_URL /
@@ -67,26 +74,63 @@ function json(body: unknown, status = 200): Response {
 
 // --- auth ----------------------------------------------------------------------
 
-/** Returns null when the caller is a signed-in admin, else the error response. */
-async function requireAdmin(req: Request): Promise<Response | null> {
+interface AdminProfile {
+  role: string;
+  parent_tenant_id: string | null;
+  staff_financial: boolean | null;
+  staff_shop: boolean | null;
+  staff_branch: boolean | null;
+  is_active: boolean | null;
+}
+
+/** Returns the caller's profile when they are a signed-in admin, else the
+ *  error response. */
+async function requireAdmin(
+  req: Request
+): Promise<{ profile: AdminProfile } | { error: Response }> {
   const token = (req.headers.get('authorization') ?? '').replace(/^bearer\s+/i, '').trim();
-  if (!token) return json({ error: 'sign in required' }, 401);
+  if (!token) return { error: json({ error: 'sign in required' }, 401) };
   const { data, error } = await supabase.auth.getUser(token);
-  if (error || !data.user) return json({ error: 'invalid session' }, 401);
+  if (error || !data.user) return { error: json({ error: 'invalid session' }, 401) };
   const { data: profile } = await supabase
     .from('profiles')
-    .select('role')
+    .select('role, parent_tenant_id, staff_financial, staff_shop, staff_branch, is_active')
     .eq('id', data.user.id)
     .maybeSingle();
   if (profile?.role !== 'admin' && profile?.role !== 'super_admin') {
-    return json({ error: 'admins only' }, 403);
+    return { error: json({ error: 'admins only' }, 403) };
   }
-  return null;
+  return { profile: profile as AdminProfile };
+}
+
+/** Upload/delete gate per key (staff roles): the super admin passes; an
+ *  active shop account needs the shop capability for products/ and books/
+ *  keys, and must be the shop owner for logos/ and qrs/ (shop settings). */
+function canWriteKey(profile: AdminProfile, key: string): boolean {
+  if (profile.role === 'super_admin') return true;
+  if (profile.is_active === false) return false;
+  if (key.startsWith('products/') || key.startsWith('books/')) {
+    return profile.staff_shop === true;
+  }
+  return profile.parent_tenant_id === null;
+}
+
+/** Proof viewing gate: the super admin, or an active shop account with the
+ *  financial or branch capability. */
+function canReadProofs(profile: AdminProfile): boolean {
+  if (profile.role === 'super_admin') return true;
+  return (
+    profile.is_active !== false &&
+    (profile.staff_financial === true || profile.staff_branch === true)
+  );
 }
 
 // --- actions ---------------------------------------------------------------------
 
-async function handleSignUploads(body: Record<string, unknown>): Promise<Response> {
+async function handleSignUploads(
+  body: Record<string, unknown>,
+  profile: AdminProfile
+): Promise<Response> {
   const files = Array.isArray(body.files) ? body.files : [];
   if (files.length === 0 || files.length > MAX_FILES_PER_REQUEST) {
     return json({ error: `files must contain 1-${MAX_FILES_PER_REQUEST} entries` }, 400);
@@ -96,6 +140,9 @@ async function handleSignUploads(body: Record<string, unknown>): Promise<Respons
     const key = typeof f === 'object' && f !== null ? (f as Record<string, unknown>).key : null;
     if (typeof key !== 'string' || !KEY_PATTERN.test(key)) {
       return json({ error: 'each file needs a valid key (products|logos|qrs)/<name>.jpg or books/<name>.pdf' }, 400);
+    }
+    if (!canWriteKey(profile, key)) {
+      return json({ error: 'not allowed for your role' }, 403);
     }
     keys.push(key);
   }
@@ -116,7 +163,10 @@ async function handleSignUploads(body: Record<string, unknown>): Promise<Respons
   return json({ uploads });
 }
 
-async function handleDeletes(body: Record<string, unknown>): Promise<Response> {
+async function handleDeletes(
+  body: Record<string, unknown>,
+  profile: AdminProfile
+): Promise<Response> {
   const keysRaw = Array.isArray(body.keys) ? body.keys : [];
   if (keysRaw.length === 0 || keysRaw.length > 50) {
     return json({ error: 'keys must contain 1-50 entries' }, 400);
@@ -125,6 +175,9 @@ async function handleDeletes(body: Record<string, unknown>): Promise<Response> {
   for (const k of keysRaw) {
     if (typeof k !== 'string' || !KEY_PATTERN.test(k)) {
       return json({ error: 'invalid key' }, 400);
+    }
+    if (!canWriteKey(profile, k)) {
+      return json({ error: 'not allowed for your role' }, 403);
     }
     keys.push(k);
   }
@@ -169,7 +222,13 @@ async function handleSignProofUpload(body: Record<string, unknown>): Promise<Res
 /** Admin-only proof viewing. Presigns R2 GETs; proofs not yet migrated to R2
  *  fall back to a Supabase signed URL from the legacy bucket. Returns one
  *  entry per requested key (null when the proof exists in neither place). */
-async function handleSignProofGet(body: Record<string, unknown>): Promise<Response> {
+async function handleSignProofGet(
+  body: Record<string, unknown>,
+  profile: AdminProfile
+): Promise<Response> {
+  if (!canReadProofs(profile)) {
+    return json({ error: 'not allowed for your role' }, 403);
+  }
   const keysRaw = Array.isArray(body.keys) ? body.keys : [];
   if (keysRaw.length === 0 || keysRaw.length > MAX_FILES_PER_REQUEST) {
     return json({ error: `keys must contain 1-${MAX_FILES_PER_REQUEST} entries` }, 400);
@@ -275,20 +334,22 @@ Deno.serve(async (req) => {
   const action = typeof body.action === 'string' ? body.action : '';
 
   // Shopper proof uploads and paid-book downloads are the anonymous actions.
+  let profile: AdminProfile | null = null;
   if (action !== 'sign-proof-upload' && action !== 'sign-book-get') {
-    const authError = await requireAdmin(req);
-    if (authError) return authError;
+    const auth = await requireAdmin(req);
+    if ('error' in auth) return auth.error;
+    profile = auth.profile;
   }
 
   switch (action) {
     case 'sign':
-      return handleSignUploads(body);
+      return handleSignUploads(body, profile!);
     case 'delete':
-      return handleDeletes(body);
+      return handleDeletes(body, profile!);
     case 'sign-proof-upload':
       return handleSignProofUpload(body);
     case 'sign-proof-get':
-      return handleSignProofGet(body);
+      return handleSignProofGet(body, profile!);
     case 'sign-book-get':
       return handleSignBookGet(body);
     default:

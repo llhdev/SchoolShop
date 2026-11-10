@@ -56,11 +56,12 @@ export function AdminUserOrdersScreen() {
     .sort((a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime());
 
   // verify.et payment verification chips (migration 040). RLS scopes the read:
-  // tenant admins only receive their own shop's attempts.
+  // tenant admins only receive their own shop's attempts. Money-blind staff
+  // never fetch verification rows at all.
   const [verifications, setVerifications] = useState<PaymentVerification[]>([]);
   const orderIdsKey = userOrders.map((o) => o.id).join(',');
   useEffect(() => {
-    if (!orderIdsKey) return;
+    if (!orderIdsKey || !canSeeMoney) return;
     let cancelled = false;
     const load = () =>
       fetchVerificationsForOrders(orderIdsKey.split(','))
@@ -74,7 +75,8 @@ export function AdminUserOrdersScreen() {
       cancelled = true;
       unsubscribe();
     };
-  }, [orderIdsKey]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [orderIdsKey, canSeeMoney]);
 
   const verificationFor = (orderId: string): PaymentVerification | undefined =>
     verifications.find(

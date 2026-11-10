@@ -73,9 +73,9 @@ export function AdminDashboardScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<AdminStackParamList>>();
   const { products, categories, deleteProduct, addCategory, removeCategory, role, staffSession, effectiveTenantId } = useApp();
   const isSuperAdmin = role === 'super_admin';
-  // Staff roles (migration 045): only shop-capable accounts (and the super
-  // admin) may add/edit/delete items; other staff see the catalog read-only.
-  const canManageProducts = isSuperAdmin || !!staffSession?.capabilities.shop;
+  // Staff roles (migration 045): only shop-capable accounts may add/edit/delete
+  // items; the super admin and other staff see the catalog read-only.
+  const canManageProducts = !!staffSession?.capabilities.shop;
   const visibleProducts = isSuperAdmin
     ? products
     : products.filter((p) => p.ownerId === effectiveTenantId);
@@ -231,7 +231,7 @@ export function AdminDashboardScreen() {
                     <Text style={[styles.tableHeaderText, styles.colProduct]}>Product</Text>
                     <Text style={[styles.tableHeaderText, styles.colCategory]}>Category</Text>
                     <Text style={[styles.tableHeaderText, styles.colPrice]}>Price</Text>
-                    {isSuperAdmin && (
+                    {isSuperAdmin && canManageProducts && (
                       <Text style={[styles.tableHeaderText, styles.colActions]}>Actions</Text>
                     )}
                   </View>
@@ -298,7 +298,7 @@ export function AdminDashboardScreen() {
                       )}
                     </TouchableOpacity>
 
-                    {(canManageProducts && (isSuperAdmin || item.ownerId === effectiveTenantId)) && (
+                    {canManageProducts && item.ownerId === effectiveTenantId && (
                       <View style={[styles.productActions, isDesktop && styles.colActions]}>
                         <TouchableOpacity
                           style={[styles.iconButton, styles.deleteButton]}

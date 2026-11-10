@@ -168,14 +168,6 @@ export async function attachOrderTelegramId(orderId: string, telegramId: number)
   if (error) throw error;
 }
 
-/** Status transition (pending -> paid -> on_the_way -> completed). Allowed by
- *  RLS for the super admin and for tenant admins in the order's tenant_ids.
- *  Per-item status changes go through updateOrderItemStatus instead. */
-export async function updateOrderStatus(id: string, status: Order['status']): Promise<void> {
-  const { error } = await supabase.from('orders').update({ status }).eq('id', id);
-  if (error) throw error;
-}
-
 /** Stable per-item key inside an order: "productId:selectedImageIndex", plus
  *  ":Group=Option|…" when the line has variant selections (migration 035).
  *  Unique per order because the cart merges identical product+image+variant

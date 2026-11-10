@@ -30,7 +30,6 @@ import {
   subscribeToOrders,
   subscribeToShopperOrders,
   updateOrderItemStatus,
-  updateOrderStatus,
 } from '../services/orders';
 import {
   createCategory,
@@ -247,7 +246,6 @@ interface AppContextValue extends AppState {
   ) => void;
   clearCart: () => void;
   addOrder: (order: Order) => Promise<void>;
-  updateOrderStatus: (orderId: string, status: Order['status']) => Promise<void>;
   updateOrderItemStatus: (orderId: string, itemKey: string, status: Order['status']) => Promise<void>;
   setCategories: (categories: string[]) => void;
   addCategory: (category: string) => Promise<void>;
@@ -802,22 +800,6 @@ export function AppProvider({ children }: { children: ReactNode }) {
       // Fire-and-forget: the Telegram group notification must never block
       // or roll back a successfully placed order.
       notifyTelegramOrder(placed, shopper ?? undefined).catch(() => {});
-    },
-    updateOrderStatus: async (orderId, status) => {
-      const previous = state.orders;
-      const target = previous.find((o) => o.id === orderId);
-      if (!target) return;
-      const updated = { ...target, status };
-      const optimistic = previous.map((o) => (o.id === orderId ? updated : o));
-      dispatch({ type: 'UPDATE_ORDER', payload: updated });
-      await saveOrdersToCache(optimistic);
-      try {
-        await updateOrderStatus(orderId, status);
-      } catch {
-        dispatch({ type: 'SET_ORDERS', payload: previous });
-        await saveOrdersToCache(previous);
-        throw new Error('Failed to update order status');
-      }
     },
     updateOrderItemStatus: async (orderId, itemKey, status) => {
       const previous = state.orders;

@@ -15,6 +15,7 @@ import {
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Screen } from '../../components/Screen';
+import { EmptyState } from '../../components/EmptyState';
 import { AdminHeader } from '../../components/AdminHeader';
 import { BankAccountsEditor } from '../../components/BankAccountsEditor';
 import { Button } from '../../components/Button';
@@ -39,6 +40,7 @@ import { confirmAction } from '../../utils/confirm';
 import { AdminStackParamList } from '../../types/navigation';
 import { BankAccount } from '../../types';
 import { useResponsive } from '../../hooks/useResponsive';
+import { useApp } from '../../context/AppContext';
 import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../../constants/theme';
 
 const MAX_WIDTH = 800;
@@ -49,6 +51,7 @@ export function TenantDetailScreen() {
   const navigation = useNavigation<Navigation>();
   const route = useRoute();
   const { tenantId } = route.params as { tenantId: string };
+  const { role } = useApp();
   const { isPhone } = useResponsive();
   const colors = useThemeColors();
   const styles = makeStyles(colors);
@@ -292,6 +295,21 @@ export function TenantDetailScreen() {
   }
 
   const isWeb = Platform.OS === 'web';
+
+  // Super admin only: this screen renders StaffManager and admin_* RPC forms;
+  // other roles must not land here.
+  if (role !== 'super_admin') {
+    return (
+      <>
+        {isWeb && <AdminHeader />}
+        <Screen noPadding edges={['top', 'left', 'right']}>
+          <View style={styles.container}>
+            <EmptyState message="No access — tenant management is super-admin only." />
+          </View>
+        </Screen>
+      </>
+    );
+  }
 
   if (loading) {
     return (
