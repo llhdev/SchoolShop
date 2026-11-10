@@ -1,6 +1,7 @@
 import { ActivityIndicator, Platform, View } from 'react-native';
-import { ComponentType, lazy, Suspense, useEffect } from 'react';
+import { ComponentType, lazy, Suspense, useEffect, useRef } from 'react';
 import {
+  CommonActions,
   getPathFromState as defaultGetPathFromState,
   getStateFromPath as defaultGetStateFromPath,
   LinkingOptions,
@@ -140,6 +141,26 @@ export function AppNavigator() {
   // shift the layout when navigating between screens.
   const showHeader =
     Platform.OS !== 'web' && (!isTelegramMiniApp() || !hasTelegramChrome());
+
+  // Signing out of admin swaps the navigator's screens, but the current
+  // route (e.g. an order deep link) can survive the swap and strand the
+  // shopper on a screen that no longer has their data. Reset to the shop
+  // home on the admin -> user transition only — never on mount, so shopper
+  // deep links keep working.
+  const prevRole = useRef(role);
+  useEffect(() => {
+    const wasAdmin =
+      prevRole.current === 'admin' || prevRole.current === 'super_admin';
+    prevRole.current = role;
+    if (wasAdmin && role === 'user' && navigationRef.isReady()) {
+      navigationRef.dispatch(
+        CommonActions.reset({
+          index: 0,
+          routes: [{ name: 'UserTabs', params: { screen: 'Home' } }],
+        })
+      );
+    }
+  }, [role, navigationRef]);
 
   return (
     <NavigationContainer ref={navigationRef} linking={linking}>

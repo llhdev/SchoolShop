@@ -7,7 +7,7 @@ import {
   useState,
 } from 'react';
 import { Alert } from 'react-native';
-import { AppAction, AppState, CartItem, Order, Product, Role, Shopper, StaffSession, Theme } from '../types';
+import { AppAction, AppState, CartItem, Order, OrderStatus, Product, Role, Shopper, StaffSession, Theme } from '../types';
 import { getUnitPrice, variantKeyOf } from '../utils/variants';
 import { loadTheme, saveTheme } from '../utils/storage';
 import { supabase } from '../lib/supabase';
@@ -25,6 +25,7 @@ import {
   createOrder,
   fetchOrders,
   fetchOrdersByTelegramId,
+  getItemKey,
   loadOrdersFromCache,
   saveOrdersToCache,
   subscribeToOrders,
@@ -58,6 +59,7 @@ import {
   isTelegramMiniApp,
 } from '../lib/telegram';
 import { colors, darkColors } from '../constants/theme';
+import { ORDER_STATUSES } from '../constants/orderStatus';
 
 const initialState: AppState = {
   role: 'user',
@@ -805,10 +807,29 @@ export function AppProvider({ children }: { children: ReactNode }) {
       const previous = state.orders;
       const target = previous.find((o) => o.id === orderId);
       if (!target) return;
-      const updated: Order = {
-        ...target,
-        itemStatuses: { ...(target.itemStatuses ?? {}), [itemKey]: status },
-      };
+      const itemStatuses = { ...(target.itemStatuses ?? {}), [itemKey]: status };
+      // Mirror the server-side rule (053): the order-level status is the
+      // least-advanced non-cancelled item status, cancelled when every item
+      // is. The realtime refetch confirms it; doing it here keeps the header
+      // badge in step with the per-item change instantly.
+      const effective = target.items.map(
+        (item) => (itemStatuses[getItemKey(item)] ?? target.status) as OrderStatus
+      );
+      const active = effective.filter((s) => s !== 'cancelled');
+      let orderStatus = target.status;
+      if (active.length === 0) {
+        orderStatus = 'cancelled';
+      } else {
+        let minIndex = Number.POSITIVE_INFINITY;
+        for (const s of active) {
+          const idx = ORDER_STATUSES.indexOf(s);
+          if (idx >= 0 && idx < minIndex) minIndex = idx;
+        }
+        if (minIndex !== Number.POSITIVE_INFINITY) {
+          orderStatus = ORDER_STATUSES[minIndex];
+        }
+      }
+      const updated: Order = { ...target, status: orderStatus, itemStatuses };
       const optimistic = previous.map((o) => (o.id === orderId ? updated : o));
       dispatch({ type: 'UPDATE_ORDER', payload: updated });
       await saveOrdersToCache(optimistic);

@@ -63,7 +63,7 @@ Key facts:
 │   │   ├── verify-payment-reference/ # pre-order read-only reference check (checkout calls it)
 │   │   ├── r2-upload-sign/          # presigned R2 access: capability-gated PUT/delete + proof GET (052), anon proof PUT/book GET
 │   │   └── verify-et-webhook/       # completes queued verifications (signed, idempotent)
-│   └── migrations/                  # 001–053, in order; header comments document each
+│   └── migrations/                  # 001–055, in order; header comments document each
 ├── docs/
 │   ├── architecture.md              # images + checkout/payment-verification deep-dive
 │   ├── staging-setup.md             # staging env runbook (dev branch → preview → staging Supabase)
