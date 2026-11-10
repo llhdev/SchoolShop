@@ -216,19 +216,16 @@ export function AdminOrdersScreen() {
     );
   }
 
-  if (userGroups.length === 0) {
+  // Only bail out to a bare empty state when there are no orders at all —
+  // when a status filter merely matches nothing, the main screen must still
+  // render (with an inline empty state) so the stats and filter chips stay
+  // visible and the filter can be changed back.
+  if (visibleOrders.length === 0) {
     return (
       <>
         {isWeb && <AdminHeader />}
         <Screen>
-          <EmptyState
-            message={
-              visibleOrders.length === 0
-                ? 'No orders yet.'
-                : `No ${FILTERS.find((f) => f.key === statusFilter)?.label.toLowerCase() ?? ''} orders.`
-            }
-            icon="receipt-outline"
-          />
+          <EmptyState message="No orders yet." icon="receipt-outline" />
         </Screen>
       </>
     );
@@ -282,6 +279,12 @@ export function AdminOrdersScreen() {
           ))}
         </View>
 
+        {userGroups.length === 0 ? (
+          <EmptyState
+            message={`No ${FILTERS.find((f) => f.key === statusFilter)?.label.toLowerCase() ?? ''} orders.`}
+            icon="receipt-outline"
+          />
+        ) : (
         <FlatList
           data={userGroups}
           keyExtractor={(item) => item.phoneNumber}
@@ -324,6 +327,7 @@ export function AdminOrdersScreen() {
             </TouchableOpacity>
           )}
         />
+        )}
       </View>
     </Screen>
     </>
