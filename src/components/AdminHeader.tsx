@@ -1,15 +1,12 @@
 import { Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { useNavigation, useRoute } from '@react-navigation/native';
-import { NativeStackNavigationProp } from '@react-navigation/native-stack';
+import { CommonActions, useNavigation, useRoute } from '@react-navigation/native';
 import { useApp } from '../context/AppContext';
 import { ThemeToggle } from './ThemeToggle';
 import { AdminStackParamList } from '../types/navigation';
 import { useResponsive } from '../hooks/useResponsive';
 import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../constants/theme';
 import { MERCHANT_ACCOUNT_EDITING_ENABLED } from '../constants/featureFlags';
-
-type AdminNav = NativeStackNavigationProp<AdminStackParamList>;
 
 interface NavLinkProps {
   name: keyof AdminStackParamList;
@@ -36,11 +33,17 @@ function NavLink({ name, label, current, onPress, compact }: NavLinkProps) {
 export function AdminHeader() {
   const colors = useThemeColors();
   const styles = makeStyles(colors);
-  const navigation = useNavigation<AdminNav>();
+  const navigation = useNavigation();
   const route = useRoute();
   const { signOutAdmin, role, staffSession, currentUserId } = useApp();
   const { isDesktop } = useResponsive();
   const current = route.name;
+  // AdminHeader also renders on root-stack screens (OrderDetail,
+  // ProductDetail), where the AdminStack route names aren't directly
+  // registered — plain navigate() is dropped there. Dispatching the nested
+  // form bubbles up to the root navigator, so the links work everywhere.
+  const goTo = (screen: keyof AdminStackParamList) =>
+    navigation.dispatch(CommonActions.navigate('AdminStack', { screen }));
   const isSuperAdmin = role === 'super_admin';
   // The shop owner always gets the Account screen (it manages staff and
   // settings there, 048); staff accounts only when merchant editing is on.
@@ -63,21 +66,21 @@ export function AdminHeader() {
             label="Dashboard"
             current={current}
             compact={compact}
-            onPress={() => navigation.navigate('AdminDashboard')}
+            onPress={() => goTo('AdminDashboard')}
           />
           <NavLink
             name="AdminOrders"
             label="Orders"
             current={current}
             compact={compact}
-            onPress={() => navigation.navigate('AdminOrders')}
+            onPress={() => goTo('AdminOrders')}
           />
           <NavLink
             name="AdminAnalysis"
             label="Analysis"
             current={current}
             compact={compact}
-            onPress={() => navigation.navigate('AdminAnalysis')}
+            onPress={() => goTo('AdminAnalysis')}
           />
           {(isSuperAdmin || isShopOwner || MERCHANT_ACCOUNT_EDITING_ENABLED) && (
             <NavLink
@@ -85,7 +88,7 @@ export function AdminHeader() {
               label="Account"
               current={current}
               compact={compact}
-              onPress={() => navigation.navigate('AdminAccount')}
+              onPress={() => goTo('AdminAccount')}
             />
           )}
           {!isSuperAdmin && !!staffSession?.capabilities.shop && (
@@ -94,7 +97,7 @@ export function AdminHeader() {
               label="Add Item"
               current={current}
               compact={compact}
-              onPress={() => navigation.navigate('AddEditItem')}
+              onPress={() => goTo('AddEditItem')}
             />
           )}
           {isSuperAdmin && (
@@ -103,7 +106,7 @@ export function AdminHeader() {
               label="Tenants"
               current={current}
               compact={compact}
-              onPress={() => navigation.navigate('TenantManagement')}
+              onPress={() => goTo('TenantManagement')}
             />
           )}
         </View>
