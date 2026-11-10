@@ -119,7 +119,10 @@ export function getOrderItemsForTenant(order: Order, tenantId: string): Order['i
 /** Line items visible to one staff account: the tenant's items, further
  *  narrowed to one branch for branch-scoped staff (migration 045). When the
  *  shop's checkout branch selection is off (046), orders carry no branch
- *  stamp, so branch-scoped staff see the whole shop instead. */
+ *  stamp, so branch-scoped staff see the whole shop instead. Unstamped items
+ *  (053 — orders from before the shop had branches) are shop-wide too: only
+ *  items stamped with a DIFFERENT branch are hidden. Mirrors
+ *  update_order_item_status. */
 export function getOrderItemsForScope(
   order: Order,
   tenantId: string,
@@ -128,7 +131,7 @@ export function getOrderItemsForScope(
 ): Order['items'] {
   const items = getOrderItemsForTenant(order, tenantId);
   if (!branchId || !branchSelectionEnabled) return items;
-  return items.filter((item) => item.branchId === branchId);
+  return items.filter((item) => item.branchId == null || item.branchId === branchId);
 }
 
 /** Orders placed by one Telegram shopper, newest first. */
