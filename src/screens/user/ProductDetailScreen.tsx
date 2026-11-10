@@ -382,11 +382,19 @@ export function ProductDetailScreen() {
             style={styles.chatIconButton}
           />
           {!product.priceHidden && !isFreeDownload && (
-            <Button
-              title="Add to Cart"
-              onPress={handleAddToCart}
-              style={styles.actionButton}
-            />
+            <>
+              <Button
+                title="Add to Cart"
+                variant="outline"
+                onPress={handleAddToCart}
+                style={styles.actionButton}
+              />
+              <Button
+                title="Buy"
+                onPress={handleBuy}
+                style={styles.actionButton}
+              />
+            </>
           )}
         </View>
       )}
