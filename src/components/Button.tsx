@@ -1,4 +1,4 @@
-import { ActivityIndicator, StyleProp, StyleSheet, Text, TouchableOpacity, View, ViewStyle } from 'react-native';
+import { ActivityIndicator, Platform, StyleProp, StyleSheet, Text, TouchableOpacity, View, ViewStyle } from 'react-native';
 import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../constants/theme';
 
 type ButtonVariant = 'primary' | 'secondary' | 'danger' | 'outline';
@@ -22,6 +22,10 @@ export function Button({
 }: ButtonProps) {
   const colors = useThemeColors();
   const styles = makeStyles(colors);
+  // Spinner must contrast with the button it sits on (was always gray —
+  // invisible on the purple primary button).
+  const spinnerColor =
+    variant === 'primary' || variant === 'danger' ? colors.surface : colors.primary;
 
   return (
     <TouchableOpacity
@@ -29,6 +33,7 @@ export function Button({
         styles.button,
         styles[variant],
         (disabled || loading) && styles.disabled,
+        Platform.OS === 'web' && !(disabled || loading) && ({ cursor: 'pointer' } as any),
         style,
       ]}
       onPress={onPress}
@@ -37,7 +42,7 @@ export function Button({
     >
       <View style={styles.content}>
         {loading && (
-          <ActivityIndicator size="small" color={colors.textSecondary} />
+          <ActivityIndicator size="small" color={spinnerColor} />
         )}
         <Text style={[styles.text, styles[`${variant}Text`], (disabled || loading) && styles.disabledText]}>
           {title}

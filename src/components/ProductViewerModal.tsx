@@ -343,7 +343,7 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
   },
   price: {
     fontSize: fontSizes.xl,
-    fontWeight: '800',
+    fontWeight: '700',
     color: colors.price,
   },
   metaRow: {

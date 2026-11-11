@@ -1,4 +1,4 @@
-import { Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View, Image, Modal, Linking } from 'react-native';
+import { ActivityIndicator, Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View, Image, Modal, Linking } from 'react-native';
 import { useEffect, useState } from 'react';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -27,9 +27,8 @@ import { confirmAction } from '../../utils/confirm';
 import { ORDER_STATUS_LABELS } from '../../constants/orderStatus';
 import { OrderStatus, PaymentVerification } from '../../types';
 import { RootStackParamList } from '../../types/navigation';
-import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../../constants/theme';
-
-const MAX_WIDTH = 900;
+import { OrderStatusBadge } from '../../components/OrderStatusBadge';
+import { useThemeColors, spacing, borderRadius, fontSizes, pageWidth, ColorPalette } from '../../constants/theme';
 
 /** Item statuses that unlock paid digital downloads (migration 044). */
 const DOWNLOAD_UNLOCKED: OrderStatus[] = ['paid', 'on_the_way', 'completed'];
@@ -60,6 +59,15 @@ export function OrderDetailScreen() {
   const [verifyError, setVerifyError] = useState('');
 
   const order = orders.find((o) => o.id === orderId);
+  // Orders hydrate from cache first and (for Telegram shoppers) re-sync from
+  // the server shortly after; give that sync a moment before concluding the
+  // order is gone instead of flashing "not found".
+  const [notFoundReady, setNotFoundReady] = useState(false);
+  useEffect(() => {
+    if (order) return;
+    const timer = setTimeout(() => setNotFoundReady(true), 2500);
+    return () => clearTimeout(timer);
+  }, [order]);
   const isWeb = Platform.OS === 'web';
   const isSuperAdmin = role === 'super_admin';
   // This screen is shared between the shopper and admin navigators: admins
@@ -277,7 +285,13 @@ export function OrderDetailScreen() {
       <>
         {isWeb && header}
         <Screen>
-          <EmptyState message="Order not found." icon="alert-circle-outline" />
+          {notFoundReady ? (
+            <EmptyState message="Order not found." icon="alert-circle-outline" />
+          ) : (
+            <View style={styles.loadingWrap}>
+              <ActivityIndicator size="large" color={colors.primary} />
+            </View>
+          )}
         </Screen>
       </>
     );
@@ -321,23 +335,12 @@ export function OrderDetailScreen() {
 
           <View style={styles.header}>
             <View>
+              <Text style={styles.orderCode}>#{order.id}</Text>
               <Text style={styles.date}>
                 {new Date(order.createdAt).toLocaleString()}
               </Text>
             </View>
-            <View
-              style={[
-                styles.badge,
-                order.status === 'paid' && styles.paidBadge,
-                order.status === 'pending' && styles.pendingBadge,
-                order.status === 'received' && styles.receivedBadge,
-                order.status === 'on_the_way' && styles.onTheWayBadge,
-                order.status === 'completed' && styles.completedBadge,
-                order.status === 'cancelled' && styles.cancelledBadge,
-              ]}
-            >
-              <Text style={styles.badgeText}>{ORDER_STATUS_LABELS[order.status]}</Text>
-            </View>
+            <OrderStatusBadge status={order.status} />
           </View>
 
           <View style={styles.section}>
@@ -463,13 +466,15 @@ export function OrderDetailScreen() {
           )}
 
           <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Delivery Location</Text>
-            <Text style={styles.paymentText}>{order.location || 'Not provided'}</Text>
-          </View>
-
-          <View style={styles.section}>
-            <Text style={styles.sectionTitle}>Phone Number</Text>
-            <Text style={styles.paymentText}>{order.phoneNumber || 'Not provided'}</Text>
+            <Text style={styles.sectionTitle}>Delivery</Text>
+            <View style={styles.detailRow}>
+              <Text style={styles.detailLabel}>Location</Text>
+              <Text style={styles.detailValue}>{order.location || 'Not provided'}</Text>
+            </View>
+            <View style={styles.detailRow}>
+              <Text style={styles.detailLabel}>Phone</Text>
+              <Text style={styles.detailValue}>{order.phoneNumber || 'Not provided'}</Text>
+            </View>
           </View>
 
           <View style={styles.section}>
@@ -610,9 +615,14 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
   scrollContent: {
     flexGrow: 1,
   },
+  loadingWrap: {
+    flex: 1,
+    justifyContent: 'center',
+    alignItems: 'center',
+  },
   container: {
     flex: 1,
-    maxWidth: MAX_WIDTH,
+    maxWidth: pageWidth.form,
     width: '100%',
     alignSelf: 'center',
     paddingHorizontal: spacing.lg,
@@ -652,42 +662,15 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
     alignItems: 'flex-start',
     marginBottom: spacing.lg,
   },
+  orderCode: {
+    fontSize: fontSizes.md,
+    fontWeight: '600',
+    color: colors.text,
+  },
   date: {
     fontSize: fontSizes.sm,
     color: colors.textSecondary,
     marginTop: spacing.xs,
-  },
-  badge: {
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.xs,
-    borderRadius: borderRadius.xl,
-    backgroundColor: colors.border,
-  },
-  pendingBadge: {
-    backgroundColor: colors.warning,
-  },
-  receivedBadge: {
-    backgroundColor: colors.primary,
-  },
-  paidBadge: {
-    backgroundColor: colors.success,
-  },
-  deliveredBadge: {
-    backgroundColor: colors.primary,
-  },
-  onTheWayBadge: {
-    backgroundColor: colors.primary,
-  },
-  completedBadge: {
-    backgroundColor: colors.success,
-  },
-  cancelledBadge: {
-    backgroundColor: colors.danger,
-  },
-  badgeText: {
-    fontSize: fontSizes.xs,
-    fontWeight: '600',
-    color: colors.surface,
   },
   statusActions: {
     flexDirection: 'row',
@@ -841,12 +824,29 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
   totalValue: {
     fontSize: fontSizes.lg,
     fontWeight: '700',
-    color: colors.primary,
+    color: colors.text,
   },
   paymentText: {
     fontSize: fontSizes.md,
     color: colors.text,
-    textTransform: 'capitalize',
+  },
+  detailRow: {
+    flexDirection: 'row',
+    justifyContent: 'space-between',
+    alignItems: 'flex-start',
+    gap: spacing.md,
+    paddingVertical: spacing.xs,
+  },
+  detailLabel: {
+    fontSize: fontSizes.sm,
+    fontWeight: '600',
+    color: colors.textSecondary,
+  },
+  detailValue: {
+    flex: 1,
+    fontSize: fontSizes.md,
+    color: colors.text,
+    textAlign: 'right',
   },
   verificationBlock: {
     borderTopWidth: 1,

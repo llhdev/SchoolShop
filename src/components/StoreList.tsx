@@ -103,7 +103,8 @@ const makeStyles = (colors: ColorPalette) =>
   StyleSheet.create({
     list: {
       gap: spacing.sm,
-      paddingHorizontal: spacing.sm,
+      // Match the 16px page gutter used by the filter row and product grid.
+      paddingHorizontal: spacing.lg,
       paddingBottom: spacing.xl,
     },
     card: {

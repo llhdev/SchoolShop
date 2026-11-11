@@ -1,12 +1,14 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Platform } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { FlatList, Image, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { FlatList, Image, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Screen } from '../../components/Screen';
 import { EmptyState } from '../../components/EmptyState';
 import { AdminHeader } from '../../components/AdminHeader';
+import { Chip } from '../../components/Chip';
+import { StatCard } from '../../components/StatCard';
 import { useApp } from '../../context/AppContext';
 import { useResponsive } from '../../hooks/useResponsive';
 import { formatPrice } from '../../utils/format';
@@ -16,9 +18,7 @@ import { fetchTenants, Tenant } from '../../services/tenants';
 import { AdminStackParamList } from '../../types/navigation';
 import { Order, OrderStatus } from '../../types';
 import { ALL_ORDER_STATUSES, ORDER_STATUSES, ORDER_STATUS_LABELS } from '../../constants/orderStatus';
-import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../../constants/theme';
-
-const MAX_WIDTH = 1000;
+import { useThemeColors, spacing, borderRadius, fontSizes, pageWidth, ColorPalette } from '../../constants/theme';
 
 type StatusFilter = OrderStatus | 'all';
 
@@ -42,14 +42,15 @@ export function AdminOrdersScreen() {
   const { isPhone } = useResponsive();
   const colors = useThemeColors();
   const styles = makeStyles(colors);
-  // Accent color per lifecycle status on the summary cards below.
-  const STAT_STYLES = {
-    pending: styles.pendingStat,
-    received: styles.receivedStat,
-    paid: styles.paidStat,
-    on_the_way: styles.onTheWayStat,
-    completed: styles.completedStat,
-  } as const;
+  // Accent hue per lifecycle status on the summary cards below — the same
+  // tones OrderStatusBadge uses, so chips and stat cards read consistently.
+  const STAT_ACCENTS: Partial<Record<OrderStatus, string>> = {
+    pending: colors.warning,
+    received: colors.primary,
+    paid: '#0F766E',
+    on_the_way: '#0B5ED7',
+    completed: colors.success,
+  };
   const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
   // Super admin: orders are separated per tenant — pick a shop first, then
   // browse that shop's orders (grouped by customer phone as usual).
@@ -62,20 +63,16 @@ export function AdminOrdersScreen() {
   // Money is visible to the super admin and financial staff only (045).
   const canSeeMoney = isSuperAdmin || !!staffSession?.capabilities.financial;
 
-  useEffect(() => {
-    if (!isSuperAdmin) return;
-    let cancelled = false;
+  const loadShops = useCallback(() => {
+    setTenantsFailed(false);
     fetchTenants()
-      .then((list) => {
-        if (!cancelled) setTenants(list);
-      })
-      .catch(() => {
-        if (!cancelled) setTenantsFailed(true);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [isSuperAdmin]);
+      .then(setTenants)
+      .catch(() => setTenantsFailed(true));
+  }, []);
+
+  useEffect(() => {
+    if (isSuperAdmin) loadShops();
+  }, [isSuperAdmin, loadShops]);
 
   const selectedTenant = isSuperAdmin
     ? tenants.find((t) => t.id === selectedTenantId) ?? null
@@ -171,44 +168,48 @@ export function AdminOrdersScreen() {
     return (
       <>
         {isWeb && <AdminHeader />}
-        <Screen noPadding edges={['top', 'left', 'right']}>
+        <Screen noPadding edges={['top', 'left', 'right', 'bottom']}>
           <View style={styles.container}>
             <Text style={[styles.title, isPhone && styles.titleCompact]}>Orders by Shop</Text>
             {tenantsFailed ? (
               <EmptyState
                 message="Failed to load shops. Please try again."
                 icon="storefront-outline"
+                actionLabel="Try again"
+                onAction={loadShops}
               />
             ) : tenants.length === 0 ? (
               <EmptyState message="No tenants yet." icon="storefront-outline" />
             ) : (
-              tenants.map((tenant) => {
-                const count = tenantOrderCounts.get(tenant.id) ?? 0;
-                return (
-                  <TouchableOpacity
-                    key={tenant.id}
-                    style={styles.tenantCard}
-                    onPress={() => setSelectedTenantId(tenant.id)}
-                  >
-                    {tenant.shopLogoUrl ? (
-                      <Image source={{ uri: tenant.shopLogoUrl }} style={styles.tenantLogo} />
-                    ) : (
-                      <View style={[styles.tenantLogo, styles.tenantLogoFallback]}>
-                        <Ionicons name="storefront-outline" size={22} color={colors.primary} />
+              <ScrollView style={styles.shopList}>
+                {tenants.map((tenant) => {
+                  const count = tenantOrderCounts.get(tenant.id) ?? 0;
+                  return (
+                    <TouchableOpacity
+                      key={tenant.id}
+                      style={styles.tenantCard}
+                      onPress={() => setSelectedTenantId(tenant.id)}
+                    >
+                      {tenant.shopLogoUrl ? (
+                        <Image source={{ uri: tenant.shopLogoUrl }} style={styles.tenantLogo} />
+                      ) : (
+                        <View style={[styles.tenantLogo, styles.tenantLogoFallback]}>
+                          <Ionicons name="storefront-outline" size={22} color={colors.primary} />
+                        </View>
+                      )}
+                      <View style={styles.tenantCardText}>
+                        <Text style={styles.tenantName} numberOfLines={1}>
+                          {tenant.shopName ?? 'Unnamed shop'}
+                        </Text>
+                        <Text style={styles.tenantDetail}>
+                          {count} order{count === 1 ? '' : 's'}
+                        </Text>
                       </View>
-                    )}
-                    <View style={styles.tenantCardText}>
-                      <Text style={styles.tenantName} numberOfLines={1}>
-                        {tenant.shopName ?? 'Unnamed shop'}
-                      </Text>
-                      <Text style={styles.tenantDetail}>
-                        {count} order{count === 1 ? '' : 's'}
-                      </Text>
-                    </View>
-                    <Ionicons name="chevron-forward" size={20} color={colors.textSecondary} />
-                  </TouchableOpacity>
-                );
-              })
+                      <Ionicons name="chevron-forward" size={20} color={colors.textSecondary} />
+                    </TouchableOpacity>
+                  );
+                })}
+              </ScrollView>
             )}
           </View>
         </Screen>
@@ -224,8 +225,16 @@ export function AdminOrdersScreen() {
     return (
       <>
         {isWeb && <AdminHeader />}
-        <Screen>
-          <EmptyState message="No orders yet." icon="receipt-outline" />
+        <Screen noPadding edges={['top', 'left', 'right', 'bottom']}>
+          <View style={styles.container}>
+            {isSuperAdmin && (
+              <TouchableOpacity style={styles.backRow} onPress={() => setSelectedTenantId(null)}>
+                <Ionicons name="chevron-back" size={20} color={colors.primary} />
+                <Text style={styles.backText}>All shops</Text>
+              </TouchableOpacity>
+            )}
+            <EmptyState message="No orders yet." icon="receipt-outline" />
+          </View>
         </Screen>
       </>
     );
@@ -234,7 +243,7 @@ export function AdminOrdersScreen() {
   return (
     <>
       {isWeb && <AdminHeader />}
-      <Screen noPadding edges={['top', 'left', 'right']}>
+      <Screen noPadding edges={['top', 'left', 'right', 'bottom']}>
         <View style={styles.container}>
         {isSuperAdmin && (
           <TouchableOpacity style={styles.backRow} onPress={() => setSelectedTenantId(null)}>
@@ -247,35 +256,25 @@ export function AdminOrdersScreen() {
         </Text>
 
         <View style={styles.statsRow}>
-          {(Object.keys(STAT_STYLES) as (keyof typeof STAT_STYLES)[]).map((status) => (
-            <View key={status} style={[styles.statCard, STAT_STYLES[status]]}>
-              <Text style={styles.statValue}>{counts[status]}</Text>
-              <Text style={styles.statLabel} numberOfLines={1}>
-                {ORDER_STATUS_LABELS[status]}
-              </Text>
-            </View>
+          {ORDER_STATUSES.map((status) => (
+            <StatCard
+              key={status}
+              value={counts[status]}
+              label={ORDER_STATUS_LABELS[status]}
+              accentColor={STAT_ACCENTS[status]}
+              style={isPhone && styles.statCardPhone}
+            />
           ))}
         </View>
 
         <View style={styles.filterRow}>
           {FILTERS.map((filter) => (
-            <TouchableOpacity
+            <Chip
               key={filter.key}
-              style={[
-                styles.filterChip,
-                statusFilter === filter.key && styles.filterChipActive,
-              ]}
+              label={filter.label}
+              active={statusFilter === filter.key}
               onPress={() => setStatusFilter(filter.key)}
-            >
-              <Text
-                style={[
-                  styles.filterChipText,
-                  statusFilter === filter.key && styles.filterChipTextActive,
-                ]}
-              >
-                {filter.label}
-              </Text>
-            </TouchableOpacity>
+            />
           ))}
         </View>
 
@@ -337,11 +336,14 @@ export function AdminOrdersScreen() {
 const makeStyles = (colors: ColorPalette) => StyleSheet.create({
   container: {
     flex: 1,
-    maxWidth: MAX_WIDTH,
+    maxWidth: pageWidth.data,
     width: '100%',
     alignSelf: 'center',
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.md,
+  },
+  shopList: {
+    flex: 1,
   },
   title: {
     fontSize: fontSizes.xxl,
@@ -406,75 +408,20 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
   },
   statsRow: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: spacing.sm,
     marginBottom: spacing.md,
   },
-  statCard: {
-    flex: 1,
-    backgroundColor: colors.surface,
-    borderRadius: borderRadius.md,
-    borderWidth: 1,
-    borderColor: colors.border,
-    paddingVertical: spacing.sm,
-    paddingHorizontal: spacing.sm,
-    alignItems: 'center',
-  },
-  pendingStat: {
-    borderLeftWidth: 3,
-    borderLeftColor: colors.warning,
-  },
-  receivedStat: {
-    borderLeftWidth: 3,
-    borderLeftColor: colors.primary,
-  },
-  paidStat: {
-    borderLeftWidth: 3,
-    borderLeftColor: colors.success,
-  },
-  onTheWayStat: {
-    borderLeftWidth: 3,
-    borderLeftColor: colors.primary,
-  },
-  completedStat: {
-    borderLeftWidth: 3,
-    borderLeftColor: colors.success,
-  },
-  statValue: {
-    fontSize: fontSizes.xxl,
-    fontWeight: '700',
-    color: colors.text,
-  },
-  statLabel: {
-    fontSize: fontSizes.xs,
-    fontWeight: '600',
-    color: colors.textSecondary,
-    textTransform: 'uppercase',
-    marginTop: 2,
+  // Five cards don't fit one row on a phone — wrap to 3 + 2.
+  statCardPhone: {
+    flexBasis: '30%',
+    flexGrow: 1,
   },
   filterRow: {
     flexDirection: 'row',
+    flexWrap: 'wrap',
     gap: spacing.sm,
     marginBottom: spacing.md,
-  },
-  filterChip: {
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.xs,
-    borderRadius: borderRadius.xl,
-    backgroundColor: colors.surface,
-    borderWidth: 1,
-    borderColor: colors.border,
-  },
-  filterChipActive: {
-    backgroundColor: colors.primary,
-    borderColor: colors.primary,
-  },
-  filterChipText: {
-    fontSize: fontSizes.sm,
-    fontWeight: '600',
-    color: colors.text,
-  },
-  filterChipTextActive: {
-    color: colors.surface,
   },
   card: {
     backgroundColor: colors.surface,
@@ -516,7 +463,7 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
   total: {
     fontSize: fontSizes.md,
     fontWeight: '700',
-    color: colors.primary,
+    color: colors.text,
   },
   date: {
     fontSize: fontSizes.sm,

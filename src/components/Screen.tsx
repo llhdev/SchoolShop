@@ -34,7 +34,9 @@ export function Screen({
         styles.container,
         centered && styles.centered,
         noPadding && styles.noPadding,
-        tmaBottomInset > 0 && { paddingBottom: spacing.md + tmaBottomInset },
+        tmaBottomInset > 0 && {
+          paddingBottom: (noPadding ? 0 : spacing.md) + tmaBottomInset,
+        },
         style,
       ]}
     >

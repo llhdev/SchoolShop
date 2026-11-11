@@ -3,7 +3,6 @@ import { Platform } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import {
-  Alert,
   StyleSheet,
   Text,
   TextInput,
@@ -17,16 +16,16 @@ import { EmptyState } from '../../components/EmptyState';
 import { AdminHeader } from '../../components/AdminHeader';
 import { ThemeToggle } from '../../components/ThemeToggle';
 import { ProductImage } from '../../components/ProductImage';
+import { StatCard } from '../../components/StatCard';
 import { useApp } from '../../context/AppContext';
 import { useResponsive } from '../../hooks/useResponsive';
 import { AdminStackParamList } from '../../types/navigation';
 import { getProductCoverImage } from '../../utils/images';
 import { confirmAction } from '../../utils/confirm';
+import { notify } from '../../utils/notify';
 import { formatPrice } from '../../utils/format';
-import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../../constants/theme';
+import { useThemeColors, spacing, borderRadius, fontSizes, pageWidth, ColorPalette } from '../../constants/theme';
 import { MERCHANT_ACCOUNT_EDITING_ENABLED } from '../../constants/featureFlags';
-
-const MAX_WIDTH = 1200;
 
 function AdminHeaderRight() {
   const navigation = useNavigation<NativeStackNavigationProp<AdminStackParamList>>();
@@ -79,7 +78,7 @@ export function AdminDashboardScreen() {
   const visibleProducts = isSuperAdmin
     ? products
     : products.filter((p) => p.ownerId === effectiveTenantId);
-  const { isDesktop } = useResponsive();
+  const { isDesktop, isPhone } = useResponsive();
   const colors = useThemeColors();
   const styles = makeStyles(colors);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
@@ -98,7 +97,7 @@ export function AdminDashboardScreen() {
       setSuccessMessage('Item deleted successfully');
       setTimeout(() => setSuccessMessage(null), 2000);
     } catch {
-      Alert.alert('Error', 'Failed to delete item. Please try again.');
+      notify('Failed to delete item. Please try again.', 'error');
     }
   }
 
@@ -106,7 +105,7 @@ export function AdminDashboardScreen() {
     const trimmed = newCategory.trim();
     if (!trimmed) return;
     if (categories.includes(trimmed)) {
-      Alert.alert('Duplicate', `${trimmed} already exists.`);
+      notify(`${trimmed} already exists.`, 'info');
       return;
     }
     try {
@@ -115,16 +114,16 @@ export function AdminDashboardScreen() {
       setSuccessMessage('Category added');
       setTimeout(() => setSuccessMessage(null), 2000);
     } catch {
-      Alert.alert('Error', 'Failed to add category. Please try again.');
+      notify('Failed to add category. Please try again.', 'error');
     }
   }
 
   async function handleRemoveCategory(category: string) {
     const inUse = visibleProducts.some((p) => p.category === category);
     if (inUse) {
-      Alert.alert(
-        'Cannot delete',
-        'Some products are using this category. Reassign or delete those products first.'
+      notify(
+        'Some products are using this category. Reassign or delete those products first.',
+        'info'
       );
       return;
     }
@@ -133,7 +132,7 @@ export function AdminDashboardScreen() {
       setSuccessMessage('Category removed');
       setTimeout(() => setSuccessMessage(null), 2000);
     } catch {
-      Alert.alert('Error', 'Failed to remove category. Please try again.');
+      notify('Failed to remove category. Please try again.', 'error');
     }
   }
 
@@ -142,8 +141,14 @@ export function AdminDashboardScreen() {
   return (
     <>
       {isWeb && <AdminHeader />}
-      <Screen scroll noPadding edges={['left', 'right']}>
+      <Screen scroll noPadding edges={['left', 'right', 'bottom']}>
         <View style={styles.container}>
+        <Text style={[styles.title, isPhone && styles.titleCompact]}>Dashboard</Text>
+        <Text style={styles.subtitle}>
+          {isSuperAdmin
+            ? 'The platform catalog and categories across every shop.'
+            : "Your shop's catalog."}
+        </Text>
         {successMessage && (
           <View style={styles.successBanner}>
             <Text style={styles.successText}>{successMessage}</Text>
@@ -151,10 +156,11 @@ export function AdminDashboardScreen() {
         )}
 
         <View style={styles.headerRow}>
-          <View style={[styles.statCard, isDesktop && styles.statCardDesktop]}>
-            <Text style={styles.statValue}>{visibleProducts.length}</Text>
-            <Text style={styles.statLabel}>Products</Text>
-          </View>
+          <StatCard
+            value={visibleProducts.length}
+            label="Products"
+            style={styles.headerStat}
+          />
           {!isSuperAdmin && canManageProducts && (
             <View style={styles.actionButtonWrapper}>
               <Button
@@ -186,7 +192,7 @@ export function AdminDashboardScreen() {
 
         <View style={[styles.twoColumn, isDesktop && styles.twoColumnDesktop]}>
           {isSuperAdmin && (
-            <View style={[styles.column, styles.categoriesColumn]}>
+            <View style={[styles.column, styles.categoriesColumn, styles.columnCard]}>
               <Text style={styles.sectionTitle}>Manage Categories</Text>
               <View style={styles.categoryInputRow}>
                 <TextInput
@@ -225,21 +231,25 @@ export function AdminDashboardScreen() {
                 message={isSuperAdmin ? 'No products yet.' : 'No products yet. Add your first item.'}
               />
             ) : (
-              <>
+              <View style={isDesktop ? styles.table : undefined}>
                 {isDesktop && (
                   <View style={styles.tableHeader}>
                     <Text style={[styles.tableHeaderText, styles.colProduct]}>Product</Text>
                     <Text style={[styles.tableHeaderText, styles.colCategory]}>Category</Text>
                     <Text style={[styles.tableHeaderText, styles.colPrice]}>Price</Text>
-                    {isSuperAdmin && canManageProducts && (
+                    {canManageProducts && (
                       <Text style={[styles.tableHeaderText, styles.colActions]}>Actions</Text>
                     )}
                   </View>
                 )}
-                {visibleProducts.map((item) => (
+                {visibleProducts.map((item, index) => (
                   <View
                     key={item.id}
-                    style={[styles.productRow, isDesktop && styles.productRowDesktop]}
+                    style={[
+                      styles.productRow,
+                      isDesktop && styles.productRowDesktop,
+                      isDesktop && index === visibleProducts.length - 1 && styles.productRowLast,
+                    ]}
                   >
                     <TouchableOpacity
                       style={[
@@ -317,7 +327,7 @@ export function AdminDashboardScreen() {
                     )}
                   </View>
                 ))}
-              </>
+              </View>
             )}
           </View>
         </View>
@@ -331,18 +341,33 @@ const makeStyles = (colors: ColorPalette) =>
   StyleSheet.create({
     container: {
       flex: 1,
-      maxWidth: MAX_WIDTH,
+      maxWidth: pageWidth.data,
       width: '100%',
       alignSelf: 'center',
       paddingHorizontal: spacing.lg,
-      paddingTop: 0,
+      paddingTop: spacing.md,
       paddingBottom: spacing.md,
+    },
+    title: {
+      fontSize: fontSizes.xxl,
+      fontWeight: '700',
+      color: colors.text,
+      marginBottom: spacing.xs,
+    },
+    titleCompact: {
+      fontSize: fontSizes.xl,
+    },
+    subtitle: {
+      fontSize: fontSizes.sm,
+      color: colors.textSecondary,
+      marginBottom: spacing.md,
     },
     successBanner: {
       backgroundColor: colors.success,
       borderRadius: borderRadius.sm,
       paddingVertical: spacing.sm,
       paddingHorizontal: spacing.md,
+      marginTop: spacing.xs,
       marginBottom: spacing.md,
     },
     successText: {
@@ -355,35 +380,18 @@ const makeStyles = (colors: ColorPalette) =>
     headerRow: {
       flexDirection: 'row',
       alignItems: 'center',
+      flexWrap: 'wrap',
       gap: spacing.md,
       marginBottom: spacing.sm,
     },
-    statCard: {
-      backgroundColor: colors.surface,
-      borderRadius: borderRadius.md,
-      paddingVertical: spacing.md,
-      paddingHorizontal: spacing.lg,
-      borderWidth: 1,
-      borderColor: colors.border,
-      alignItems: 'center',
-      justifyContent: 'center',
-    },
-    statCardDesktop: {
-      paddingVertical: spacing.md,
+    // The stat card keeps its natural width; the buttons take the rest.
+    headerStat: {
+      flex: 0,
       paddingHorizontal: spacing.xl,
-    },
-    statValue: {
-      fontSize: fontSizes.xl,
-      fontWeight: '700',
-      color: colors.primary,
-    },
-    statLabel: {
-      fontSize: fontSizes.xs,
-      color: colors.textSecondary,
-      marginTop: spacing.xs,
     },
     actionButtonWrapper: {
       flex: 1,
+      minWidth: 150,
     },
     actionButton: {
       width: '100%',
@@ -403,6 +411,14 @@ const makeStyles = (colors: ColorPalette) =>
             maxWidth: 360,
           } as any)
         : {}),
+    },
+    // Categories column as a card, mirroring the bordered items table.
+    columnCard: {
+      backgroundColor: colors.surface,
+      borderRadius: borderRadius.md,
+      borderWidth: 1,
+      borderColor: colors.border,
+      padding: spacing.md,
     },
     productsColumn: {
       flex: 2,
@@ -471,15 +487,20 @@ const makeStyles = (colors: ColorPalette) =>
     categoryDelete: {
       padding: spacing.xs,
     },
+    // Desktop: header + rows in one bordered surface — the table look.
+    table: {
+      backgroundColor: colors.surface,
+      borderRadius: borderRadius.md,
+      borderWidth: 1,
+      borderColor: colors.border,
+      overflow: 'hidden',
+    },
     tableHeader: {
       flexDirection: 'row',
       paddingHorizontal: spacing.md,
       paddingVertical: spacing.sm,
       backgroundColor: colors.background,
-      borderTopLeftRadius: borderRadius.md,
-      borderTopRightRadius: borderRadius.md,
-      borderWidth: 1,
-      borderBottomWidth: 0,
+      borderBottomWidth: 1,
       borderColor: colors.border,
     },
     tableHeaderText: {
@@ -500,6 +521,9 @@ const makeStyles = (colors: ColorPalette) =>
       paddingHorizontal: spacing.sm,
       borderBottomWidth: 1,
       borderColor: colors.border,
+    },
+    productRowLast: {
+      borderBottomWidth: 0,
     },
     productCell: {
       flexDirection: 'row',
@@ -544,6 +568,7 @@ const makeStyles = (colors: ColorPalette) =>
       flex: 1,
       flexDirection: 'column',
       justifyContent: 'center',
+      ...(Platform.OS === 'web' ? ({ cursor: 'pointer' } as any) : {}),
     },
     productInfoTouchableDesktop: {
       flex: 7,
@@ -570,6 +595,7 @@ const makeStyles = (colors: ColorPalette) =>
       alignItems: 'center',
       borderRadius: borderRadius.sm,
       borderWidth: 1,
+      ...(Platform.OS === 'web' ? ({ cursor: 'pointer' } as any) : {}),
     },
     deleteButton: {
       backgroundColor: colors.dangerLight,

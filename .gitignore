@@ -44,3 +44,6 @@ yarn-error.*
 
 .vercel
 .env*
+
+# scratch
+.tmp-audit/

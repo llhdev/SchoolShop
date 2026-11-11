@@ -7,6 +7,7 @@ import { Screen } from '../../components/Screen';
 import { EmptyState } from '../../components/EmptyState';
 import { AdminHeader } from '../../components/AdminHeader';
 import { ProductImage } from '../../components/ProductImage';
+import { OrderStatusBadge } from '../../components/OrderStatusBadge';
 import { VerificationBadge } from '../../components/VerificationBadge';
 import { useApp } from '../../context/AppContext';
 import { useResponsive } from '../../hooks/useResponsive';
@@ -15,12 +16,9 @@ import { formatVariantLabel, getUnitPrice } from '../../utils/variants';
 import { getOrderItemsForScope, getOrderItemsForTenant } from '../../services/orders';
 import { fetchVerificationsForOrders, subscribeToVerifications } from '../../services/paymentVerifications';
 import { getProductCoverImage } from '../../utils/images';
-import { ORDER_STATUS_LABELS } from '../../constants/orderStatus';
 import { PaymentVerification } from '../../types';
 import { RootStackParamList } from '../../types/navigation';
-import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../../constants/theme';
-
-const MAX_WIDTH = 1000;
+import { useThemeColors, spacing, borderRadius, fontSizes, pageWidth, ColorPalette } from '../../constants/theme';
 
 export function AdminUserOrdersScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
@@ -99,12 +97,12 @@ export function AdminUserOrdersScreen() {
   return (
     <>
       {isWeb && <AdminHeader />}
-      <Screen noPadding edges={['top', 'left', 'right']}>
+      <Screen noPadding edges={['top', 'left', 'right', 'bottom']}>
         <View style={styles.container}>
-        <Text style={[styles.phoneNumber, isPhone && styles.phoneNumberCompact]}>
-          {phoneNumber}
+        <Text style={[styles.title, isPhone && styles.titleCompact]}>Customer Orders</Text>
+        <Text style={styles.subtitle}>
+          {phoneNumber} · {userOrders.length} order{userOrders.length === 1 ? '' : 's'}
         </Text>
-        <Text style={styles.subtitle}>{userOrders.length} order(s)</Text>
 
         <FlatList
           data={userOrders}
@@ -156,19 +154,7 @@ export function AdminUserOrdersScreen() {
                   <Text style={styles.paymentMethod}>Bank transfer</Text>
                 </View>
                 <View style={styles.badges}>
-                  <View
-                    style={[
-                      styles.badge,
-                      item.status === 'paid' && styles.paidBadge,
-                      item.status === 'pending' && styles.pendingBadge,
-                      item.status === 'received' && styles.receivedBadge,
-                      item.status === 'on_the_way' && styles.onTheWayBadge,
-                      item.status === 'completed' && styles.completedBadge,
-                      item.status === 'cancelled' && styles.cancelledBadge,
-                    ]}
-                  >
-                    <Text style={styles.badgeText}>{ORDER_STATUS_LABELS[item.status]}</Text>
-                  </View>
+                  <OrderStatusBadge status={item.status} />
                   {canSeeMoney && verificationFor(item.id) && (
                     <VerificationBadge status={verificationFor(item.id)!.status} />
                   )}
@@ -186,18 +172,19 @@ export function AdminUserOrdersScreen() {
 const makeStyles = (colors: ColorPalette) => StyleSheet.create({
   container: {
     flex: 1,
-    maxWidth: MAX_WIDTH,
+    maxWidth: pageWidth.data,
     width: '100%',
     alignSelf: 'center',
     paddingHorizontal: spacing.lg,
     paddingVertical: spacing.md,
   },
-  phoneNumber: {
+  title: {
     fontSize: fontSizes.xxl,
     fontWeight: '700',
     color: colors.text,
+    marginBottom: spacing.xs,
   },
-  phoneNumberCompact: {
+  titleCompact: {
     fontSize: fontSizes.xl,
   },
   subtitle: {
@@ -247,7 +234,7 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
   total: {
     fontSize: fontSizes.md,
     fontWeight: '700',
-    color: colors.primary,
+    color: colors.text,
   },
   date: {
     fontSize: fontSizes.sm,
@@ -266,40 +253,10 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
   paymentMethod: {
     fontSize: fontSizes.xs,
     color: colors.textSecondary,
-    textTransform: 'capitalize',
   },
   badges: {
     alignItems: 'flex-end',
     gap: spacing.xs,
     marginLeft: spacing.sm,
-  },
-  badge: {
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.xs,
-    borderRadius: borderRadius.xl,
-    backgroundColor: colors.border,
-  },
-  pendingBadge: {
-    backgroundColor: colors.warning,
-  },
-  receivedBadge: {
-    backgroundColor: colors.primary,
-  },
-  paidBadge: {
-    backgroundColor: colors.success,
-  },
-  onTheWayBadge: {
-    backgroundColor: colors.primary,
-  },
-  completedBadge: {
-    backgroundColor: colors.success,
-  },
-  cancelledBadge: {
-    backgroundColor: colors.danger,
-  },
-  badgeText: {
-    fontSize: fontSizes.xs,
-    fontWeight: '600',
-    color: colors.surface,
   },
 });

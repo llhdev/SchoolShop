@@ -5,6 +5,7 @@ import { FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native
 import { Ionicons } from '@expo/vector-icons';
 import { Screen } from '../../components/Screen';
 import { EmptyState } from '../../components/EmptyState';
+import { OrderStatusBadge } from '../../components/OrderStatusBadge';
 import { WebHeader } from '../../components/WebHeader';
 import { TelegramAccountBadge } from '../../components/TelegramAccountBadge';
 import { ProductImage } from '../../components/ProductImage';
@@ -13,12 +14,8 @@ import { useResponsive } from '../../hooks/useResponsive';
 import { formatPrice } from '../../utils/format';
 import { formatVariantLabel, getUnitPrice } from '../../utils/variants';
 import { getProductCoverImage } from '../../utils/images';
-import { getItemStatus } from '../../services/orders';
-import { ORDER_STATUS_LABELS } from '../../constants/orderStatus';
 import { RootStackParamList } from '../../types/navigation';
-import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../../constants/theme';
-
-const MAX_WIDTH = 900;
+import { useThemeColors, spacing, borderRadius, fontSizes, pageWidth, ColorPalette } from '../../constants/theme';
 
 export function OrdersScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
@@ -34,6 +31,7 @@ export function OrdersScreen() {
   ) : null;
 
   const isWeb = Platform.OS === 'web';
+  const goHome = () => navigation.navigate('UserTabs', { screen: 'Home' });
 
   if (orders.length === 0) {
     return (
@@ -42,7 +40,12 @@ export function OrdersScreen() {
         <Screen>
           <View style={styles.container}>
             {accountBadge}
-            <EmptyState message="No orders yet." icon="receipt-outline" />
+            <EmptyState
+              message="No orders yet."
+              icon="receipt-outline"
+              actionLabel="Browse products"
+              onAction={goHome}
+            />
           </View>
         </Screen>
       </>
@@ -58,10 +61,7 @@ export function OrdersScreen() {
         <View style={styles.titleRow}>
           <Text style={[styles.title, isPhone && styles.titleCompact]}>My Orders</Text>
           {isWeb && (
-            <TouchableOpacity
-              style={styles.homeLink}
-              onPress={() => navigation.navigate('UserTabs', { screen: 'Home' })}
-            >
+            <TouchableOpacity style={styles.homeLink} onPress={goHome}>
               <Ionicons name="arrow-back" size={16} color={colors.primary} />
               <Text style={[styles.homeLinkText, isPhone && styles.homeLinkTextCompact]}>
                 Continue Shopping
@@ -70,42 +70,34 @@ export function OrdersScreen() {
           )}
         </View>
 
+        {/* One card per order: code + date + status on the header, the order's
+            line items grouped below it. */}
         <FlatList
-          data={orders.flatMap((order) =>
-            order.items.map((item) => ({ order, item }))
-          )}
-          keyExtractor={({ order, item }) => `${order.id}:${item.product.id}:${item.selectedImageIndex}`}
-          renderItem={({ item: { order, item } }) => {
-            const itemStatus = getItemStatus(order, item);
-            return (
-              <TouchableOpacity
-                style={styles.card}
-                onPress={() => navigation.navigate('OrderDetail', { orderId: order.id })}
-              >
-                <View style={styles.orderHeader}>
+          data={orders}
+          keyExtractor={(order) => order.id}
+          renderItem={({ item: order }) => (
+            <TouchableOpacity
+              style={styles.card}
+              onPress={() => navigation.navigate('OrderDetail', { orderId: order.id })}
+            >
+              <View style={styles.orderHeader}>
+                <View style={styles.orderHeaderText}>
+                  <Text style={styles.orderCode}>#{order.id}</Text>
                   <Text style={styles.date}>
                     {new Date(order.createdAt).toLocaleDateString()}
-                    <Text style={styles.orderCode}> · #{order.id.slice(0, 8)}</Text>
                   </Text>
-                  <View style={styles.headerRight}>
-                    <View
-                      style={[
-                        styles.badge,
-                        itemStatus === 'paid' && styles.paidBadge,
-                        itemStatus === 'pending' && styles.pendingBadge,
-                        itemStatus === 'on_the_way' && styles.onTheWayBadge,
-                        itemStatus === 'completed' && styles.completedBadge,
-                      ]}
-                    >
-                      <Text style={styles.badgeText}>{ORDER_STATUS_LABELS[itemStatus]}</Text>
-                    </View>
-                    <Text style={styles.price}>
-                      {formatPrice(getUnitPrice(item) * item.quantity)}
-                    </Text>
-                  </View>
                 </View>
+                <View style={styles.headerRight}>
+                  <OrderStatusBadge status={order.status} small />
+                  <Text style={styles.total}>{formatPrice(order.total)}</Text>
+                </View>
+              </View>
 
-                <View style={styles.itemRow}>
+              {order.items.map((item, index) => (
+                <View
+                  key={`${item.product.id}:${item.selectedImageIndex}:${index}`}
+                  style={styles.itemRow}
+                >
                   <View style={styles.itemThumb}>
                     <ProductImage
                       uri={getProductCoverImage(item.product)}
@@ -119,10 +111,13 @@ export function OrdersScreen() {
                     {item.quantity} × {item.product.name}
                     {formatVariantLabel(item) ? ` (${formatVariantLabel(item)})` : ''}
                   </Text>
+                  <Text style={styles.itemPrice}>
+                    {formatPrice(getUnitPrice(item) * item.quantity)}
+                  </Text>
                 </View>
-              </TouchableOpacity>
-            );
-          }}
+              ))}
+            </TouchableOpacity>
+          )}
         />
       </View>
     </Screen>
@@ -133,7 +128,7 @@ export function OrdersScreen() {
 const makeStyles = (colors: ColorPalette) => StyleSheet.create({
   container: {
     flex: 1,
-    maxWidth: MAX_WIDTH,
+    maxWidth: pageWidth.form,
     width: '100%',
     alignSelf: 'center',
     paddingHorizontal: spacing.lg,
@@ -190,11 +185,30 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
     marginBottom: spacing.sm,
     borderBottomWidth: 1,
     borderBottomColor: colors.border,
+    gap: spacing.sm,
+  },
+  orderHeaderText: {
+    flex: 1,
+    gap: 2,
+  },
+  orderCode: {
+    fontSize: fontSizes.md,
+    fontWeight: '600',
+    color: colors.text,
+  },
+  date: {
+    fontSize: fontSizes.sm,
+    color: colors.textSecondary,
   },
   headerRight: {
     flexDirection: 'row',
     alignItems: 'center',
     gap: spacing.sm,
+  },
+  total: {
+    fontSize: fontSizes.md,
+    fontWeight: '700',
+    color: colors.text,
   },
   itemRow: {
     flexDirection: 'row',
@@ -221,39 +235,8 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
     fontWeight: '500',
     color: colors.text,
   },
-  price: {
-    fontSize: fontSizes.md,
-    fontWeight: '700',
-    color: colors.primary,
-  },
-  orderCode: {
-    color: colors.textSecondary,
-  },
-  date: {
+  itemPrice: {
     fontSize: fontSizes.sm,
     color: colors.textSecondary,
-  },
-  badge: {
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.xs,
-    borderRadius: borderRadius.xl,
-    backgroundColor: colors.border,
-  },
-  pendingBadge: {
-    backgroundColor: colors.warning,
-  },
-  paidBadge: {
-    backgroundColor: colors.success,
-  },
-  onTheWayBadge: {
-    backgroundColor: colors.primary,
-  },
-  completedBadge: {
-    backgroundColor: colors.success,
-  },
-  badgeText: {
-    fontSize: fontSizes.xs,
-    fontWeight: '600',
-    color: colors.surface,
   },
 });

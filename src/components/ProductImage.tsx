@@ -33,6 +33,8 @@ export function ProductImage({
   onLoad,
 }: ProductImageProps) {
   const [thumbFailed, setThumbFailed] = useState(false);
+  /** Placeholder box's short edge — the initial letter scales with it. */
+  const [placeholderBox, setPlaceholderBox] = useState<number | null>(null);
 
   useEffect(() => {
     setThumbFailed(false);
@@ -46,8 +48,24 @@ export function ProductImage({
     const backgroundColor = getCategoryColor(category ?? '');
     const initial = (name ?? '?').trim().charAt(0).toUpperCase() || '?';
     return (
-      <View style={[styles.placeholder, { backgroundColor }, style]}>
-        <Text style={styles.initial}>{initial}</Text>
+      <View
+        style={[styles.placeholder, { backgroundColor }, style]}
+        onLayout={(e) => {
+          const { width, height } = e.nativeEvent.layout;
+          const edge = Math.min(width, height);
+          if (edge > 0) setPlaceholderBox(edge);
+        }}
+      >
+        <Text
+          style={[
+            styles.initial,
+            placeholderBox
+              ? { fontSize: Math.max(12, Math.round(placeholderBox * 0.4)) }
+              : null,
+          ]}
+        >
+          {initial}
+        </Text>
       </View>
     );
   }

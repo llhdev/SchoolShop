@@ -13,9 +13,7 @@ import { useResponsive } from '../../hooks/useResponsive';
 import { formatPrice } from '../../utils/format';
 import { getCartItemLineId, variantKeyOf } from '../../utils/variants';
 import { RootStackParamList } from '../../types/navigation';
-import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../../constants/theme';
-
-const MAX_WIDTH = 900;
+import { useThemeColors, spacing, borderRadius, fontSizes, pageWidth, ColorPalette } from '../../constants/theme';
 
 export function CartScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
@@ -31,7 +29,12 @@ export function CartScreen() {
       <>
         {isWeb && <WebHeader showSearch={false} />}
         <Screen>
-          <EmptyState message="Your cart is empty." icon="cart-outline" />
+          <EmptyState
+            message="Your cart is empty."
+            icon="cart-outline"
+            actionLabel="Browse products"
+            onAction={() => navigation.navigate('UserTabs', { screen: 'Home' })}
+          />
         </Screen>
       </>
     );
@@ -114,7 +117,7 @@ const makeStyles = (colors: ColorPalette) =>
   StyleSheet.create({
     container: {
       flex: 1,
-      maxWidth: MAX_WIDTH,
+      maxWidth: pageWidth.form,
       width: '100%',
       alignSelf: 'center',
       paddingHorizontal: spacing.lg,
@@ -169,7 +172,7 @@ const makeStyles = (colors: ColorPalette) =>
       paddingVertical: 16,
     },
     footerInner: {
-      maxWidth: MAX_WIDTH,
+      maxWidth: pageWidth.form,
       width: '100%',
       alignSelf: 'center',
       gap: 8,
@@ -196,7 +199,7 @@ const makeStyles = (colors: ColorPalette) =>
     totalValue: {
       fontSize: fontSizes.xl,
       fontWeight: '700',
-      color: colors.primary,
+      color: colors.text,
     },
     checkoutButton: {
       marginTop: 8,

@@ -3,7 +3,7 @@ import { Platform } from 'react-native';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import {
-  Alert,
+  ActivityIndicator,
   Image,
   ScrollView,
   StyleSheet,
@@ -37,13 +37,13 @@ import {
 } from '../../services/tenants';
 import { uploadShopLogo } from '../../services/images';
 import { confirmAction } from '../../utils/confirm';
+import { notify } from '../../utils/notify';
+import { formatPrice } from '../../utils/format';
 import { AdminStackParamList } from '../../types/navigation';
 import { BankAccount } from '../../types';
 import { useResponsive } from '../../hooks/useResponsive';
 import { useApp } from '../../context/AppContext';
-import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../../constants/theme';
-
-const MAX_WIDTH = 800;
+import { useThemeColors, spacing, borderRadius, fontSizes, pageWidth, ColorPalette } from '../../constants/theme';
 
 type Navigation = NativeStackNavigationProp<AdminStackParamList>;
 
@@ -107,7 +107,7 @@ export function TenantDetailScreen() {
       const ImagePicker = await import('expo-image-picker');
       const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
       if (status !== 'granted') {
-        Alert.alert('Permission needed', 'Please allow access to your photo library.');
+        notify('Please allow access to your photo library.', 'error', 'Permission needed');
         return;
       }
       const result = await ImagePicker.launchImageLibraryAsync({
@@ -124,7 +124,7 @@ export function TenantDetailScreen() {
       const url = await uploadShopLogo(localUri);
       setEditShopLogoUrl(url);
     } catch {
-      Alert.alert('Upload Failed', 'Could not upload the logo. Please try again.');
+      notify('Could not upload the logo. Please try again.', 'error');
     } finally {
       setLogoUploading(false);
     }
@@ -198,12 +198,12 @@ export function TenantDetailScreen() {
       }
       setEditing(false);
       await loadTenant();
-      Alert.alert(
-        'Tenant Updated',
-        editPassword.trim()
+      setEditMessage({
+        kind: 'success',
+        text: editPassword.trim()
           ? 'Account details and password were updated.'
-          : 'Account details were updated.'
-      );
+          : 'Account details were updated.',
+      });
     } catch (error) {
       setEditMessage({
         kind: 'error',
@@ -221,7 +221,7 @@ export function TenantDetailScreen() {
       setTenant(data);
     } catch (error) {
       console.error('Failed to load tenant:', error);
-      Alert.alert('Error', 'Failed to load tenant details.');
+      notify('Failed to load tenant details.', 'error');
     } finally {
       setLoading(false);
     }
@@ -242,7 +242,7 @@ export function TenantDetailScreen() {
     } catch (error) {
       setTenant(previous);
       const message = error instanceof Error ? error.message : 'Failed to update branch selection.';
-      Alert.alert('Error', message);
+      notify(message, 'error');
     }
   }
 
@@ -253,7 +253,7 @@ export function TenantDetailScreen() {
       navigation.navigate('TenantManagement');
     } catch (error) {
       console.error('Failed to remove tenant:', error);
-      Alert.alert('Error', 'Failed to remove tenant. Please try again.');
+      notify('Failed to remove tenant. Please try again.', 'error');
     }
   }
 
@@ -276,7 +276,7 @@ export function TenantDetailScreen() {
     } catch (error) {
       setTenant(previous);
       const message = error instanceof Error ? error.message : 'Failed to update shop status.';
-      Alert.alert('Error', message);
+      notify(message, 'error');
     }
   }
 
@@ -302,7 +302,7 @@ export function TenantDetailScreen() {
     return (
       <>
         {isWeb && <AdminHeader />}
-        <Screen noPadding edges={['top', 'left', 'right']}>
+        <Screen noPadding edges={['top', 'left', 'right', 'bottom']}>
           <View style={styles.container}>
             <EmptyState message="No access — tenant management is super-admin only." />
           </View>
@@ -316,7 +316,8 @@ export function TenantDetailScreen() {
       <>
         {isWeb && <AdminHeader />}
         <Screen centered>
-          <Text style={styles.loadingText}>Loading tenant details...</Text>
+          <ActivityIndicator size="large" color={colors.primary} />
+          <Text style={styles.loadingText}>Loading tenant details…</Text>
         </Screen>
       </>
     );
@@ -356,9 +357,9 @@ export function TenantDetailScreen() {
     },
     {
       label: 'Shipping Fee',
-      value: tenant.shippingFee ? `${Math.round(tenant.shippingFee).toLocaleString('en-US')} ETB per order` : 'Free',
+      value: tenant.shippingFee ? `${formatPrice(tenant.shippingFee)} per order` : 'Free',
     },
-    { label: 'Role', value: tenant.role },
+    { label: 'Role', value: tenant.role === 'admin' ? 'Shop admin' : tenant.role },
     { label: 'Added On', value: new Date(tenant.createdAt).toLocaleString() },
     { label: 'Tenant Code', value: tenant.code ?? '—' },
   ];
@@ -366,7 +367,7 @@ export function TenantDetailScreen() {
   return (
     <>
       {isWeb && <AdminHeader />}
-      <Screen noPadding edges={['top', 'left', 'right']}>
+      <Screen noPadding edges={['top', 'left', 'right', 'bottom']}>
         <ScrollView contentContainerStyle={styles.scrollContent}>
           <View style={styles.container}>
             <View style={styles.header}>
@@ -515,7 +516,6 @@ export function TenantDetailScreen() {
                     onPress={handleSave}
                     loading={saving}
                     disabled={saving}
-                    style={styles.editSaveButton}
                   />
                   <Button
                     title="Cancel"
@@ -527,6 +527,16 @@ export function TenantDetailScreen() {
               </View>
             ) : (
               <>
+              {editMessage && (
+                <Text
+                  style={[
+                    styles.editMessage,
+                    editMessage.kind === 'success' ? styles.editSuccess : styles.editError,
+                  ]}
+                >
+                  {editMessage.text}
+                </Text>
+              )}
               <View style={styles.card}>
                 <View style={styles.row}>
                   <View style={styles.statusText}>
@@ -559,18 +569,26 @@ export function TenantDetailScreen() {
                 </View>
               </View>
               <View style={styles.card}>
-                {detailItems.map((item, index) => (
-                  <View
-                    key={item.label}
-                    style={[
-                      styles.row,
-                      index === detailItems.length - 1 && styles.rowLast,
-                    ]}
-                  >
-                    <Text style={styles.rowLabel}>{item.label}</Text>
-                    <Text style={styles.rowValue}>{item.value}</Text>
-                  </View>
-                ))}
+                {detailItems.map((item, index) => {
+                  // Multi-line values (bank accounts) stack full-width under
+                  // the label instead of squeezing into a right-aligned column.
+                  const stacked = item.value.includes('\n');
+                  return (
+                    <View
+                      key={item.label}
+                      style={[
+                        styles.row,
+                        stacked && styles.rowStacked,
+                        index === detailItems.length - 1 && styles.rowLast,
+                      ]}
+                    >
+                      <Text style={styles.rowLabel}>{item.label}</Text>
+                      <Text style={[styles.rowValue, stacked && styles.rowValueStacked]}>
+                        {item.value}
+                      </Text>
+                    </View>
+                  );
+                })}
               </View>
               {tenant.bankAccounts.some((a) => a.qrImageUrl) && (
                 <View style={styles.card}>
@@ -601,18 +619,11 @@ export function TenantDetailScreen() {
             <StaffManager tenant={{ id: tenant.id, username: tenant.username }} />
 
             <View style={styles.actions}>
-              {!editing && (
-                <Button
-                  title="Edit Account"
-                  onPress={startEditing}
-                  style={styles.editAccountButton}
-                />
-              )}
+              {!editing && <Button title="Edit Account" onPress={startEditing} />}
               <Button
                 title="Remove Tenant"
                 onPress={handleDelete}
                 variant="danger"
-                style={styles.deleteButton}
               />
               <Button
                 title="Back to Tenants"
@@ -634,7 +645,7 @@ const makeStyles = (colors: ColorPalette) =>
     },
     container: {
       flex: 1,
-      maxWidth: MAX_WIDTH,
+      maxWidth: pageWidth.form,
       width: '100%',
       alignSelf: 'center',
       paddingHorizontal: spacing.lg,
@@ -644,6 +655,7 @@ const makeStyles = (colors: ColorPalette) =>
     loadingText: {
       fontSize: fontSizes.md,
       color: colors.textSecondary,
+      marginTop: spacing.md,
     },
     header: {
       flexDirection: 'row',
@@ -708,6 +720,15 @@ const makeStyles = (colors: ColorPalette) =>
       color: colors.textSecondary,
       marginLeft: spacing.md,
     },
+    rowStacked: {
+      flexDirection: 'column',
+      alignItems: 'flex-start',
+    },
+    rowValueStacked: {
+      textAlign: 'left',
+      marginLeft: 0,
+      marginTop: spacing.xs,
+    },
     statusText: {
       flex: 1,
     },
@@ -719,19 +740,17 @@ const makeStyles = (colors: ColorPalette) =>
     actions: {
       gap: spacing.md,
     },
-    editAccountButton: {
-      marginBottom: spacing.md,
-    },
     editTitle: {
       fontSize: fontSizes.md,
       fontWeight: '700',
       color: colors.text,
       marginBottom: spacing.xs,
     },
+    // Same label voice as the tenant create form (md/600/text).
     editLabel: {
-      fontSize: fontSizes.sm,
+      fontSize: fontSizes.md,
       fontWeight: '600',
-      color: colors.textSecondary,
+      color: colors.text,
       marginBottom: spacing.xs,
     },
     editInput: {
@@ -765,9 +784,6 @@ const makeStyles = (colors: ColorPalette) =>
     },
     editActions: {
       gap: spacing.md,
-    },
-    editSaveButton: {
-      marginBottom: spacing.md,
     },
     qrPreviewRow: {
       flexDirection: 'row',
@@ -810,9 +826,6 @@ const makeStyles = (colors: ColorPalette) =>
       marginTop: spacing.sm,
       borderRadius: borderRadius.sm,
       backgroundColor: colors.background,
-    },
-    deleteButton: {
-      marginBottom: spacing.md,
     },
     backButton: {
       marginTop: spacing.md,

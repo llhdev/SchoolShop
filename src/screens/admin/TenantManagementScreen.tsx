@@ -3,7 +3,7 @@ import { Platform } from 'react-native';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import {
-  Alert,
+  ActivityIndicator,
   FlatList,
   Image,
   KeyboardAvoidingView,
@@ -25,13 +25,12 @@ import { fetchTenants, createTenant, adminSetTenantActive, adminSetTenantPayment
 import { fetchPaymentVerificationEnabled, setPaymentVerificationEnabled } from '../../services/settings';
 import { uploadShopLogo } from '../../services/images';
 import { confirmAction } from '../../utils/confirm';
+import { notify } from '../../utils/notify';
 import { AdminStackParamList } from '../../types/navigation';
 import { BankAccount } from '../../types';
 import { useResponsive } from '../../hooks/useResponsive';
 import { useApp } from '../../context/AppContext';
-import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../../constants/theme';
-
-const MAX_WIDTH = 800;
+import { useThemeColors, spacing, borderRadius, fontSizes, pageWidth, ColorPalette } from '../../constants/theme';
 
 type Navigation = NativeStackNavigationProp<AdminStackParamList>;
 
@@ -62,7 +61,7 @@ export function TenantManagementScreen() {
       setVerificationEnabled(enabled);
     } catch (error) {
       console.error('Failed to update verification flag:', error);
-      Alert.alert('Error', 'Could not update the payment verification setting. Please try again.');
+      notify('Could not update the payment verification setting. Please try again.', 'error');
     } finally {
       setTogglingVerification(false);
     }
@@ -81,6 +80,17 @@ export function TenantManagementScreen() {
   const [password, setPassword] = useState('');
   const [confirmPassword, setConfirmPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
+  /** Inline create-form validation errors, keyed by field. */
+  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+
+  function clearFieldError(key: string) {
+    setFieldErrors((prev) => {
+      if (!prev[key]) return prev;
+      const next = { ...prev };
+      delete next[key];
+      return next;
+    });
+  }
 
   const loadTenants = useCallback(async () => {
     try {
@@ -102,7 +112,7 @@ export function TenantManagementScreen() {
       setStaffByTenant(Object.fromEntries(staffEntries));
     } catch (error) {
       console.error('Failed to load tenants:', error);
-      Alert.alert('Error', 'Failed to load tenants. Please try again.');
+      notify('Failed to load tenants. Please try again.', 'error');
     } finally {
       setLoading(false);
     }
@@ -129,6 +139,7 @@ export function TenantManagementScreen() {
     setPassword('');
     setConfirmPassword('');
     setShowPassword(false);
+    setFieldErrors({});
   }
 
   /** Pick the tenant's mandatory shop logo and upload it to the public
@@ -144,7 +155,7 @@ export function TenantManagementScreen() {
       const ImagePicker = await import('expo-image-picker');
       const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
       if (status !== 'granted') {
-        Alert.alert('Permission needed', 'Please allow access to your photo library.');
+        notify('Please allow access to your photo library.', 'error', 'Permission needed');
         return;
       }
       const result = await ImagePicker.launchImageLibraryAsync({
@@ -160,8 +171,9 @@ export function TenantManagementScreen() {
     try {
       const url = await uploadShopLogo(localUri);
       setShopLogoUrl(url);
+      clearFieldError('shopLogo');
     } catch {
-      Alert.alert('Upload Failed', 'Could not upload the logo. Please try again.');
+      notify('Could not upload the logo. Please try again.', 'error');
     } finally {
       setLogoUploading(false);
     }
@@ -170,36 +182,28 @@ export function TenantManagementScreen() {
   async function handleCreate() {
     const cleanUsername = username.trim().toLowerCase();
     const accounts = bankAccounts.filter((a) => a.accountNumber.trim());
-
-    if (!cleanUsername) {
-      Alert.alert('Error', 'Please enter a username.');
-      return;
-    }
-    if (!shopName.trim()) {
-      Alert.alert('Error', 'Please enter a shop name.');
-      return;
-    }
-    if (!shopLogoUrl) {
-      Alert.alert('Error', 'Please upload a shop logo. Every store needs one to appear in the Store filter.');
-      return;
-    }
-    if (accounts.length === 0) {
-      Alert.alert('Error', 'Please add at least one bank account with an account number.');
-      return;
-    }
     const fee = shippingFee.trim() === '' ? null : Number(shippingFee.trim());
+
+    // Inline per-field errors (Alert.alert is a silent no-op on web).
+    const errors: Record<string, string> = {};
+    if (!shopName.trim()) errors.shopName = 'Please enter a shop name.';
+    if (!shopLogoUrl) {
+      errors.shopLogo = 'Please upload a shop logo — every store needs one to appear in the Store filter.';
+    }
+    if (!cleanUsername) errors.username = 'Please enter a username.';
+    if (accounts.length === 0) {
+      errors.bankAccounts = 'Add at least one bank account with an account number.';
+    }
     if (fee !== null && (!Number.isFinite(fee) || fee < 0)) {
-      Alert.alert('Error', 'Enter a valid shipping fee in Birr (or leave it empty for free delivery).');
-      return;
+      errors.shippingFee = 'Enter a valid shipping fee in Birr (or leave it empty for free delivery).';
     }
     if (password.length < 6) {
-      Alert.alert('Error', 'Password must be at least 6 characters.');
-      return;
+      errors.password = 'Password must be at least 6 characters.';
+    } else if (password !== confirmPassword) {
+      errors.confirmPassword = 'Passwords do not match.';
     }
-    if (password !== confirmPassword) {
-      Alert.alert('Error', 'Passwords do not match.');
-      return;
-    }
+    setFieldErrors(errors);
+    if (Object.keys(errors).length > 0) return;
 
     setIsCreating(true);
     try {
@@ -217,10 +221,10 @@ export function TenantManagementScreen() {
       );
       setTenants((prev) => [tenant, ...prev]);
       resetForm();
-      Alert.alert('Success', `Tenant @${tenant.username} created.`);
+      notify(`Tenant @${tenant.username} created.`, 'success');
     } catch (error) {
       const message = error instanceof Error ? error.message : 'Failed to create tenant';
-      Alert.alert('Error', message);
+      notify(message, 'error');
     } finally {
       setIsCreating(false);
     }
@@ -240,7 +244,7 @@ export function TenantManagementScreen() {
     } catch (error) {
       setTenants(previous);
       const message = error instanceof Error ? error.message : 'Failed to update shop status.';
-      Alert.alert('Error', message);
+      notify(message, 'error');
     }
   }
 
@@ -267,7 +271,7 @@ export function TenantManagementScreen() {
     } catch (error) {
       setTenants(previous);
       const message = error instanceof Error ? error.message : 'Failed to update payment verification.';
-      Alert.alert('Error', message);
+      notify(message, 'error');
     }
   }
 
@@ -293,7 +297,7 @@ export function TenantManagementScreen() {
     return (
       <>
         {isWeb && <AdminHeader />}
-        <Screen noPadding edges={['top', 'left', 'right']}>
+        <Screen noPadding edges={['top', 'left', 'right', 'bottom']}>
           <View style={styles.container}>
             <EmptyState message="No access — tenant management is super-admin only." />
           </View>
@@ -305,7 +309,7 @@ export function TenantManagementScreen() {
   return (
     <>
       {isWeb && <AdminHeader />}
-      <Screen noPadding edges={['top', 'left', 'right']}>
+      <Screen noPadding edges={['top', 'left', 'right', 'bottom']}>
         <KeyboardAvoidingView
           behavior={Platform.OS === 'ios' ? 'padding' : 'height'}
           keyboardVerticalOffset={keyboardVerticalOffset}
@@ -332,7 +336,7 @@ export function TenantManagementScreen() {
                     value={verificationEnabled ?? false}
                     onValueChange={toggleVerification}
                     disabled={verificationEnabled === null || togglingVerification}
-                    trackColor={{ false: colors.border, true: colors.success }}
+                    trackColor={{ false: colors.border, true: colors.primary }}
                   />
                 </View>
               </View>
@@ -345,12 +349,18 @@ export function TenantManagementScreen() {
                   <TextInput
                     style={styles.input}
                     value={shopName}
-                    onChangeText={setShopName}
+                    onChangeText={(text) => {
+                      setShopName(text);
+                      clearFieldError('shopName');
+                    }}
                     placeholder="e.g. ABC School Supplies"
                     placeholderTextColor={colors.textSecondary}
                     autoCapitalize="words"
                     autoCorrect={false}
                   />
+                  {fieldErrors.shopName && (
+                    <Text style={styles.fieldError}>{fieldErrors.shopName}</Text>
+                  )}
                 </View>
 
                 <View style={styles.field}>
@@ -378,6 +388,9 @@ export function TenantManagementScreen() {
                       </Text>
                     </TouchableOpacity>
                   )}
+                  {fieldErrors.shopLogo && (
+                    <Text style={styles.fieldError}>{fieldErrors.shopLogo}</Text>
+                  )}
                 </View>
 
                 <View style={styles.field}>
@@ -385,12 +398,18 @@ export function TenantManagementScreen() {
                   <TextInput
                     style={styles.input}
                     value={username}
-                    onChangeText={setUsername}
+                    onChangeText={(text) => {
+                      setUsername(text);
+                      clearFieldError('username');
+                    }}
                     placeholder="e.g. tenant1"
                     placeholderTextColor={colors.textSecondary}
                     autoCapitalize="none"
                     autoCorrect={false}
                   />
+                  {fieldErrors.username && (
+                    <Text style={styles.fieldError}>{fieldErrors.username}</Text>
+                  )}
                 </View>
 
                 <View style={styles.field}>
@@ -451,7 +470,16 @@ export function TenantManagementScreen() {
 
                 <View style={styles.field}>
                   <Text style={styles.label}>Bank Accounts</Text>
-                  <BankAccountsEditor value={bankAccounts} onChange={setBankAccounts} />
+                  <BankAccountsEditor
+                    value={bankAccounts}
+                    onChange={(accounts) => {
+                      setBankAccounts(accounts);
+                      clearFieldError('bankAccounts');
+                    }}
+                  />
+                  {fieldErrors.bankAccounts && (
+                    <Text style={styles.fieldError}>{fieldErrors.bankAccounts}</Text>
+                  )}
                 </View>
 
                 <View style={styles.field}>
@@ -459,13 +487,19 @@ export function TenantManagementScreen() {
                   <TextInput
                     style={styles.input}
                     value={shippingFee}
-                    onChangeText={setShippingFee}
+                    onChangeText={(text) => {
+                      setShippingFee(text);
+                      clearFieldError('shippingFee');
+                    }}
                     placeholder="Flat delivery fee in Birr — empty = free"
                     placeholderTextColor={colors.textSecondary}
                     autoCapitalize="none"
                     autoCorrect={false}
                     keyboardType="number-pad"
                   />
+                  {fieldErrors.shippingFee && (
+                    <Text style={styles.fieldError}>{fieldErrors.shippingFee}</Text>
+                  )}
                 </View>
 
                 <View style={styles.field}>
@@ -474,7 +508,10 @@ export function TenantManagementScreen() {
                     <TextInput
                       style={styles.inputWithIcon}
                       value={password}
-                      onChangeText={setPassword}
+                      onChangeText={(text) => {
+                        setPassword(text);
+                        clearFieldError('password');
+                      }}
                       placeholder="Min 6 characters"
                       placeholderTextColor={colors.textSecondary}
                       secureTextEntry={!showPassword}
@@ -492,6 +529,9 @@ export function TenantManagementScreen() {
                       />
                     </TouchableOpacity>
                   </View>
+                  {fieldErrors.password && (
+                    <Text style={styles.fieldError}>{fieldErrors.password}</Text>
+                  )}
                 </View>
 
                 <View style={styles.field}>
@@ -499,17 +539,23 @@ export function TenantManagementScreen() {
                   <TextInput
                     style={styles.input}
                     value={confirmPassword}
-                    onChangeText={setConfirmPassword}
+                    onChangeText={(text) => {
+                      setConfirmPassword(text);
+                      clearFieldError('confirmPassword');
+                    }}
                     placeholder="Re-enter password"
                     placeholderTextColor={colors.textSecondary}
                     secureTextEntry={!showPassword}
                     autoCapitalize="none"
                     autoCorrect={false}
                   />
+                  {fieldErrors.confirmPassword && (
+                    <Text style={styles.fieldError}>{fieldErrors.confirmPassword}</Text>
+                  )}
                 </View>
 
                 <Button
-                  title={isCreating ? 'Creating...' : 'Create Tenant'}
+                  title={isCreating ? 'Creating…' : 'Create Tenant'}
                   onPress={handleCreate}
                   disabled={isCreating}
                 />
@@ -517,7 +563,9 @@ export function TenantManagementScreen() {
 
               <Text style={styles.sectionTitle}>Existing Tenants</Text>
 
-              {tenants.length === 0 && !loading ? (
+              {loading ? (
+                <ActivityIndicator size="large" color={colors.primary} style={styles.loadingSpinner} />
+              ) : tenants.length === 0 ? (
                 <EmptyState message="No tenant admins yet." icon="people-outline" />
               ) : (
                 <FlatList
@@ -548,7 +596,7 @@ export function TenantManagementScreen() {
                             <Switch
                               value={item.paymentVerificationEnabled}
                               onValueChange={(value) => handleTogglePaymentVerification(item, value)}
-                              trackColor={{ false: colors.border, true: colors.success }}
+                              trackColor={{ false: colors.border, true: colors.primary }}
                             />
                           </View>
                         </View>
@@ -558,12 +606,6 @@ export function TenantManagementScreen() {
                             onValueChange={(value) => handleToggleActive(item, value)}
                             trackColor={{ false: colors.border, true: colors.primary }}
                           />
-                          <TouchableOpacity
-                            style={styles.actionButton}
-                            onPress={() => handleView(item)}
-                          >
-                            <Ionicons name="eye-outline" size={18} color={colors.primary} />
-                          </TouchableOpacity>
                         </View>
                       </View>
                       <View style={styles.accountList}>
@@ -620,7 +662,7 @@ const makeStyles = (colors: ColorPalette) =>
     },
     container: {
       flex: 1,
-      maxWidth: MAX_WIDTH,
+      maxWidth: pageWidth.form,
       width: '100%',
       alignSelf: 'center',
       paddingHorizontal: spacing.lg,
@@ -718,14 +760,6 @@ const makeStyles = (colors: ColorPalette) =>
       flexDirection: 'row',
       alignItems: 'center',
       gap: spacing.sm,
-    },
-    qrPreview: {
-      width: 96,
-      height: 96,
-      borderRadius: borderRadius.sm,
-      backgroundColor: colors.background,
-      borderWidth: 1,
-      borderColor: colors.border,
     },
     logoPreview: {
       width: 72,
@@ -853,15 +887,14 @@ const makeStyles = (colors: ColorPalette) =>
       gap: spacing.sm,
       marginLeft: spacing.sm,
     },
-    actionButton: {
-      width: 36,
-      height: 36,
-      borderRadius: borderRadius.sm,
-      backgroundColor: colors.background,
-      borderWidth: 1,
-      borderColor: colors.border,
-      justifyContent: 'center',
-      alignItems: 'center',
+    fieldError: {
+      fontSize: fontSizes.sm,
+      fontWeight: '600',
+      color: colors.danger,
+      marginTop: spacing.xs,
+    },
+    loadingSpinner: {
+      marginTop: spacing.xxl,
     },
     backButton: {
       marginTop: spacing.md,

@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { Platform } from 'react-native';
-import { FlatList, StyleSheet, Text, View } from 'react-native';
+import { ActivityIndicator, FlatList, StyleSheet, Text, View } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Screen } from '../../components/Screen';
@@ -18,9 +18,7 @@ import { Category, Product } from '../../types';
 import { RootStackParamList } from '../../types/navigation';
 import { supabase } from '../../lib/supabase';
 import { isTelegramMiniApp } from '../../lib/telegram';
-import { useThemeColors, spacing, fontSizes, ColorPalette } from '../../constants/theme';
-
-const MAX_CONTENT_WIDTH = 1200;
+import { useThemeColors, spacing, fontSizes, pageWidth, ColorPalette } from '../../constants/theme';
 
 type Navigation = NativeStackNavigationProp<RootStackParamList>;
 
@@ -39,6 +37,17 @@ export function HomeScreen() {
   const [storePanelOpen, setStorePanelOpen] = useState(false);
   const [viewerProductId, setViewerProductId] = useState<string | null>(null);
   const [sortBy, setSortBy] = useState<SortOption>('featured');
+  // The first products sync (cache hydrate, then the Supabase fetch) lands
+  // shortly after mount; until that window closes an empty catalog means
+  // "still loading", not "no items", so the grid shows a spinner instead of
+  // flashing the empty state.
+  const [initialSyncWaited, setInitialSyncWaited] = useState(false);
+  useEffect(() => {
+    if (products.length > 0) return;
+    const timer = setTimeout(() => setInitialSyncWaited(true), 2500);
+    return () => clearTimeout(timer);
+  }, [products.length]);
+  const showInitialLoading = products.length === 0 && !initialSyncWaited;
 
   // "Featured" order: a random scramble built once per app session and kept
   // stable afterwards, so realtime updates don't make the grid jump around.
@@ -237,7 +246,13 @@ export function HomeScreen() {
             numColumns={numColumns}
             contentContainerStyle={styles.list}
             ListEmptyComponent={
-              <EmptyState message="No items found. Try a different search, category, or store." />
+              showInitialLoading ? (
+                <View style={styles.loadingWrap}>
+                  <ActivityIndicator size="large" color={colors.primary} />
+                </View>
+              ) : (
+                <EmptyState message="No items found. Try a different search, category, or store." />
+              )
             }
             renderItem={({ item }) => {
               if ('filler' in item) {
@@ -280,7 +295,7 @@ const makeStyles = (colors: ColorPalette) =>
   StyleSheet.create({
     content: {
       flex: 1,
-      maxWidth: MAX_CONTENT_WIDTH,
+      maxWidth: pageWidth.data,
       width: '100%',
       alignSelf: 'center',
     },
@@ -296,8 +311,16 @@ const makeStyles = (colors: ColorPalette) =>
     searchBar: {
       flex: 1,
     },
+    loadingWrap: {
+      flex: 1,
+      justifyContent: 'center',
+      alignItems: 'center',
+      paddingVertical: spacing.xxl,
+    },
+    // Cards carry spacing.xs margin on every side, so md (12) here lands the
+    // grid's outer edge on the same 16px page gutter as the filter row.
     list: {
-      paddingHorizontal: spacing.sm,
+      paddingHorizontal: spacing.md,
       paddingBottom: spacing.xl,
       flexGrow: 1,
     },

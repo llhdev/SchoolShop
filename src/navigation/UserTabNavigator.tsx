@@ -1,11 +1,12 @@
-import { Platform, ActivityIndicator, View } from 'react-native';
+import { Platform, ActivityIndicator, View, useWindowDimensions } from 'react-native';
 import { ComponentType, lazy, Suspense } from 'react';
 import { createBottomTabNavigator } from '@react-navigation/bottom-tabs';
 import { Ionicons } from '@expo/vector-icons';
 import { UserTabParamList } from '../types/navigation';
 import { HomeScreen } from '../screens/user/HomeScreen';
 import { useApp } from '../context/AppContext';
-import { useThemeColors } from '../constants/theme';
+import { useThemeColors, spacing, breakpoints } from '../constants/theme';
+import { getTelegramBottomInset, isTelegramMiniApp } from '../lib/telegram';
 
 const Tab = createBottomTabNavigator<UserTabParamList>();
 
@@ -40,6 +41,17 @@ const OrdersScreen = lazyScreen(() =>
 export function UserTabNavigator() {
   const { cartCount } = useApp();
   const colors = useThemeColors();
+  const { width } = useWindowDimensions();
+
+  // Wide web sessions navigate via WebHeader — rendering the bottom tab bar
+  // there too is duplicated chrome. Narrow web/TMA/native keep it
+  // (thumb-friendly).
+  const hideTabBar = Platform.OS === 'web' && width >= breakpoints.lg;
+  // Inside a Telegram Mini App, lift the bar clear of Telegram's bottom
+  // chrome (CSS safe-area env values are unreliable there).
+  const tmaBottomInset = isTelegramMiniApp() ? getTelegramBottomInset() : 0;
+  const paddingBottom = (Platform.OS === 'web' ? spacing.sm : spacing.xs) + tmaBottomInset;
+  const height = (Platform.OS === 'web' ? 56 : 50) + tmaBottomInset;
 
   return (
     <Tab.Navigator
@@ -48,11 +60,16 @@ export function UserTabNavigator() {
         tabBarActiveTintColor: colors.primary,
         tabBarInactiveTintColor: colors.textSecondary,
         tabBarStyle: {
-          height: Platform.OS === 'web' ? 56 : 50,
-          paddingBottom: Platform.OS === 'web' ? 8 : 4,
+          height,
+          paddingBottom,
           paddingTop: 0,
           backgroundColor: colors.surface,
           borderTopColor: colors.border,
+          ...(hideTabBar ? ({ display: 'none' } as const) : {}),
+        },
+        tabBarBadgeStyle: {
+          backgroundColor: colors.price,
+          color: colors.surface,
         },
         tabBarLabelStyle: {
           fontSize: 10,

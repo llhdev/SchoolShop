@@ -3,7 +3,6 @@ import { Platform } from 'react-native';
 import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import {
-  Alert,
   Image,
   Modal,
   ScrollView,
@@ -16,12 +15,15 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { Screen } from '../../components/Screen';
 import { Button } from '../../components/Button';
+import { DashedUploadButton } from '../../components/DashedUploadButton';
+import { EmptyState } from '../../components/EmptyState';
 import { WebHeader } from '../../components/WebHeader';
 import { useApp } from '../../context/AppContext';
 import { useResponsive } from '../../hooks/useResponsive';
 import { RootStackParamList } from '../../types/navigation';
 import { BankAccount, CartItem, Order, Product } from '../../types';
-import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../../constants/theme';
+import { useThemeColors, spacing, borderRadius, fontSizes, pageWidth, ColorPalette } from '../../constants/theme';
+import { notify } from '../../utils/notify';
 import { isValidEthiopianPhoneNumber } from '../../utils/validation';
 import { generateOrderCode } from '../../utils/orderCode';
 import { formatVariantLabel, getCartItemLineId, getUnitPrice } from '../../utils/variants';
@@ -45,7 +47,6 @@ import {
   showTelegramPopup,
 } from '../../lib/telegram';
 
-const MAX_WIDTH = 900;
 /** Cart items whose product has no owner (legacy seed rows) pay to the shop directly. */
 const UNKNOWN_TENANT_KEY = 'unknown';
 
@@ -100,7 +101,7 @@ const VERIFY_CHIP_LABELS: Record<ShopVerifyState, string> = {
   reading: 'Reading…',
   unverified: 'Not verified',
   verifying: 'Verifying…',
-  verified: 'Verified ✓',
+  verified: 'Verified',
   not_found: 'Not found',
   wrong_recipient: 'Wrong recipient',
   wrong_amount: 'Wrong amount',
@@ -381,7 +382,7 @@ export function CheckoutScreen() {
       const ImagePicker = await import('expo-image-picker');
       const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
       if (status !== 'granted') {
-        Alert.alert('Permission needed', 'Please allow access to your photo library.');
+        notify('Please allow access to your photo library.', 'error', 'Permission needed');
         return;
       }
       const result = await ImagePicker.launchImageLibraryAsync({
@@ -412,7 +413,7 @@ export function CheckoutScreen() {
         resetGroupVerification(groupKey);
       }
     } catch {
-      Alert.alert('Upload Failed', 'Could not upload the payment proof. Please try again.');
+      notify('Could not upload the payment proof. Please try again.', 'error', 'Upload Failed');
     } finally {
       setProofUploading((prev) => ({ ...prev, [groupKey]: false }));
     }
@@ -572,7 +573,7 @@ export function CheckoutScreen() {
         clipboard.writeText(accountNumber).catch(() => {});
       }
     }
-    Alert.alert('Account Number', accountNumber);
+    notify('Account number copied', 'success');
   }
 
   async function handlePlaceOrder() {
@@ -594,7 +595,7 @@ export function CheckoutScreen() {
               ? 'Payment verification is incomplete — verify each shop\'s payment before placing the order.'
               : 'Please fill in all required info: phone number and a payment proof for each shop.';
       if (!showTelegramPopup('Missing Information', message)) {
-        Alert.alert('Missing Information', message);
+        notify(message, 'info', 'Missing Information');
       }
       return;
     }
@@ -665,13 +666,30 @@ export function CheckoutScreen() {
       // Leave Checkout so it isn't kept in the stack over Home/Orders.
       navigation.popToTop();
       navigation.navigate('UserTabs', { screen: 'Orders' });
-      Alert.alert('Order Placed', 'Thank you! Your order has been placed.');
+      notify('Thank you! Your order has been placed.', 'success', 'Order Placed');
     } catch {
-      Alert.alert('Error', 'Failed to place order. Please check your connection and try again.');
+      notify('Failed to place order. Please check your connection and try again.', 'error');
     } finally {
       setPlacingOrder(false);
       setTelegramMainButtonProgress(false);
     }
+  }
+
+  // Nothing to check out: don't render the form at all.
+  if (cart.length === 0) {
+    return (
+      <>
+        {isWeb && <WebHeader showSearch={false} />}
+        <Screen>
+          <EmptyState
+            message="Your cart is empty."
+            icon="cart-outline"
+            actionLabel="Browse products"
+            onAction={() => navigation.navigate('UserTabs', { screen: 'Home' })}
+          />
+        </Screen>
+      </>
+    );
   }
 
   return (
@@ -715,7 +733,7 @@ export function CheckoutScreen() {
                   {shippingTotal > 0 ? (
                     <Text style={styles.summaryText}>{formatPrice(shippingTotal)}</Text>
                   ) : (
-                    <Text style={[styles.summaryText, styles.freeText]}>FREE</Text>
+                    <Text style={[styles.summaryText, styles.freeText]}>Free</Text>
                   )}
                 </View>
                 <Text style={styles.estimateText}>Estimated delivery: 1–3 days</Text>
@@ -728,7 +746,7 @@ export function CheckoutScreen() {
 
             <View style={[styles.column, isDesktop && styles.columnDesktop]}>
               <View style={styles.section}>
-                <Text style={styles.sectionTitle}>
+                <Text style={styles.questionLabel}>
                   Delivery Location <Text style={styles.optionalHint}>(optional)</Text>
                 </Text>
                 <TouchableOpacity
@@ -749,7 +767,7 @@ export function CheckoutScreen() {
                   onChangeText={setLocation}
                 />
 
-                <Text style={[styles.sectionTitle, styles.fieldGap]}>Phone Number</Text>
+                <Text style={[styles.questionLabel, styles.fieldGap]}>Phone Number</Text>
                 <TextInput
                   style={[
                     styles.input,
@@ -1101,6 +1119,9 @@ export function CheckoutScreen() {
                                 </TouchableOpacity>
                                 {chip && (
                                   <View style={[styles.verifyChip, { borderColor: chipColor }]}>
+                                    {verifyState === 'verified' && (
+                                      <Ionicons name="checkmark" size={12} color={chipColor} />
+                                    )}
                                     <Text style={[styles.verifyChipText, { color: chipColor }]}>{chip}</Text>
                                   </View>
                                 )}
@@ -1214,20 +1235,13 @@ export function CheckoutScreen() {
                         </>
                       ) : (
                         <>
-                          <TouchableOpacity
-                            style={[styles.proofButton, uploading && styles.proofButtonDisabled]}
-                            onPress={() => pickProof(group.key)}
-                            disabled={uploading}
-                          >
-                            <Ionicons
-                              name={uploading ? 'hourglass-outline' : 'receipt-outline'}
-                              size={16}
-                              color={colors.primary}
-                            />
-                            <Text style={styles.proofButtonText}>
-                              {uploading ? 'Uploading proof…' : 'Upload payment proof'}
-                            </Text>
-                          </TouchableOpacity>
+                          <DashedUploadButton
+                            label={uploading ? 'Uploading proof…' : 'Upload payment proof'}
+                            icon={uploading ? 'hourglass-outline' : 'receipt-outline'}
+                            onPress={() => {
+                              if (!uploading) pickProof(group.key);
+                            }}
+                          />
                           {proofMissing && (
                             <Text style={styles.errorText}>
                               Upload the payment proof for {group.shopName}
@@ -1355,7 +1369,7 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
   },
   container: {
     flex: 1,
-    maxWidth: MAX_WIDTH,
+    maxWidth: pageWidth.form,
     width: '100%',
     alignSelf: 'center',
     paddingHorizontal: spacing.lg,
@@ -1486,7 +1500,7 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
   tenantSubtotal: {
     fontSize: fontSizes.md,
     fontWeight: '700',
-    color: colors.primary,
+    color: colors.text,
   },
   tenantItemRow: {
     flexDirection: 'row',
@@ -1529,25 +1543,6 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
     textAlign: 'center',
     marginTop: spacing.xs,
   },
-  proofButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: spacing.xs,
-    borderWidth: 1,
-    borderStyle: 'dashed',
-    borderColor: colors.primary,
-    borderRadius: borderRadius.sm,
-    paddingVertical: spacing.md,
-  },
-  proofButtonDisabled: {
-    opacity: 0.6,
-  },
-  proofButtonText: {
-    fontSize: fontSizes.sm,
-    fontWeight: '600',
-    color: colors.primary,
-  },
   proofRow: {
     flexDirection: 'row',
     alignItems: 'center',
@@ -1579,6 +1574,9 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
     gap: spacing.sm,
   },
   verifyChip: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.xs,
     borderWidth: 1,
     borderRadius: borderRadius.sm,
     paddingHorizontal: spacing.sm,
@@ -1628,7 +1626,7 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
   },
   zoomImage: {
     width: '90%',
-    height: '70%',
+    height: '80%',
   },
   input: {
     borderWidth: 1,
@@ -1637,7 +1635,7 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
     paddingHorizontal: spacing.md,
     paddingVertical: spacing.md,
     fontSize: fontSizes.md,
-    backgroundColor: colors.background,
+    backgroundColor: colors.surface,
     color: colors.text,
     // Web draws a focus outline on the inner <input> that doubles the
     // container border — suppress it so the field reads as one box.
@@ -1667,6 +1665,10 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
     borderRadius: borderRadius.md,
     padding: spacing.lg,
     maxHeight: '80%',
+    // Centered narrow sheet on desktop instead of a full-width panel.
+    maxWidth: 480,
+    width: '100%',
+    alignSelf: 'center',
   },
   landmarkTitle: {
     fontSize: fontSizes.lg,
@@ -1834,7 +1836,7 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
     paddingVertical: spacing.md,
   },
   footerInner: {
-    maxWidth: MAX_WIDTH,
+    maxWidth: pageWidth.form,
     width: '100%',
     alignSelf: 'center',
     flexDirection: 'row',

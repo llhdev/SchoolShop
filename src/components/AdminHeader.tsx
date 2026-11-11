@@ -5,7 +5,7 @@ import { useApp } from '../context/AppContext';
 import { ThemeToggle } from './ThemeToggle';
 import { AdminStackParamList } from '../types/navigation';
 import { useResponsive } from '../hooks/useResponsive';
-import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../constants/theme';
+import { useThemeColors, spacing, borderRadius, fontSizes, pageWidth, ColorPalette } from '../constants/theme';
 import { MERCHANT_ACCOUNT_EDITING_ENABLED } from '../constants/featureFlags';
 
 interface NavLinkProps {
@@ -141,7 +141,7 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    maxWidth: 1200,
+    maxWidth: pageWidth.data,
     width: '100%',
     alignSelf: 'center',
     paddingHorizontal: spacing.lg,
@@ -162,7 +162,7 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
   },
   brandText: {
     fontSize: fontSizes.xl,
-    fontWeight: '800',
+    fontWeight: '700',
     color: colors.text,
   },
   brandTextCompact: {

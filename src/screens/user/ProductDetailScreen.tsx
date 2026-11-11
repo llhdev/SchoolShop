@@ -33,10 +33,10 @@ import { isTelegramMiniApp, openTelegramChat } from '../../lib/telegram';
 import { fetchProductFiles } from '../../services/productFiles';
 import { formatFileSize, formatPrice, getDiscountPercent } from '../../utils/format';
 import { RootStackParamList } from '../../types/navigation';
-import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../../constants/theme';
+import { useThemeColors, spacing, borderRadius, fontSizes, pageWidth, ColorPalette } from '../../constants/theme';
 
 const PHONE_IMAGE_HEIGHT_RATIO = 0.65;
-const MAX_WIDTH = 1200;
+const MAX_WIDTH = pageWidth.data;
 
 /** One detail image sized to its natural aspect ratio (fully visible, never
  *  cropped). Before the dimensions are known a 3:4 placeholder box is shown;
@@ -589,7 +589,7 @@ export function ProductDetailScreen() {
                 <TelegramChatButton
                   username={product.ownerTelegramUsername}
                   size={24}
-                  style={styles.tmaChatButton}
+                  style={styles.chatIconButton}
                 />
                 <Text style={styles.tmaFreeNote}>Free — download above</Text>
               </>
@@ -598,10 +598,10 @@ export function ProductDetailScreen() {
                 <TelegramChatButton
                   username={product.ownerTelegramUsername}
                   size={24}
-                  style={styles.tmaChatButton}
+                  style={styles.chatIconButton}
                 />
                 <Button
-                  title={justAdded ? '✓ Added to Cart' : 'Add to Cart'}
+                  title={justAdded ? 'Added to Cart' : 'Add to Cart'}
                   variant="outline"
                   onPress={handleAddToCart}
                   style={styles.tmaBarButton}
@@ -648,7 +648,7 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
   },
   webBackText: {
     color: colors.primary,
-    fontSize: fontSizes.sm,
+    fontSize: fontSizes.md,
     fontWeight: '600',
   },
   desktopScroll: {
@@ -804,7 +804,7 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
     marginVertical: spacing.md,
   },
   sectionTitle: {
-    fontSize: fontSizes.md,
+    fontSize: fontSizes.lg,
     fontWeight: '700',
     color: colors.text,
     marginBottom: spacing.sm,
@@ -915,18 +915,8 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
   tmaBarButton: {
     flex: 1,
   },
-  // Bordered circle at the left of the Mini App bottom bar; matches the
-  // height of the neighbouring buttons so the bar stays even.
-  tmaChatButton: {
-    width: 48,
-    height: 48,
-    borderRadius: 24,
-    borderWidth: 1,
-    borderColor: colors.primary,
-    alignItems: 'center',
-    justifyContent: 'center',
-    alignSelf: 'center',
-  },
+  // Bordered circle next to the action buttons (web actions row and the Mini
+  // App bottom bar); matches the buttons' height so the row stays even.
   chatIconButton: {
     width: 48,
     height: 48,

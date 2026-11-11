@@ -1,6 +1,5 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import {
-  Alert,
   Platform,
   StyleSheet,
   Text,
@@ -15,6 +14,7 @@ import { Screen } from '../components/Screen';
 import { Button } from '../components/Button';
 import { useApp } from '../context/AppContext';
 import { supabase } from '../lib/supabase';
+import { notify } from '../utils/notify';
 import { RootStackParamList } from '../types/navigation';
 import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../constants/theme';
 
@@ -31,16 +31,31 @@ export function AdminLoginScreen() {
   const [password, setPassword] = useState('');
   const [showPassword, setShowPassword] = useState(false);
   const [attempts, setAttempts] = useState(0);
-  const [isLocked, setIsLocked] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  /** Remaining lockout seconds; > 0 means the form is locked. */
+  const [lockRemaining, setLockRemaining] = useState(0);
+  const isLocked = lockRemaining > 0;
 
   const maxAttempts = 5;
   const lockoutSeconds = 30;
+
+  // Count down the lockout one second at a time so the button shows the
+  // remaining wait; reaching zero also reopens the attempt counter.
+  useEffect(() => {
+    if (lockRemaining <= 0) {
+      if (attempts >= maxAttempts) setAttempts(0);
+      return;
+    }
+    const timer = setTimeout(() => setLockRemaining((s) => s - 1), 1000);
+    return () => clearTimeout(timer);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [lockRemaining]);
 
   async function handleLogin() {
     if (isLocked) return;
 
     if (!emails || emails.length === 0 || !password) {
-      Alert.alert('Not configured', 'Admin credentials are not set.');
+      notify('Admin credentials are not set.', 'error');
       return;
     }
 
@@ -60,20 +75,10 @@ export function AdminLoginScreen() {
       setAttempts(nextAttempts);
 
       if (nextAttempts >= maxAttempts) {
-        setIsLocked(true);
-        setTimeout(() => {
-          setIsLocked(false);
-          setAttempts(0);
-        }, lockoutSeconds * 1000);
-        Alert.alert(
-          'Too many attempts',
-          `Please wait ${lockoutSeconds} seconds before trying again.`
-        );
+        setLockRemaining(lockoutSeconds);
+        setError(null);
       } else {
-        Alert.alert(
-          'Incorrect password',
-          `Invalid password. ${maxAttempts - nextAttempts} attempts remaining.`
-        );
+        setError(`Incorrect password — ${maxAttempts - nextAttempts} attempts remaining.`);
       }
 
       setPassword('');
@@ -92,7 +97,7 @@ export function AdminLoginScreen() {
     const allowedRoles: string[] = ['admin', 'super_admin'];
     if (profileError || !allowedRoles.includes(profile?.role ?? '')) {
       await supabase.auth.signOut();
-      Alert.alert('Access denied', 'This account does not have admin privileges.');
+      notify('This account does not have admin privileges.', 'error');
       setPassword('');
       return;
     }
@@ -114,10 +119,7 @@ export function AdminLoginScreen() {
       }
       if (switchedOff) {
         await supabase.auth.signOut();
-        Alert.alert(
-          'Shop switched off',
-          'This shop has been switched off. Please contact the administrator.'
-        );
+        notify('This shop has been switched off. Please contact the administrator.', 'error');
         setPassword('');
         return;
       }
@@ -162,7 +164,10 @@ export function AdminLoginScreen() {
           <TextInput
             style={styles.input}
             value={password}
-            onChangeText={setPassword}
+            onChangeText={(text) => {
+              setPassword(text);
+              setError(null);
+            }}
             placeholder="Password"
             placeholderTextColor={colors.textSecondary}
             secureTextEntry={!showPassword}
@@ -181,9 +186,10 @@ export function AdminLoginScreen() {
             />
           </TouchableOpacity>
         </View>
+        {error && <Text style={styles.errorText}>{error}</Text>}
 
         <Button
-          title={isLocked ? 'Locked' : 'Login'}
+          title={isLocked ? `Try again in ${lockRemaining}s` : 'Login'}
           onPress={handleLogin}
           disabled={isLocked || password.length === 0}
           style={styles.button}
@@ -207,9 +213,13 @@ const makeStyles = (colors: ColorPalette) =>
     },
     card: {
       width: '100%',
-      maxWidth: Platform.OS === 'web' ? 420 : '100%',
+      maxWidth: 420,
       alignItems: 'center',
-      paddingHorizontal: spacing.lg,
+      backgroundColor: colors.surface,
+      borderRadius: borderRadius.md,
+      borderWidth: 1,
+      borderColor: colors.border,
+      padding: spacing.xl,
     },
     icon: {
       marginBottom: spacing.md,
@@ -250,6 +260,13 @@ const makeStyles = (colors: ColorPalette) =>
     },
     eyeButton: {
       padding: spacing.sm,
+    },
+    errorText: {
+      alignSelf: 'flex-start',
+      fontSize: fontSizes.sm,
+      fontWeight: '600',
+      color: colors.danger,
+      marginBottom: spacing.md,
     },
     button: {
       width: '100%',

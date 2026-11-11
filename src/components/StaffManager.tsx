@@ -1,8 +1,8 @@
 import { useCallback, useEffect, useState } from 'react';
 import {
-  Alert,
   Modal,
   Platform,
+  ScrollView,
   StyleSheet,
   Switch,
   Text,
@@ -21,6 +21,7 @@ import {
   StaffAccount,
 } from '../services/tenants';
 import { confirmAction } from '../utils/confirm';
+import { notify } from '../utils/notify';
 import { StaffCapabilities } from '../types';
 import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../constants/theme';
 
@@ -73,6 +74,8 @@ export function StaffManager({
   });
   const [staffSaving, setStaffSaving] = useState(false);
   const [staffError, setStaffError] = useState<string | null>(null);
+  /** Inline success feedback on the card (Alert.alert is a no-op on web). */
+  const [staffSuccess, setStaffSuccess] = useState<string | null>(null);
 
   const loadStaff = useCallback(async () => {
     try {
@@ -91,6 +94,7 @@ export function StaffManager({
     setStaffPasswordInput('');
     setStaffCaps({ financial: false, shop: false, branch: false });
     setStaffError(null);
+    setStaffSuccess(null);
     setStaffModal({ mode: 'create' });
   }
 
@@ -99,12 +103,14 @@ export function StaffManager({
     setStaffPasswordInput('');
     setStaffCaps(account.capabilities);
     setStaffError(null);
+    setStaffSuccess(null);
     setStaffModal({ mode: 'edit', staff: account });
   }
 
   function openPasswordStaff(account: StaffAccount) {
     setStaffPasswordInput('');
     setStaffError(null);
+    setStaffSuccess(null);
     setStaffModal({ mode: 'password', staff: account });
   }
 
@@ -145,8 +151,7 @@ export function StaffManager({
       }
       setStaffModal(null);
       await loadStaff();
-      Alert.alert(
-        'Success',
+      setStaffSuccess(
         mode === 'password'
           ? 'Password updated.'
           : mode === 'create'
@@ -169,10 +174,11 @@ export function StaffManager({
         try {
           await deleteStaffAccount(account);
           await loadStaff();
+          setStaffSuccess('Staff account removed.');
         } catch (error) {
-          Alert.alert(
-            'Error',
-            error instanceof Error ? error.message : 'Failed to remove staff account.'
+          notify(
+            error instanceof Error ? error.message : 'Failed to remove staff account.',
+            'error'
           );
         }
       }
@@ -189,6 +195,7 @@ export function StaffManager({
             password — the password picks the account. A Branch Admin's label is the branch
             shoppers pick at checkout.
           </Text>
+          {staffSuccess && <Text style={styles.successText}>{staffSuccess}</Text>}
           {staff.map((account) => {
             return (
               <View key={account.id} style={styles.staffRow}>
@@ -254,6 +261,11 @@ export function StaffManager({
       >
         <View style={styles.modalOverlay}>
           <View style={styles.modalCard}>
+            <ScrollView
+              style={styles.modalScroll}
+              keyboardShouldPersistTaps="handled"
+              showsVerticalScrollIndicator={false}
+            >
             <Text style={styles.editTitle}>
               {staffModal?.mode === 'create'
                 ? 'Add Staff Account'
@@ -324,7 +336,6 @@ export function StaffManager({
                 onPress={handleStaffSubmit}
                 loading={staffSaving}
                 disabled={staffSaving}
-                style={styles.editSaveButton}
               />
               <Button
                 title="Cancel"
@@ -333,6 +344,7 @@ export function StaffManager({
                 disabled={staffSaving}
               />
             </View>
+            </ScrollView>
           </View>
         </View>
       </Modal>
@@ -431,11 +443,15 @@ const makeStyles = (colors: ColorPalette) =>
     modalCard: {
       width: '100%',
       maxWidth: 480,
+      maxHeight: '90%',
       backgroundColor: colors.surface,
       borderRadius: borderRadius.md,
       borderWidth: 1,
       borderColor: colors.border,
       padding: spacing.md,
+    },
+    modalScroll: {
+      flexGrow: 0,
     },
     capabilityRow: {
       flexDirection: 'row',
@@ -458,7 +474,7 @@ const makeStyles = (colors: ColorPalette) =>
       marginTop: 2,
     },
     editTitle: {
-      fontSize: fontSizes.md,
+      fontSize: fontSizes.lg,
       fontWeight: '700',
       color: colors.text,
       marginBottom: spacing.xs,
@@ -491,10 +507,12 @@ const makeStyles = (colors: ColorPalette) =>
     editError: {
       color: colors.danger,
     },
+    successText: {
+      fontSize: fontSizes.sm,
+      fontWeight: '600',
+      color: colors.success,
+    },
     editActions: {
       gap: spacing.md,
-    },
-    editSaveButton: {
-      marginBottom: spacing.md,
     },
   });

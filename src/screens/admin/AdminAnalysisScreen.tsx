@@ -15,6 +15,7 @@ import { Screen } from '../../components/Screen';
 import { EmptyState } from '../../components/EmptyState';
 import { AdminHeader } from '../../components/AdminHeader';
 import { SearchBar } from '../../components/SearchBar';
+import { StatCard } from '../../components/StatCard';
 import { useApp } from '../../context/AppContext';
 import { useResponsive } from '../../hooks/useResponsive';
 import { formatPrice } from '../../utils/format';
@@ -25,9 +26,7 @@ import { fetchShoppersByTelegramIds } from '../../services/telegramAuth';
 import { ALL_ORDER_STATUSES, ORDER_STATUS_LABELS } from '../../constants/orderStatus';
 import { OrderStatus, Shopper } from '../../types';
 import { RootStackParamList } from '../../types/navigation';
-import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../../constants/theme';
-
-const MAX_WIDTH = 1200;
+import { useThemeColors, spacing, borderRadius, fontSizes, pageWidth, ColorPalette } from '../../constants/theme';
 const NAME_LABEL = /name/i;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -469,7 +468,7 @@ export function AdminAnalysisScreen() {
   return (
     <>
       {isWeb && <AdminHeader />}
-      <Screen scroll noPadding edges={['left', 'right']}>
+      <Screen scroll noPadding edges={['left', 'right', 'bottom']}>
         <View style={styles.container}>
           <Text style={[styles.title, isPhone && styles.titleCompact]}>
             Shopper Analysis
@@ -481,21 +480,10 @@ export function AdminAnalysisScreen() {
           </Text>
 
           <View style={styles.statsRow}>
-            <View style={styles.statCard}>
-              <Text style={styles.statValue}>{summary.shoppers}</Text>
-              <Text style={styles.statLabel}>Shoppers</Text>
-            </View>
-            <View style={styles.statCard}>
-              <Text style={styles.statValue}>{summary.orders}</Text>
-              <Text style={styles.statLabel}>Orders</Text>
-            </View>
+            <StatCard value={summary.shoppers} label="Shoppers" />
+            <StatCard value={summary.orders} label="Orders" />
             {/* Revenue requires the financial capability (super admin always has it). */}
-            {canSeeMoney && (
-              <View style={styles.statCard}>
-                <Text style={styles.statValue}>{formatPrice(summary.revenue)}</Text>
-                <Text style={styles.statLabel}>Revenue</Text>
-              </View>
-            )}
+            {canSeeMoney && <StatCard value={formatPrice(summary.revenue)} label="Revenue" />}
           </View>
 
           <SearchBar
@@ -546,7 +534,7 @@ export function AdminAnalysisScreen() {
                 autoCapitalize="none"
                 autoCorrect={false}
               />
-              <Text style={styles.customSep}>→</Text>
+              <Text style={styles.customSep}>to</Text>
               <TextInput
                 style={styles.dateInput}
                 value={customEnd}
@@ -734,7 +722,7 @@ const makeStyles = (colors: ColorPalette) =>
   StyleSheet.create({
     container: {
       flex: 1,
-      maxWidth: MAX_WIDTH,
+      maxWidth: pageWidth.data,
       width: '100%',
       alignSelf: 'center',
       paddingHorizontal: spacing.lg,
@@ -760,26 +748,6 @@ const makeStyles = (colors: ColorPalette) =>
       gap: spacing.md,
       marginBottom: spacing.md,
     },
-    statCard: {
-      flex: 1,
-      backgroundColor: colors.surface,
-      borderRadius: borderRadius.md,
-      paddingVertical: spacing.md,
-      paddingHorizontal: spacing.sm,
-      borderWidth: 1,
-      borderColor: colors.border,
-      alignItems: 'center',
-    },
-    statValue: {
-      fontSize: fontSizes.lg,
-      fontWeight: '700',
-      color: colors.primary,
-    },
-    statLabel: {
-      fontSize: fontSizes.xs,
-      color: colors.textSecondary,
-      marginTop: spacing.xs,
-    },
     filterRow: {
       flexDirection: 'row',
       flexWrap: 'wrap',
@@ -791,7 +759,7 @@ const makeStyles = (colors: ColorPalette) =>
       alignItems: 'center',
       gap: spacing.xs,
       paddingHorizontal: spacing.md,
-      paddingVertical: spacing.xs,
+      paddingVertical: spacing.sm,
       borderRadius: borderRadius.xl,
       borderWidth: 1,
       borderColor: colors.border,
@@ -938,7 +906,7 @@ const makeStyles = (colors: ColorPalette) =>
       alignItems: 'center',
       gap: 2,
       paddingHorizontal: spacing.sm,
-      paddingVertical: spacing.xs,
+      paddingVertical: spacing.sm,
       borderRadius: borderRadius.sm,
       borderWidth: 1,
       borderColor: colors.primary,

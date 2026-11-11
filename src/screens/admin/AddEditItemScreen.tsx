@@ -3,7 +3,6 @@ import { Platform } from 'react-native';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import {
-  Alert,
   FlatList,
   ScrollView,
   StyleSheet,
@@ -15,6 +14,7 @@ import {
 import { Ionicons } from '@expo/vector-icons';
 import { Screen } from '../../components/Screen';
 import { Button } from '../../components/Button';
+import { DashedUploadButton } from '../../components/DashedUploadButton';
 import { EmptyState } from '../../components/EmptyState';
 import { AdminHeader } from '../../components/AdminHeader';
 import { ProductImage } from '../../components/ProductImage';
@@ -23,6 +23,7 @@ import { useResponsive } from '../../hooks/useResponsive';
 import { AdminStackParamList } from '../../types/navigation';
 import { getProductCoverImage, resizeImage } from '../../utils/images';
 import { formatFileSize } from '../../utils/format';
+import { notify } from '../../utils/notify';
 import { deleteProductImage, deleteR2Objects, uploadProductImages } from '../../services/images';
 import {
   addProductFile,
@@ -33,10 +34,8 @@ import {
 } from '../../services/productFiles';
 import { fetchOwnProfile, updateOwnShippingFee } from '../../services/account';
 import { Category, CheckoutField, Product, ProductFile, VariantGroup, VariantOption } from '../../types';
-import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../../constants/theme';
+import { useThemeColors, spacing, borderRadius, fontSizes, pageWidth, ColorPalette } from '../../constants/theme';
 import { MERCHANT_ACCOUNT_EDITING_ENABLED } from '../../constants/featureFlags';
-
-const MAX_WIDTH = 800;
 
 /** Editing state for the variations section — prices stay strings while
  *  typing and are parsed/validated on save. */
@@ -131,6 +130,18 @@ export function AddEditItemScreen() {
   // wait in state until the product is saved (its id is generated on save).
   const [digitalFiles, setDigitalFiles] = useState<ProductFile[]>([]);
   const [pdfBusy, setPdfBusy] = useState(false);
+  // Inline validation errors near their section (Alert.alert is a no-op on
+  // web) — set on save attempt, cleared by any edit to that section.
+  const [variantsError, setVariantsError] = useState<string | null>(null);
+  const [questionsError, setQuestionsError] = useState<string | null>(null);
+
+  useEffect(() => {
+    setVariantsError(null);
+  }, [variantGroups]);
+
+  useEffect(() => {
+    setQuestionsError(null);
+  }, [checkoutFields]);
 
   useEffect(() => {
     if (!existing) return;
@@ -155,30 +166,42 @@ export function AddEditItemScreen() {
 
   useEffect(() => {
     if (categories.length === 0 && !existing) {
-      Alert.alert(
-        'No categories',
-        'Please add a category in the admin dashboard before creating a product.',
-        [{ text: 'OK', onPress: () => navigation.navigate('AdminDashboard') }]
-      );
+      notify('Please add a category in the admin dashboard before creating a product.', 'info');
+      navigation.navigate('AdminDashboard');
     }
   }, [categories.length, existing, navigation]);
 
   useEffect(() => {
     if (existing && !canEditExisting && !isSuperAdmin) {
-      Alert.alert('Access denied', 'You can only edit products you uploaded.', [
-        { text: 'OK', onPress: () => navigation.navigate('AdminDashboard') },
-      ]);
+      notify('You can only edit products you uploaded.', 'error');
+      navigation.navigate('AdminDashboard');
     }
   }, [existing, canEditExisting, isSuperAdmin, navigation]);
 
   const compareAt = priceOnRequest ? undefined : compareAtPrice.trim() ? Number(compareAtPrice) : undefined;
   // A post with PDFs attached may leave the price empty/0 — it becomes a free
   // download post (migration 044).
+  const hasPrice =
+    priceOnRequest || digitalFiles.length > 0 || (!isNaN(Number(price)) && Number(price) > 0);
+  const compareAtValid =
+    priceOnRequest || compareAt === undefined || (!isNaN(compareAt) && compareAt > Number(price));
   const isValid =
-    name.trim() &&
-    (priceOnRequest || digitalFiles.length > 0 || (!isNaN(Number(price)) && Number(price) > 0)) &&
-    (priceOnRequest || compareAt === undefined || (!isNaN(compareAt) && compareAt > Number(price))) &&
-    category.trim().length > 0;
+    name.trim() && hasPrice && compareAtValid && category.trim().length > 0;
+
+  // Why the Save button is disabled — shown under it so the form explains
+  // itself (a disabled button alone just looks broken).
+  const saveHint = (() => {
+    if (isValid) return null;
+    if (!compareAtValid && name.trim() && hasPrice) {
+      return 'The original price must be higher than the sale price.';
+    }
+    const missing: string[] = [];
+    if (!name.trim()) missing.push('a name');
+    if (!hasPrice) missing.push('a price');
+    if (!category.trim()) missing.push('a category');
+    if (missing.length === 0) return null;
+    return `Add ${missing.join(' and ')} to save.`;
+  })();
 
   function togglePriceOnRequest() {
     setPriceOnRequest((prev) => {
@@ -210,7 +233,7 @@ export function AddEditItemScreen() {
     const ImagePicker = await import('expo-image-picker');
     const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
     if (status !== 'granted') {
-      Alert.alert('Permission needed', 'Please allow access to your photo library.');
+      notify('Please allow access to your photo library.', 'error', 'Permission needed');
       return;
     }
 
@@ -307,9 +330,9 @@ export function AddEditItemScreen() {
         }
       }
     } catch (error) {
-      Alert.alert(
-        'Upload failed',
-        error instanceof Error ? error.message : 'Could not upload the PDF. Please try again.'
+      notify(
+        error instanceof Error ? error.message : 'Could not upload the PDF. Please try again.',
+        'error'
       );
     } finally {
       setPdfBusy(false);
@@ -493,12 +516,14 @@ export function AddEditItemScreen() {
 
     const variants = buildVariants();
     if (variants.error) {
-      Alert.alert('Check variations', variants.error);
+      setVariantsError(variants.error);
+      notify(variants.error, 'error');
       return;
     }
     const questions = buildCheckoutFields();
     if (questions.error) {
-      Alert.alert('Check questions', questions.error);
+      setQuestionsError(questions.error);
+      notify(questions.error, 'error');
       return;
     }
 
@@ -522,7 +547,7 @@ export function AddEditItemScreen() {
     try {
       if (existing) {
         await updateProduct(productData);
-        Alert.alert('Item Updated', `${productData.name} has been updated.`);
+        notify(`${productData.name} has been updated.`, 'success');
       } else {
         await addProduct(productData);
         // New products get their id at save time, so PDF rows are registered
@@ -536,12 +561,12 @@ export function AddEditItemScreen() {
             });
           }
         } catch {
-          Alert.alert(
-            'Note',
-            'The item was saved, but some PDF files could not be attached. Re-add them from the edit screen.'
+          notify(
+            'The item was saved, but some PDF files could not be attached. Re-add them from the edit screen.',
+            'error'
           );
         }
-        Alert.alert('Item Added', `${productData.name} has been added.`);
+        notify(`${productData.name} has been added.`, 'success');
       }
       // Persist the shop's shipping fee when the tenant changed it here.
       // Kept separate from the product save so a fee failure never blocks
@@ -550,16 +575,16 @@ export function AddEditItemScreen() {
         const trimmed = shippingFee.trim();
         const fee = trimmed === '' ? null : Number(trimmed);
         if (fee !== null && (!Number.isFinite(fee) || fee < 0)) {
-          Alert.alert('Note', 'The shipping fee was not saved — enter a valid number in Birr.');
+          notify('The shipping fee was not saved — enter a valid number in Birr.', 'error');
         } else {
           const nextFee = fee && fee > 0 ? fee : null;
           if (nextFee !== loadedShippingFee) {
             try {
               await updateOwnShippingFee(nextFee);
             } catch {
-              Alert.alert(
-                'Note',
-                'The item was saved, but the shipping fee could not be saved. Set it in Account & Security.'
+              notify(
+                'The item was saved, but the shipping fee could not be saved. Set it in Account & Security.',
+                'error'
               );
             }
           }
@@ -567,7 +592,7 @@ export function AddEditItemScreen() {
       }
       navigation.navigate('AdminDashboard');
     } catch {
-      Alert.alert('Error', 'Failed to save item. Please check your connection and try again.');
+      notify('Failed to save item. Please check your connection and try again.', 'error');
     }
   }
 
@@ -593,7 +618,7 @@ export function AddEditItemScreen() {
     return (
       <>
         {isWeb && <AdminHeader />}
-        <Screen noPadding edges={['top', 'left', 'right']}>
+        <Screen noPadding edges={['top', 'left', 'right', 'bottom']}>
           <View style={styles.container}>
             <EmptyState
               message={
@@ -611,7 +636,7 @@ export function AddEditItemScreen() {
   return (
     <>
       {isWeb && <AdminHeader />}
-      <Screen noPadding edges={['top', 'left', 'right']}>
+      <Screen noPadding edges={['top', 'left', 'right', 'bottom']}>
         <ScrollView style={styles.scroll} contentContainerStyle={styles.scrollContent}>
         <View style={styles.container}>
           <Text style={[styles.title, isPhone && styles.titleCompact]}>
@@ -692,6 +717,7 @@ export function AddEditItemScreen() {
                 value={name}
                 onChangeText={setName}
                 placeholder="Item name"
+                placeholderTextColor={colors.textSecondary}
               />
             </View>
 
@@ -774,12 +800,13 @@ export function AddEditItemScreen() {
                   </TouchableOpacity>
                 </View>
               ))}
-              <TouchableOpacity
-                style={[styles.thumbnailContainer, styles.detailAddTile]}
+            </View>
+            <View style={styles.addAffordance}>
+              <DashedUploadButton
+                label="Add detail images"
+                icon="image-outline"
                 onPress={() => pickImages(setDetailImages)}
-              >
-                <Ionicons name="add-outline" size={28} color={colors.primary} />
-              </TouchableOpacity>
+              />
             </View>
           </View>
 
@@ -802,15 +829,15 @@ export function AddEditItemScreen() {
                 </TouchableOpacity>
               </View>
             ))}
-            <TouchableOpacity
-              style={styles.fileAddButton}
-              onPress={() => pickPdfs()}
-              disabled={pdfBusy}
-              activeOpacity={0.7}
-            >
-              <Ionicons name="add-outline" size={20} color={colors.primary} />
-              <Text style={styles.fileAddText}>{pdfBusy ? 'Uploading…' : 'Add PDF'}</Text>
-            </TouchableOpacity>
+            <View style={styles.addAffordance}>
+              <DashedUploadButton
+                label={pdfBusy ? 'Uploading…' : 'Add PDF'}
+                icon={pdfBusy ? 'hourglass-outline' : 'document-text-outline'}
+                onPress={() => {
+                  if (!pdfBusy) pickPdfs();
+                }}
+              />
+            </View>
           </View>
 
           <View style={styles.field}>
@@ -820,6 +847,7 @@ export function AddEditItemScreen() {
               value={description}
               onChangeText={setDescription}
               placeholder="Describe the product..."
+              placeholderTextColor={colors.textSecondary}
               multiline
               numberOfLines={4}
               textAlignVertical="top"
@@ -853,6 +881,7 @@ export function AddEditItemScreen() {
                   value={price}
                   onChangeText={setPrice}
                   placeholder="0"
+                  placeholderTextColor={colors.textSecondary}
                   keyboardType="decimal-pad"
                 />
               </View>
@@ -864,6 +893,7 @@ export function AddEditItemScreen() {
                   value={compareAtPrice}
                   onChangeText={setCompareAtPrice}
                   placeholder="Higher than sale price"
+                  placeholderTextColor={colors.textSecondary}
                   keyboardType="decimal-pad"
                 />
               </View>
@@ -885,6 +915,7 @@ export function AddEditItemScreen() {
                       value={group.name}
                       onChangeText={(text) => updateGroup(gi, { name: text })}
                       placeholder="Group name (e.g. Size, Color)"
+                      placeholderTextColor={colors.textSecondary}
                     />
                     <TouchableOpacity onPress={() => removeGroup(gi)} style={styles.variantDelete}>
                       <Ionicons name="trash-outline" size={20} color={colors.danger} />
@@ -898,7 +929,7 @@ export function AddEditItemScreen() {
                   >
                     <Ionicons
                       name={group.affectsPrice ? 'checkbox' : 'square-outline'}
-                      size={20}
+                      size={22}
                       color={group.affectsPrice ? colors.primary : colors.textSecondary}
                     />
                     <Text style={styles.variantToggleText}>This group sets the price</Text>
@@ -916,6 +947,7 @@ export function AddEditItemScreen() {
                             value={option.name}
                             onChangeText={(text) => updateOption(gi, oi, { name: text })}
                             placeholder={group.affectsPrice ? 'e.g. Black' : 'e.g. 42-43'}
+                            placeholderTextColor={colors.textSecondary}
                           />
                           {group.affectsPrice && (
                             <TextInput
@@ -923,6 +955,7 @@ export function AddEditItemScreen() {
                               value={option.price}
                               onChangeText={(text) => updateOption(gi, oi, { price: text })}
                               placeholder="Price"
+                              placeholderTextColor={colors.textSecondary}
                               keyboardType="decimal-pad"
                             />
                           )}
@@ -997,10 +1030,12 @@ export function AddEditItemScreen() {
                   </TouchableOpacity>
                 </View>
               ))}
-              <TouchableOpacity style={styles.addGroupButton} onPress={addGroup}>
-                <Ionicons name="add-circle-outline" size={18} color={colors.primary} />
-                <Text style={styles.addOptionText}>Add a variation group</Text>
-              </TouchableOpacity>
+              {variantsError && <Text style={styles.sectionError}>{variantsError}</Text>}
+              <DashedUploadButton
+                label="Add a variation group"
+                icon="add-circle-outline"
+                onPress={addGroup}
+              />
             </View>
           )}
 
@@ -1019,6 +1054,7 @@ export function AddEditItemScreen() {
                     value={field.label}
                     onChangeText={(text) => updateField(fi, { label: text })}
                     placeholder="Question (e.g. Name, ID number)"
+                    placeholderTextColor={colors.textSecondary}
                   />
                   <TouchableOpacity onPress={() => removeField(fi)} style={styles.variantDelete}>
                     <Ionicons name="trash-outline" size={20} color={colors.danger} />
@@ -1055,7 +1091,7 @@ export function AddEditItemScreen() {
                 >
                   <Ionicons
                     name={field.required ? 'checkbox' : 'square-outline'}
-                    size={20}
+                    size={22}
                     color={field.required ? colors.primary : colors.textSecondary}
                   />
                   <Text style={styles.variantToggleText}>Buyer must answer this</Text>
@@ -1070,6 +1106,7 @@ export function AddEditItemScreen() {
                           value={option}
                           onChangeText={(text) => updateFieldOption(fi, oi, text)}
                           placeholder={`Choice ${oi + 1}`}
+                          placeholderTextColor={colors.textSecondary}
                         />
                         <TouchableOpacity
                           onPress={() => removeFieldOption(fi, oi)}
@@ -1090,10 +1127,12 @@ export function AddEditItemScreen() {
                 )}
               </View>
             ))}
-            <TouchableOpacity style={styles.addGroupButton} onPress={addField}>
-              <Ionicons name="add-circle-outline" size={18} color={colors.primary} />
-              <Text style={styles.addOptionText}>Add a checkout question</Text>
-            </TouchableOpacity>
+            {questionsError && <Text style={styles.sectionError}>{questionsError}</Text>}
+            <DashedUploadButton
+              label="Add a checkout question"
+              icon="add-circle-outline"
+              onPress={addField}
+            />
           </View>
 
           {role === 'admin' && isShopOwner && MERCHANT_ACCOUNT_EDITING_ENABLED && (
@@ -1122,6 +1161,7 @@ export function AddEditItemScreen() {
             disabled={!isValid}
             style={styles.saveButton}
           />
+          {saveHint && <Text style={styles.saveHint}>{saveHint}</Text>}
         </View>
       </ScrollView>
     </Screen>
@@ -1138,7 +1178,7 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
   },
   container: {
     flex: 1,
-    maxWidth: MAX_WIDTH,
+    maxWidth: pageWidth.form,
     width: '100%',
     alignSelf: 'center',
     paddingHorizontal: spacing.lg,
@@ -1173,20 +1213,10 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
     overflow: 'hidden',
     backgroundColor: colors.background,
     position: 'relative',
-    ...(Platform.OS === 'web'
-      ? ({
-          height: 420,
-        } as any)
-      : {}),
   },
+  // Cap the picked-image state at ~320 — no 420/520 jumps between platforms.
   coverPickerWithImage: {
-    ...(Platform.OS === 'web'
-      ? ({
-          height: 520,
-        } as any)
-      : {
-          height: 360,
-        }),
+    height: 320,
   },
   coverImage: {
     width: '100%',
@@ -1237,12 +1267,8 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
     color: colors.textSecondary,
     marginBottom: spacing.sm,
   },
-  detailAddTile: {
-    justifyContent: 'center',
-    alignItems: 'center',
-    borderStyle: 'dashed',
-    borderColor: colors.primary,
-    backgroundColor: colors.background,
+  addAffordance: {
+    marginTop: spacing.sm,
   },
   fileRow: {
     flexDirection: 'row',
@@ -1264,24 +1290,6 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
   fileSize: {
     fontSize: fontSizes.xs,
     color: colors.textSecondary,
-  },
-  fileAddButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    alignSelf: 'flex-start',
-    gap: spacing.xs,
-    borderWidth: 1,
-    borderStyle: 'dashed',
-    borderColor: colors.primary,
-    borderRadius: borderRadius.md,
-    paddingHorizontal: spacing.md,
-    paddingVertical: spacing.xs,
-    marginTop: spacing.xs,
-  },
-  fileAddText: {
-    fontSize: fontSizes.sm,
-    color: colors.primary,
-    fontWeight: '600',
   },
   descriptionInput: {
     minHeight: 100,
@@ -1452,16 +1460,17 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
     fontWeight: '600',
     color: colors.primary,
   },
-  addGroupButton: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    justifyContent: 'center',
-    gap: spacing.xs,
-    borderWidth: 1,
-    borderStyle: 'dashed',
-    borderColor: colors.primary,
-    borderRadius: borderRadius.sm,
-    paddingVertical: spacing.md,
+  sectionError: {
+    fontSize: fontSizes.sm,
+    fontWeight: '600',
+    color: colors.danger,
+    marginBottom: spacing.sm,
+  },
+  saveHint: {
+    fontSize: fontSizes.sm,
+    color: colors.textSecondary,
+    textAlign: 'center',
+    marginTop: spacing.sm,
   },
   toggleText: {
     flex: 1,

@@ -1,5 +1,6 @@
 import { StyleSheet, Text, View } from 'react-native';
 import { VerificationStatus } from '../types';
+import { useApp } from '../context/AppContext';
 import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../constants/theme';
 
 export const VERIFICATION_STATUS_LABELS: Record<VerificationStatus, string> = {
@@ -13,18 +14,28 @@ export const VERIFICATION_STATUS_LABELS: Record<VerificationStatus, string> = {
 /** Small status chip for a merchant's verify.et payment verification. */
 export function VerificationBadge({ status }: { status: VerificationStatus }) {
   const colors = useThemeColors();
+  const { theme } = useApp();
   const styles = makeStyles(colors);
+  // Toned yellow (dark amber text on a warning tint) instead of unreadable
+  // white-on-yellow — same treatment as the order status badges.
+  const needsReviewFg = theme === 'dark' ? colors.warning : '#8A6D03';
   return (
     <View
       style={[
         styles.badge,
         status === 'verified' && { backgroundColor: colors.success },
-        status === 'needs_review' && { backgroundColor: colors.warning },
+        status === 'needs_review' && { backgroundColor: colors.warning + '2E' },
         (status === 'failed' || status === 'error') && { backgroundColor: colors.danger },
         status === 'pending' && styles.pendingBadge,
       ]}
     >
-      <Text style={[styles.text, status === 'pending' && { color: colors.textSecondary }]}>
+      <Text
+        style={[
+          styles.text,
+          status === 'needs_review' && { color: needsReviewFg },
+          status === 'pending' && { color: colors.textSecondary },
+        ]}
+      >
         {VERIFICATION_STATUS_LABELS[status]}
       </Text>
     </View>

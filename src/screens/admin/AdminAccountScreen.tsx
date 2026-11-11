@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react';
 import {
-  Alert,
   Platform,
   StyleSheet,
   Switch,
@@ -26,17 +25,17 @@ import {
   updateOwnTelegramUsername,
 } from '../../services/account';
 import { updateOwnCapabilities } from '../../services/tenants';
+import { notify } from '../../utils/notify';
 import {
   useThemeColors,
   spacing,
   borderRadius,
   fontSizes,
+  pageWidth,
   ColorPalette,
 } from '../../constants/theme';
 import { MERCHANT_ACCOUNT_EDITING_ENABLED } from '../../constants/featureFlags';
 import { BankAccount, StaffCapabilities } from '../../types';
-
-const MAX_WIDTH = 640;
 
 /** The owner's own capability toggles (migration 048). All off = pure
  *  manager; all on = the old full tenant admin (one-man shop). */
@@ -156,10 +155,7 @@ export function AdminAccountScreen() {
       await refreshStaffSession();
     } catch (error) {
       setOwnCaps(previous);
-      Alert.alert(
-        'Error',
-        error instanceof Error ? error.message : 'Failed to update capabilities.'
-      );
+      notify(error instanceof Error ? error.message : 'Failed to update capabilities.', 'error');
     } finally {
       setCapsBusy(false);
     }
@@ -316,22 +312,27 @@ export function AdminAccountScreen() {
           .filter(Boolean)
           .join(' + ') + (staffSession.label ? ` · ${staffSession.label}` : '')
       : null;
+  // One subtitle line: "Super admin · @gateway" /
+  // "Shop owner · @gateway · Financial Admin + Shop Admin · Shop Name".
+  const roleLabel = role === 'super_admin' ? 'Super admin' : isShopOwner ? 'Shop owner' : null;
+  const subtitleLine = [
+    roleLabel,
+    `@${profile?.username ?? '—'}`,
+    staffSubtitle,
+    profile?.shopName ?? null,
+  ]
+    .filter(Boolean)
+    .join(' · ');
 
   return (
     <>
       {isWeb && <AdminHeader />}
-      <Screen scroll noPadding edges={['left', 'right']}>
+      <Screen scroll noPadding edges={['left', 'right', 'bottom']}>
         <View style={styles.container}>
           <Text style={[styles.title, isPhone && styles.titleCompact]}>
             Account & Security
           </Text>
-          {role === 'super_admin' && <Text style={styles.subtitle}>Super admin</Text>}
-          {role === 'admin' && isShopOwner && <Text style={styles.subtitle}>Shop owner</Text>}
-          {profile?.shopName && <Text style={styles.subtitle}>{profile.shopName}</Text>}
-          {staffSubtitle && <Text style={styles.subtitle}>{staffSubtitle}</Text>}
-          <Text style={styles.gateway}>
-            Current gateway: @{profile?.username ?? '—'}
-          </Text>
+          <Text style={styles.subtitle}>{subtitleLine}</Text>
           {loadError && <Text style={styles.errorText}>{loadError}</Text>}
 
           {editingDisabled && (
@@ -627,7 +628,7 @@ const makeStyles = (colors: ColorPalette) =>
   StyleSheet.create({
     container: {
       flex: 1,
-      maxWidth: MAX_WIDTH,
+      maxWidth: pageWidth.form,
       width: '100%',
       alignSelf: 'center',
       paddingHorizontal: spacing.lg,
@@ -646,12 +647,6 @@ const makeStyles = (colors: ColorPalette) =>
     subtitle: {
       fontSize: fontSizes.sm,
       color: colors.textSecondary,
-      marginBottom: spacing.xs,
-    },
-    gateway: {
-      fontSize: fontSizes.md,
-      color: colors.text,
-      fontWeight: '600',
       marginBottom: spacing.lg,
     },
     card: {

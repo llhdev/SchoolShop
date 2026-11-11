@@ -1,8 +1,10 @@
 import { useState } from 'react';
-import { Alert, Image, Platform, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
+import { Image, Platform, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
+import { DashedUploadButton } from './DashedUploadButton';
 import { BankAccount } from '../types';
 import { uploadBankQr } from '../services/images';
+import { notify } from '../utils/notify';
 import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../constants/theme';
 
 interface BankAccountsEditorProps {
@@ -44,7 +46,7 @@ export function BankAccountsEditor({ value, onChange }: BankAccountsEditorProps)
       const ImagePicker = await import('expo-image-picker');
       const { status } = await ImagePicker.requestMediaLibraryPermissionsAsync();
       if (status !== 'granted') {
-        Alert.alert('Permission needed', 'Please allow access to your photo library.');
+        notify('Please allow access to your photo library.', 'error', 'Permission needed');
         return;
       }
       const result = await ImagePicker.launchImageLibraryAsync({
@@ -61,7 +63,7 @@ export function BankAccountsEditor({ value, onChange }: BankAccountsEditorProps)
       const url = await uploadBankQr(localUri);
       update(index, { qrImageUrl: url });
     } catch {
-      Alert.alert('Upload Failed', 'Could not upload the QR code. Please try again.');
+      notify('Could not upload the QR code. Please try again.', 'error');
     } finally {
       setUploadingIndex(null);
     }
@@ -110,20 +112,13 @@ export function BankAccountsEditor({ value, onChange }: BankAccountsEditorProps)
                 </TouchableOpacity>
               </View>
             ) : (
-              <TouchableOpacity
-                style={[styles.qrPickButton, uploading && styles.qrPickButtonDisabled]}
-                onPress={() => pickQr(index).catch(() => {})}
-                disabled={uploading}
-              >
-                <Ionicons
-                  name={uploading ? 'hourglass-outline' : 'qr-code-outline'}
-                  size={16}
-                  color={colors.primary}
-                />
-                <Text style={styles.qrPickButtonText}>
-                  {uploading ? 'Uploading QR…' : 'Upload QR code (optional)'}
-                </Text>
-              </TouchableOpacity>
+              <DashedUploadButton
+                label={uploading ? 'Uploading QR…' : 'Upload QR code (optional)'}
+                icon={uploading ? 'hourglass-outline' : 'qr-code-outline'}
+                onPress={() => {
+                  if (!uploading) pickQr(index).catch(() => {});
+                }}
+              />
             )}
           </View>
         );
@@ -184,26 +179,6 @@ const makeStyles = (colors: ColorPalette) =>
       backgroundColor: colors.surface,
       borderWidth: 1,
       borderColor: colors.border,
-    },
-    qrPickButton: {
-      flexDirection: 'row',
-      alignItems: 'center',
-      justifyContent: 'center',
-      gap: spacing.xs,
-      borderWidth: 1,
-      borderStyle: 'dashed',
-      borderColor: colors.primary,
-      borderRadius: borderRadius.sm,
-      paddingVertical: spacing.md,
-      backgroundColor: colors.surface,
-    },
-    qrPickButtonDisabled: {
-      opacity: 0.6,
-    },
-    qrPickButtonText: {
-      fontSize: fontSizes.sm,
-      fontWeight: '600',
-      color: colors.primary,
     },
     addButton: {
       flexDirection: 'row',

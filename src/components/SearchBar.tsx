@@ -51,7 +51,7 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
     backgroundColor: colors.surface,
     borderRadius: borderRadius.sm,
     paddingHorizontal: spacing.sm,
-    paddingVertical: 2,
+    paddingVertical: spacing.sm,
     borderWidth: 1,
     borderColor: colors.border,
     gap: spacing.xs,

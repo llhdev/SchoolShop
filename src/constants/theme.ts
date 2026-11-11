@@ -69,3 +69,11 @@ export const breakpoints = {
   md: 768,
   lg: 1024,
 };
+
+/** Content column max-widths — use these instead of per-screen MAX_WIDTH
+ * constants so pages stop jumping between five different widths.
+ * form: settings/checkout/detail pages · data: grids, tables, dashboards. */
+export const pageWidth = {
+  form: 800,
+  data: 1200,
+};

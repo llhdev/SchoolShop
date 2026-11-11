@@ -162,7 +162,9 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
   imageContainer: {
     width: '100%',
     aspectRatio: 1,
-    backgroundColor: colors.background,
+    // White (not gray) so `contain`-fitted photos blend into the card —
+    // a gray band made the discount badge look detached from the image.
+    backgroundColor: colors.surface,
   },
   discountBadge: {
     position: 'absolute',
@@ -225,23 +227,24 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
     alignItems: 'center',
     gap: spacing.xs,
   },
+  // Steppers match CartItemRow's: 40px circles with the neutral border.
   qtyButton: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: colors.surface,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: colors.background,
     justifyContent: 'center',
     alignItems: 'center',
     borderWidth: 1,
-    borderColor: colors.primary,
+    borderColor: colors.border,
   },
   addButton: {
-    width: 36,
-    height: 36,
-    borderRadius: 18,
-    backgroundColor: colors.surface,
+    width: 40,
+    height: 40,
+    borderRadius: 20,
+    backgroundColor: colors.background,
     borderWidth: 1,
-    borderColor: colors.primary,
+    borderColor: colors.border,
     justifyContent: 'center',
     alignItems: 'center',
     position: 'relative',

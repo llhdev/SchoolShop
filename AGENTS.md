@@ -75,8 +75,9 @@ Key facts:
 │                                    # clean-database.js, test-reference-verification.js
 └── src/
     ├── components/                  # shared UI (Screen, Button, EmptyState, ProductCard,
-    │                                # ProductImage, SearchBar, WebHeader, AdminHeader, …)
-    ├── constants/                   # categories.ts, landmarks.ts, theme.ts
+    │                                # ProductImage, SearchBar, WebHeader, AdminHeader,
+    │                                # OrderStatusBadge, Chip, DashedUploadButton, StatCard, …)
+    ├── constants/                   # categories.ts, landmarks.ts, orderStatus.ts, theme.ts
     ├── context/AppContext.tsx       # global state, reducer, actions, persistence
     ├── data/seedProducts.ts
     ├── hooks/useResponsive.ts
@@ -92,7 +93,8 @@ Key facts:
     │                                # paymentVerifications (040), paymentVerificationCheckout (041),
     │                                # settings (042), telegramAuth, telegramOrderNotify, productFiles (044)
     ├── types/                       # index.ts (domain), navigation.ts (param lists)
-    └── utils/                       # format, images, storage, validation, variants, checkoutFields
+    └── utils/                       # format, images, storage, validation, variants,
+                                     # checkoutFields, notify (cross-platform toast)
 ```
 
 ---
@@ -201,6 +203,10 @@ See `docs/supabase-setup.md` (10 steps: project, env, migrations, email auto-con
 - Import order: React / navigation hooks, components, context, types, constants.
 - `colors.surface` for white/card backgrounds, `colors.background` for page backgrounds.
 - Use `SafeAreaView` via the `Screen` component; reuse `Screen`, `Button`, `EmptyState`.
+- User feedback: `notify()` from `src/utils/notify.ts` (toast on web, Alert on native) — never raw `Alert.alert`, which is a silent no-op on react-native-web. Destructive confirms use `confirmAction`.
+- Order statuses render through `OrderStatusBadge`; filter pills through `Chip`; dashed upload/pick buttons through `DashedUploadButton`; summary numbers through `StatCard`. Don't hand-roll new copies.
+- Content max-widths come from `pageWidth` in theme.ts (`form` 800 / `data` 1200) — not per-screen constants.
+- Money styling: red `colors.price` only for selling prices on product surfaces; totals are bold `colors.text`; line-item unit prices `colors.textSecondary`.
 - Web-specific UI is gated with `Platform.OS === 'web'` checks.
 
 ---

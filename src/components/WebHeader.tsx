@@ -7,7 +7,7 @@ import { ThemeToggle } from './ThemeToggle';
 import { useApp } from '../context/AppContext';
 import { useResponsive } from '../hooks/useResponsive';
 import { RootStackParamList } from '../types/navigation';
-import { useThemeColors, spacing, fontSizes, ColorPalette } from '../constants/theme';
+import { useThemeColors, spacing, fontSizes, pageWidth, ColorPalette } from '../constants/theme';
 
 interface WebHeaderProps {
   searchValue?: string;
@@ -99,11 +99,11 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
     flexDirection: 'row',
     alignItems: 'center',
     justifyContent: 'space-between',
-    maxWidth: 1200,
+    maxWidth: pageWidth.data,
     width: '100%',
     alignSelf: 'center',
-    paddingLeft: 0,
-    paddingRight: spacing.lg,
+    // Align the logo's left edge with the page gutter of the content below.
+    paddingHorizontal: spacing.lg,
   },
   brand: {
     flexDirection: 'row',
