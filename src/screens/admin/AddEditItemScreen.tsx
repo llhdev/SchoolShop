@@ -67,7 +67,7 @@ interface FieldEdit {
   label: string;
   type: 'text' | 'dropdown' | 'multiselect';
   required: boolean;
-  /** dropdown only: choice rows while editing. */
+  /** dropdown/multiselect only: choice rows while editing. */
   options: string[];
 }
 
