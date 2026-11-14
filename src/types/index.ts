@@ -36,12 +36,13 @@ export interface VariantGroup {
 export type OrderStatus = 'pending' | 'paid' | 'on_the_way' | 'completed';
 
 /** A tenant-defined question the buyer answers at checkout (migration 036).
- *  type 'text' = free text input; type 'dropdown' = pick one of `options`. */
+ *  type 'text' = free text input; 'dropdown' = pick one of `options`;
+ *  'multiselect' = pick any number of `options`. */
 export interface CheckoutField {
   label: string;
-  type: 'text' | 'dropdown';
+  type: 'text' | 'dropdown' | 'multiselect';
   required: boolean;
-  /** dropdown only: the choices the buyer picks from. */
+  /** dropdown/multiselect only: the choices the buyer picks from. */
   options?: string[];
 }
 
