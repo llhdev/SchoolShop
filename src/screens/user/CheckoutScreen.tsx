@@ -27,7 +27,7 @@ import { notify } from '../../utils/notify';
 import { isValidEthiopianPhoneNumber } from '../../utils/validation';
 import { generateOrderCode } from '../../utils/orderCode';
 import { formatVariantLabel, getCartItemLineId, getUnitPrice } from '../../utils/variants';
-import { missingRequiredAnswers } from '../../utils/checkoutFields';
+import { missingRequiredAnswers, selectedCheckoutOptions } from '../../utils/checkoutFields';
 import { formatPrice } from '../../utils/format';
 import { resizeImage } from '../../utils/images';
 import { uploadPaymentProof } from '../../services/images';
@@ -608,7 +608,11 @@ export function CheckoutScreen() {
       items: cart.map((item) => {
         const answers = answersByLine[getCartItemLineId(item)];
         const fieldAnswers = Object.entries(answers ?? {})
-          .map(([label, value]) => ({ label, value: value.trim() }))
+          .map(([label, value]) => {
+            const fields = (catalog.find((p) => p.id === item.product.id) ?? item.product).checkoutFields;
+            const multiple = fields?.find((field) => field.label === label)?.type === 'multiselect';
+            return { label, value: multiple ? selectedCheckoutOptions(value).join('; ') : value.trim() };
+          })
           .filter((a) => a.value.length > 0);
         const current: Product =
           catalog.find((p) => p.id === item.product.id) ?? item.product;
@@ -917,7 +921,33 @@ export function CheckoutScreen() {
                                 <Text style={styles.optionalHint}> (optional)</Text>
                               )}
                             </Text>
-                            {field.type === 'dropdown' ? (
+                            {field.type === 'multiselect' ? (
+                              <View style={missing ? styles.inputError : undefined}>
+                                <Text style={styles.optionalHint}>Select all that apply</Text>
+                                {(field.options ?? []).map((option) => {
+                                  const selected = selectedCheckoutOptions(value);
+                                  const checked = selected.includes(option);
+                                  return (
+                                    <TouchableOpacity
+                                      key={option}
+                                      accessibilityRole="checkbox"
+                                      accessibilityState={{ checked }}
+                                      accessibilityLabel={option}
+                                      style={styles.dropdownOption}
+                                      onPress={() => {
+                                        const next = (field.options ?? []).filter((choice) =>
+                                          choice === option ? !checked : selected.includes(choice)
+                                        );
+                                        setAnswer(line.lineId, field.label, next.length ? JSON.stringify(next) : '');
+                                      }}
+                                    >
+                                      <Text style={styles.dropdownOptionText}>{option}</Text>
+                                      <Ionicons name={checked ? 'checkbox' : 'square-outline'} size={22} color={checked ? colors.primary : colors.textSecondary} />
+                                    </TouchableOpacity>
+                                  );
+                                })}
+                              </View>
+                            ) : field.type === 'dropdown' ? (
                               <View>
                                 <TouchableOpacity
                                   style={[styles.dropdownField, missing && styles.inputError]}

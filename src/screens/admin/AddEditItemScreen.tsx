@@ -65,7 +65,7 @@ function toGroupEdits(groups: VariantGroup[] | undefined): GroupEdit[] {
 /** Editing state for the checkout questions section. */
 interface FieldEdit {
   label: string;
-  type: 'text' | 'dropdown';
+  type: 'text' | 'dropdown' | 'multiselect';
   required: boolean;
   /** dropdown only: choice rows while editing. */
   options: string[];
@@ -486,9 +486,9 @@ export function AddEditItemScreen() {
       const labelKey = label.toLowerCase();
       if (seenLabels.has(labelKey)) return { error: `Duplicate question "${label}".` };
       seenLabels.add(labelKey);
-      if (f.type === 'dropdown') {
+      if (f.type !== 'text') {
         if (options.length < 2) {
-          return { error: `Add at least two choices to "${label}" (dropdown).` };
+          return { error: `Add at least two choices to "${label}" (selectable question).` };
         }
         const seenOptions = new Set<string>();
         for (const o of options) {
@@ -503,7 +503,7 @@ export function AddEditItemScreen() {
         label,
         type: f.type,
         required: f.required,
-        ...(f.type === 'dropdown' ? { options } : {}),
+        ...(f.type !== 'text' ? { options } : {}),
       });
     }
     return { fields: fields.length > 0 ? fields : undefined };
@@ -1062,7 +1062,7 @@ export function AddEditItemScreen() {
                 </View>
 
                 <View style={styles.fieldTypeRow}>
-                  {(['text', 'dropdown'] as const).map((type) => (
+                  {(['text', 'dropdown', 'multiselect'] as const).map((type) => (
                     <TouchableOpacity
                       key={type}
                       style={[
@@ -1078,7 +1078,7 @@ export function AddEditItemScreen() {
                           field.type === type && styles.fieldTypeTextActive,
                         ]}
                       >
-                        {type === 'text' ? 'Text answer' : 'Dropdown'}
+                        {type === 'text' ? 'Text answer' : type === 'dropdown' ? 'Dropdown' : 'Multiple answers'}
                       </Text>
                     </TouchableOpacity>
                   ))}
@@ -1097,7 +1097,7 @@ export function AddEditItemScreen() {
                   <Text style={styles.variantToggleText}>Buyer must answer this</Text>
                 </TouchableOpacity>
 
-                {field.type === 'dropdown' && (
+                {field.type !== 'text' && (
                   <>
                     {field.options.map((option, oi) => (
                       <View key={oi} style={styles.optionRow}>

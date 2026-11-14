@@ -25,7 +25,7 @@ export function toCheckoutFields(raw: unknown): CheckoutField[] | undefined {
   const fields: CheckoutField[] = [];
   for (const f of raw as DbCheckoutField[]) {
     if (!f || typeof f.label !== 'string' || !f.label) continue;
-    const type = f.type === 'dropdown' ? 'dropdown' : 'text';
+    const type = f.type === 'dropdown' || f.type === 'multiselect' ? f.type : 'text';
     const options = Array.isArray(f.options)
       ? (f.options as unknown[]).filter(
           (o): o is string => typeof o === 'string' && o.length > 0
@@ -35,7 +35,7 @@ export function toCheckoutFields(raw: unknown): CheckoutField[] | undefined {
       label: f.label,
       type,
       required: f.required === true,
-      ...(type === 'dropdown' ? { options } : {}),
+      ...(type !== 'text' ? { options } : {}),
     });
   }
   return fields.length > 0 ? fields : undefined;
@@ -50,6 +50,16 @@ export function toDbCheckoutFields(
     label: f.label,
     type: f.type,
     required: f.required,
-    options: f.type === 'dropdown' ? (f.options ?? []) : null,
+    options: f.type !== 'text' ? (f.options ?? []) : null,
   }));
+}
+
+/** Multi-answer drafts use JSON so commas and newlines in choices stay intact. */
+export function selectedCheckoutOptions(value: string): string[] {
+  try {
+    const parsed: unknown = JSON.parse(value);
+    return Array.isArray(parsed) ? parsed.filter((v): v is string => typeof v === 'string') : [];
+  } catch {
+    return [];
+  }
 }

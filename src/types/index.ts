@@ -73,7 +73,7 @@ export interface StaffSession {
  *  type 'text' = free text input; type 'dropdown' = pick one of `options`. */
 export interface CheckoutField {
   label: string;
-  type: 'text' | 'dropdown';
+  type: 'text' | 'dropdown' | 'multiselect';
   required: boolean;
   /** dropdown only: the choices the buyer picks from. */
   options?: string[];
