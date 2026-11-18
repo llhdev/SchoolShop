@@ -38,6 +38,8 @@ const CORS_HEADERS = {
 };
 
 const MAX_ALBUM_PHOTOS = 10;
+/** attach:// name for the payment proof when sent as uploaded bytes. */
+const PROOF_ATTACH_NAME = 'payment_proof.jpg';
 
 interface OrderItem {
   product?: {
@@ -195,12 +197,17 @@ interface SendResult {
   /** Telegram's error detail — surfaced in the function's JSON response so
    *  delivery failures are diagnosable without digging through logs. */
   error?: string;
+  /** Non-fatal problem (e.g. images dropped, text summary still delivered).
+   *  Surfaced on the notified entry so degraded deliveries are visible. */
+  warning?: string;
 }
 
 /** Proofs live in the PRIVATE R2 bucket (bare object paths on
- *  orders.payment_proofs) — Telegram fetches them through a short-lived
- *  presigned R2 URL. Proofs not yet migrated fall back to a signed URL from
- *  the legacy Supabase bucket. Legacy rows hold full public URLs. */
+ *  orders.payment_proofs) and are resolved through a short-lived presigned
+ *  R2 URL, then downloaded and re-uploaded to Telegram as bytes (attach://)
+ *  because Telegram's fetcher intermittently fails on R2 URLs. Proofs not
+ *  yet migrated fall back to a signed URL from the legacy Supabase bucket.
+ *  Legacy rows hold full public URLs. */
 const PROOFS_BUCKET = 'payment-proofs-private';
 
 async function resolveProofUrl(
@@ -239,6 +246,34 @@ async function sendTelegram(method: string, payload: unknown): Promise<SendResul
   }
 }
 
+/** Multipart variant for sending the payment proof as uploaded bytes
+ *  (attach://) instead of a URL Telegram must fetch. Telegram's fetcher
+ *  intermittently fails on presigned R2 URLs (WEBPAGE_CURL_FAILED), which
+ *  used to reject the whole album — uploading the bytes removes that
+ *  dependency entirely. The file field name must match the attach:// name
+ *  used in the payload. */
+async function sendTelegramWithProof(
+  method: string,
+  fields: Record<string, string>,
+  proofBytes: ArrayBuffer
+): Promise<SendResult> {
+  try {
+    const form = new FormData();
+    for (const [key, value] of Object.entries(fields)) form.append(key, value);
+    form.append(PROOF_ATTACH_NAME, new Blob([proofBytes], { type: 'image/jpeg' }), PROOF_ATTACH_NAME);
+    const res = await fetch(`${API}/${method}`, { method: 'POST', body: form });
+    if (!res.ok) {
+      const body = await res.text();
+      console.error(`telegram ${method} (multipart) failed:`, res.status, body);
+      return { ok: false, error: `${method} ${res.status}: ${body.slice(0, 300)}` };
+    }
+    return { ok: true };
+  } catch (error) {
+    console.error(`telegram ${method} (multipart) error:`, error);
+    return { ok: false, error: `${method} threw: ${String(error)}` };
+  }
+}
+
 async function sendToTenant(
   supabase: SupabaseClient,
   target: TenantTarget,
@@ -259,35 +294,109 @@ async function sendToTenant(
 
   // The tenant's payment proof rides in the SAME message as the order — it is
   // simply the last photo of the album, no separate message or caption.
-  // Private-bucket paths (migration 040) ride as short-lived signed URLs.
+  // The proof is DOWNLOADED here and uploaded to Telegram as bytes
+  // (attach://): Telegram's fetcher intermittently fails on presigned R2
+  // URLs (WEBPAGE_CURL_FAILED), which rejected the whole album. If the
+  // download fails, the proof falls back to riding as a URL (legacy
+  // behavior) so it still has a chance to arrive.
   const proofRef = order.payment_proofs?.[target.ownerId];
+  let proofUrl: string | null = null;
+  let proofBytes: ArrayBuffer | null = null;
   if (proofRef) {
-    const proofUrl = await resolveProofUrl(supabase, proofRef);
-    if (proofUrl) photos.push(proofUrl);
+    proofUrl = await resolveProofUrl(supabase, proofRef);
+    if (proofUrl) {
+      try {
+        const res = await fetch(proofUrl);
+        if (res.ok) {
+          proofBytes = await res.arrayBuffer();
+        } else {
+          console.error(`proof download failed (HTTP ${res.status}), falling back to URL`);
+        }
+      } catch (error) {
+        console.error('proof download error, falling back to URL:', error);
+      }
+    }
+  }
+
+  interface MediaItem {
+    type: 'photo';
+    media: string;
+    caption?: string;
+    parse_mode?: 'HTML';
+  }
+  const media: MediaItem[] = photos.map((url, index) => ({
+    type: 'photo',
+    media: url,
+    ...(index === 0 ? { caption: summary, parse_mode: 'HTML' as const } : {}),
+  }));
+  if (proofBytes) {
+    media.push({
+      type: 'photo',
+      media: `attach://${PROOF_ATTACH_NAME}`,
+      ...(media.length === 0 ? { caption: summary, parse_mode: 'HTML' as const } : {}),
+    });
+  } else if (proofUrl) {
+    media.push({
+      type: 'photo',
+      media: proofUrl,
+      ...(media.length === 0 ? { caption: summary, parse_mode: 'HTML' as const } : {}),
+    });
   }
 
   const errors: string[] = [];
-  if (photos.length > 0) {
-    const album = await sendTelegram('sendMediaGroup', {
-      chat_id: target.chatId,
-      media: photos.map((url, index) => ({
-        type: 'photo',
-        media: url,
-        ...(index === 0 ? { caption: summary, parse_mode: 'HTML' } : {}),
-      })),
-    });
+  if (media.length === 1) {
+    // Albums require 2-10 items — a lone photo goes through sendPhoto.
+    const only = media[0];
+    const single =
+      proofBytes && only.media.startsWith('attach://')
+        ? await sendTelegramWithProof(
+            'sendPhoto',
+            {
+              chat_id: target.chatId,
+              photo: only.media,
+              caption: summary,
+              parse_mode: 'HTML',
+            },
+            proofBytes
+          )
+        : await sendTelegram('sendPhoto', {
+            chat_id: target.chatId,
+            photo: only.media,
+            caption: summary,
+            parse_mode: 'HTML',
+          });
+    if (single.ok) return { ok: true };
+    errors.push(single.error ?? 'sendPhoto failed');
+  } else if (media.length > 1) {
+    const album = proofBytes
+      ? await sendTelegramWithProof(
+          'sendMediaGroup',
+          { chat_id: target.chatId, media: JSON.stringify(media) },
+          proofBytes
+        )
+      : await sendTelegram('sendMediaGroup', {
+          chat_id: target.chatId,
+          media,
+        });
     if (album.ok) return { ok: true };
     errors.push(album.error ?? 'sendMediaGroup failed');
   }
   // No images, album rejected, or Telegram could not fetch a URL:
-  // fall back to a plain text summary so the order is never lost.
+  // fall back to a plain text summary so the order is never lost. The
+  // failure is reported as a warning — the delivery is degraded (no
+  // images), not lost, and hiding it is how the Nov 2026 outage went
+  // unnoticed.
   const text = await sendTelegram('sendMessage', {
     chat_id: target.chatId,
     text: summary,
     parse_mode: 'HTML',
     disable_web_page_preview: true,
   });
-  if (text.ok) return { ok: true };
+  if (text.ok) {
+    return errors.length > 0
+      ? { ok: true, warning: `images dropped (${errors.join(' | ')}), sent text only` }
+      : { ok: true };
+  }
   errors.push(text.error ?? 'sendMessage failed');
 
   return { ok: false, error: errors.join(' | ') };
@@ -367,7 +476,7 @@ Deno.serve(async (req) => {
     );
   }
 
-  const notified: { shop: string; chat_id: string }[] = [];
+  const notified: { shop: string; chat_id: string; warning?: string }[] = [];
   const skipped: { shop: string; reason: string }[] = [];
 
   for (const ownerId of ownerIds) {
@@ -412,7 +521,11 @@ Deno.serve(async (req) => {
     }
 
     if (result.ok) {
-      notified.push({ shop: shopName, chat_id: effectiveChatId });
+      notified.push({
+        shop: shopName,
+        chat_id: effectiveChatId,
+        ...(result.warning ? { warning: result.warning } : {}),
+      });
     } else {
       skipped.push({
         shop: shopName,

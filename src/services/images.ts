@@ -168,13 +168,16 @@ export async function uploadProductImages(uris: string[]): Promise<string[]> {
  *  function's anonymous sign-proof-upload action (shoppers aren't signed
  *  in) and returns the bare object key — not a URL. Older orders hold the
  *  same key format in the legacy Supabase bucket; readers fall back
- *  automatically. */
+ *  automatically. The photo is resized before upload: raw phone photos
+ *  (multi-MB) made Telegram's fetcher time out when proofs were sent as
+ *  URLs (Nov 2026 outage) and slow down every other reader too. */
 export async function uploadPaymentProof(uri: string): Promise<string> {
   const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
   const anonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
   if (!supabaseUrl || !anonKey) throw new Error('Image storage is not configured.');
   const key = newFileName();
-  const buffer = await imageToArrayBuffer(uri);
+  const resizedUri = await resizeImage(uri, 1200);
+  const buffer = await imageToArrayBuffer(resizedUri);
   const response = await fetch(`${supabaseUrl}/functions/v1/r2-upload-sign`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', apikey: anonKey },
