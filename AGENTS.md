@@ -72,11 +72,14 @@ Key facts:
 │   └── telegram-mini-app.md         # TMA runbook
 ├── .github/workflows/deploy-web.yml # CI: web export -> gh-pages on push to main
 ├── scripts/                         # prep-dist.js, setup-admin.js, reset-data.js,
-│                                    # clean-database.js, test-reference-verification.js
+│                                    # clean-database.js, test-reference-verification.js,
+│                                    # query-logs.ps1 / rest-query.ps1 (read-only prod
+│                                    # diagnostics), resend-order-notifications.js
 └── src/
     ├── components/                  # shared UI (Screen, Button, EmptyState, ProductCard,
     │                                # ProductImage, SearchBar, WebHeader, AdminHeader,
-    │                                # OrderStatusBadge, Chip, DashedUploadButton, StatCard, …)
+    │                                # OrderStatusBadge, Chip, DashedUploadButton, StatCard,
+    │                                # ErrorBoundary, …)
     ├── constants/                   # categories.ts, landmarks.ts, orderStatus.ts, theme.ts
     ├── context/AppContext.tsx       # global state, reducer, actions, persistence
     ├── data/seedProducts.ts
