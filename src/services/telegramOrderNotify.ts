@@ -60,6 +60,15 @@ export function notifyTelegramOrder(
       if (body && Array.isArray(body.skipped) && body.skipped.length > 0) {
         console.warn('[telegramOrderNotify] some shops were not notified:', body.skipped);
       }
+      // Degraded deliveries (e.g. images dropped, text summary still sent)
+      // arrive as warnings on otherwise-successful entries — log them so an
+      // image-pipeline regression is visible immediately.
+      const warnings = (body?.notified ?? []).filter(
+        (entry: { warning?: string }) => entry?.warning
+      );
+      if (warnings.length > 0) {
+        console.warn('[telegramOrderNotify] some deliveries were degraded:', warnings);
+      }
     })
     .catch((error) => {
       console.warn('[telegramOrderNotify] notify request failed:', error);
