@@ -108,10 +108,14 @@ export async function fetchOrders(tenantId?: string): Promise<Order[]> {
 
 /** Line items of an order that belong to one tenant. Item snapshots are
  *  stamped with product.owner_id by the DB trigger; fall back to the
- *  client-side camelCase ownerId for rows written before the trigger. */
+ *  client-side camelCase ownerId for rows written before the trigger.
+ *  Items with a missing product snapshot (malformed rows) are skipped —
+ *  one poisoned item must not crash every order screen (no error boundary
+ *  used to catch this). */
 export function getOrderItemsForTenant(order: Order, tenantId: string): Order['items'] {
   return order.items.filter((item) => {
-    const product = item.product as { owner_id?: string; ownerId?: string };
+    const product = item.product as { owner_id?: string; ownerId?: string } | null | undefined;
+    if (!product) return false;
     return product.owner_id === tenantId || product.ownerId === tenantId;
   });
 }

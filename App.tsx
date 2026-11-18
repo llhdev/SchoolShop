@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react';
 import { StatusBar } from 'expo-status-bar';
 import { AppProvider } from './src/context/AppContext';
 import { AppNavigator } from './src/navigation/AppNavigator';
+import { ErrorBoundary } from './src/components/ErrorBoundary';
 import { initTelegram } from './src/lib/telegram';
 
 export default function App() {
@@ -21,9 +22,11 @@ export default function App() {
   if (!telegramReady) return null;
 
   return (
-    <AppProvider>
-      <AppNavigator />
-      <StatusBar style="auto" />
-    </AppProvider>
+    <ErrorBoundary>
+      <AppProvider>
+        <AppNavigator />
+        <StatusBar style="auto" />
+      </AppProvider>
+    </ErrorBoundary>
   );
 }
