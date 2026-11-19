@@ -20,6 +20,12 @@
 
 import { createClient, type SupabaseClient } from 'https://esm.sh/@supabase/supabase-js@2.112.3';
 import { R2_PROOFS_BUCKET, presign, r2Configured, signedRequest } from '../_shared/r2Sign.ts';
+import {
+  PROOF_ATTACH_NAME,
+  decideProofDelivery,
+  proofMime,
+  type ProofKind,
+} from './media.ts';
 
 const BOT_TOKEN = Deno.env.get('TELEGRAM_BOT_TOKEN') ?? '';
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
@@ -38,8 +44,6 @@ const CORS_HEADERS = {
 };
 
 const MAX_ALBUM_PHOTOS = 10;
-/** attach:// name for the payment proof when sent as uploaded bytes. */
-const PROOF_ATTACH_NAME = 'payment_proof.jpg';
 
 interface OrderItem {
   product?: {
@@ -298,25 +302,6 @@ async function sendTelegramMultipart(
   }
 }
 
-type ProofKind = 'jpeg' | 'png' | 'heic' | 'other';
-
-/** Sniff the actual image format from magic bytes — the stored .jpg name
- *  says nothing (pickers can return HEIC, which Telegram cannot process as
- *  a photo: IMAGE_PROCESS_FAILED). */
-function sniffProofKind(bytes: ArrayBuffer): ProofKind {
-  const u = new Uint8Array(bytes.slice(0, 16));
-  if (u[0] === 0xff && u[1] === 0xd8 && u[2] === 0xff) return 'jpeg';
-  if (u[0] === 0x89 && u[1] === 0x50 && u[2] === 0x4e && u[3] === 0x47) return 'png';
-  // ISO BMFF container: bytes 4-8 are "ftyp", followed by the brand.
-  if (u[4] === 0x66 && u[5] === 0x74 && u[6] === 0x79 && u[7] === 0x70) {
-    const brand = String.fromCharCode(u[8], u[9], u[10], u[11]);
-    if (['heic', 'heix', 'hevc', 'hevx', 'heim', 'heis', 'mif1', 'msf1'].includes(brand)) {
-      return 'heic';
-    }
-  }
-  return 'other';
-}
-
 interface MediaItem {
   type: 'photo';
   media: string;
@@ -328,16 +313,6 @@ interface ProofAttach {
   name: string;
   bytes: ArrayBuffer;
   kind: ProofKind;
-}
-
-/** Telegram photo ceiling (10 MB); documents may be much larger. */
-const MAX_PHOTO_BYTES = 10 * 1024 * 1024;
-
-function proofMime(kind: ProofKind): string {
-  if (kind === 'jpeg') return 'image/jpeg';
-  if (kind === 'png') return 'image/png';
-  if (kind === 'heic') return 'image/heic';
-  return 'application/octet-stream';
 }
 
 /** One photo message. Attach variant is used when the item references the
@@ -455,21 +430,14 @@ async function sendToTenant(
   // (HEIC from iPhone pickers, oversized, unknown) is delivered as a
   // document below — it used to poison the whole album
   // (IMAGE_PROCESS_FAILED) and take the product images down with it.
-  const proofKind = proofBytes ? sniffProofKind(proofBytes) : null;
-  const proofAsPhoto =
-    proofBytes !== null &&
-    (proofKind === 'jpeg' || proofKind === 'png') &&
-    proofBytes.byteLength <= MAX_PHOTO_BYTES;
-  let proofAsDocument = proofBytes !== null && !proofAsPhoto;
+  // The decision lives in decideProofDelivery (media.ts) so the Node test
+  // script exercises the exact deployed logic.
+  const delivery = decideProofDelivery(proofBytes, proofUrl);
+  const proofAsPhoto = delivery.mode === 'photo';
+  let proofAsDocument = delivery.mode === 'document';
   const proofAttach: ProofAttach | null =
-    proofBytes !== null && proofKind !== null
-      ? {
-          name: proofAsPhoto
-            ? PROOF_ATTACH_NAME
-            : `payment-proof.${proofKind === 'jpeg' ? 'jpg' : proofKind === 'other' ? 'bin' : proofKind}`,
-          bytes: proofBytes,
-          kind: proofKind,
-        }
+    proofBytes !== null && (delivery.mode === 'photo' || delivery.mode === 'document')
+      ? { name: delivery.attachName, bytes: proofBytes, kind: delivery.kind }
       : null;
 
   if (proofAsPhoto && proofAttach) {

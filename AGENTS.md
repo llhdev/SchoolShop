@@ -73,6 +73,7 @@ Key facts:
 ├── .github/workflows/deploy-web.yml # CI: web export -> gh-pages on push to main
 ├── scripts/                         # prep-dist.js, setup-admin.js, reset-data.js,
 │                                    # clean-database.js, test-reference-verification.js,
+│                                    # prod-health-check.ps1, test-telegram-media.mjs,
 │                                    # query-logs.ps1 / rest-query.ps1 (read-only prod
 │                                    # diagnostics), resend-order-notifications.js
 └── src/
@@ -221,6 +222,11 @@ No test framework is configured. Before adding tests, choose a stack consistent 
 ```bash
 npx tsc --noEmit
 ```
+
+Two targeted guards exist outside a framework:
+
+- `node scripts/test-telegram-media.mjs` — regression tests for the Telegram proof-routing logic (imports the real `supabase/functions/telegram-order-notify/media.ts`; run after touching that function).
+- `powershell -NoProfile -File scripts/prod-health-check.ps1 [-WindowHours N]` — read-only prod checks: realtime publication membership, Telegram failure lines, order→notify coverage, deployed function version. Run after every migration/deploy.
 
 No ESLint or Prettier config exists; if you add one, keep rules aligned with the existing style.
 
