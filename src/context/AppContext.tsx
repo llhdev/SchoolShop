@@ -510,6 +510,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // Shop accounts are scoped to orders containing their shop's products
   // (tenant_ids, filled by the stamp_order_tenants trigger); staff accounts
   // use their parent shop's id (migration 045); the super admin sees all.
+  // Since migration 064 the direct table read requires the Financial
+  // capability: money-blind staff fetch through the get_scoped_orders RPC
+  // (money stripped server-side) and get no realtime order events — their
+  // list refreshes on fetch, not live.
   useEffect(() => {
     if (!isHydrated) return;
     const isAdmin = state.role === 'admin' || state.role === 'super_admin';
@@ -518,13 +522,14 @@ export function AppProvider({ children }: { children: ReactNode }) {
     // A tenant admin's id comes from the auth session; wait for it so the
     // first fetch is already scoped rather than briefly leaking all orders.
     if (state.role === 'admin' && !tenantFilter) return;
+    const moneyBlind = state.role === 'admin' && !staffSession?.capabilities.financial;
 
     let unsubscribeOrders: (() => void) | undefined;
     let cancelled = false;
 
     (async () => {
       try {
-        const orders = await fetchOrders(tenantFilter ?? undefined);
+        const orders = await fetchOrders(tenantFilter ?? undefined, moneyBlind);
         if (cancelled) return;
         dispatch({ type: 'SET_ORDERS', payload: orders });
         await saveOrdersToCache(orders);
@@ -535,7 +540,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         unsubscribeOrders = subscribeToOrders(async (orders) => {
           dispatch({ type: 'SET_ORDERS', payload: orders });
           await saveOrdersToCache(orders);
-        }, tenantFilter ?? undefined);
+        }, tenantFilter ?? undefined, moneyBlind);
       }
     })();
 
@@ -543,7 +548,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       cancelled = true;
       unsubscribeOrders?.();
     };
-  }, [isHydrated, state.role, staffTenantId]);
+  }, [isHydrated, state.role, staffTenantId, staffSession?.capabilities.financial]);
 
   // Telegram Mini App identity: show any cached shopper immediately, then
   // exchange the signed initData for the verified record (works offline on

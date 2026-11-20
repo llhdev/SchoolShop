@@ -384,9 +384,13 @@ export function OrderDetailScreen() {
                       {item.quantity} × {item.product.name}
                       {formatVariantLabel(item) ? ` (${formatVariantLabel(item)})` : ''}
                     </Text><View style={styles.itemRowEnd}>
-                      <Text style={styles.itemPrice}>
-                        {formatPrice(getUnitPrice(item) * item.quantity)}
-                      </Text>
+                      {/* Line prices are money: hidden from staff without the
+                          Financial capability (064 also zeroes them server-side). */}
+                      {canSeeMoney && (
+                        <Text style={styles.itemPrice}>
+                          {formatPrice(getUnitPrice(item) * item.quantity)}
+                        </Text>
+                      )}
                       {/* Shopper ↔ shop DM about this specific item; admins
                           (super/tenant) don't get it. Prefer the snake_case
                           username stamped onto the snapshot at order time
