@@ -17,13 +17,33 @@
 // sign-book-get action reveals a paid post's file URLs only when the caller's
 // order item has reached 'paid'.
 //
+// Key namespacing (061): new display/PDF keys are tenant-namespaced —
+// products|logos|qrs/<tenantId>/<name>.jpg and books/<tenantId>/<name>.pdf,
+// where <tenantId> is the uploader's effective tenant id (uuid). sign accepts
+// ONLY namespaced keys, and the key's tenant segment must equal the caller's
+// effective tenant id (super admin may sign any tenant's keys — it manages
+// shops and uploads their logos/QRs). delete accepts namespaced keys under
+// the same rule, plus LEGACY un-namespaced keys (pre-061 objects) only after
+// verifying ownership server-side: a legacy products//books/ key must be
+// referenced by the caller's own products (images/detail_images, or
+// product_files for books), and a legacy logos//qrs/ key by the caller's own
+// profiles row (shop_logo_url / bank_accounts QR urls). This stops any staff
+// account from overwriting or deleting another shop's objects, whose keys
+// are discoverable because the bucket is public.
+//
+// Rate limiting (061): the anonymous sign-proof-upload action is capped at
+// 20 requests per IP per hour (public.check_rate_limit, SHA-256-hashed IP).
+// The check fails OPEN — if the rate-limit RPC errors the request is allowed
+// (availability over strictness for this endpoint) and the error is logged.
+//
 // verify_jwt is off at the gateway (the app calls this with the user's own
 // access token, and OPTIONS must be answered for browsers), so the function
 // authenticates the caller itself for the admin actions: bearer token ->
 // auth.getUser -> profiles. Capability rules (staff roles, migration 045+):
 //   - sign/delete:    super_admin passes; an active (is_active) shop account
 //     needs staff_shop for products/ and books/ keys, and must be the shop
-//     owner (no parent_tenant_id) for logos/ and qrs/ keys.
+//     owner (no parent_tenant_id) for logos/ and qrs/ keys — plus the tenant
+//     namespacing rule above.
 //   - sign-proof-get: super_admin, or an active shop account with
 //     staff_financial or staff_branch.
 //
@@ -44,13 +64,28 @@ const BOOK_PRESIGN_EXPIRY_SECONDS = 3600;
 const MAX_FILES_PER_REQUEST = 20;
 const MAX_PROOF_UPLOADS_PER_REQUEST = 4;
 
-// products/<name>.jpg | logos/<name>.jpg | qrs/<name>.jpg — client-generated
-// names are `${Date.now()}-<random>[-thumb].jpg`, hence the narrow charset.
-// books/<name>.pdf holds digital-book PDFs (044) in the same public bucket.
-const KEY_PATTERN = /^(?:(?:products|logos|qrs)\/[a-z0-9][a-z0-9-]*\.jpg|books\/[a-z0-9][a-z0-9-]*\.pdf)$/;
+// New keys are tenant-namespaced (061): products|logos|qrs/<tenantId>/<name>.jpg
+// and books/<tenantId>/<name>.pdf, where <tenantId> is the uploader's
+// effective tenant id (uuid) and <name> keeps the client-generated
+// `${Date.now()}-<random>[-thumb]` charset. Namespacing stops cross-tenant
+// overwrite/delete — the bucket is public, so bare keys are discoverable.
+const TENANT_SEGMENT = '[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}';
+const KEY_PATTERN = new RegExp(
+  `^(?:(?:products|logos|qrs)/${TENANT_SEGMENT}/[a-z0-9][a-z0-9-]*\\.jpg|books/${TENANT_SEGMENT}/[a-z0-9][a-z0-9-]*\\.pdf)$`
+);
+// Pre-061 objects use un-namespaced keys. They can never be created anymore;
+// deletes of them are allowed only after server-side ownership verification
+// (see ownsLegacyKey).
+const LEGACY_KEY_PATTERN = /^(?:(?:products|logos|qrs)\/[a-z0-9][a-z0-9-]*\.jpg|books\/[a-z0-9][a-z0-9-]*\.pdf)$/;
 // Proof keys are the same flat `${Date.now()}-<random>.jpg` names the client
 // has always used (keys did not change with the R2 move).
 const PROOF_KEY_PATTERN = /^[a-z0-9][a-z0-9-]*\.jpg$/;
+
+/** The tenant segment of a namespaced key, null for legacy keys. */
+function keyTenantId(key: string): string | null {
+  if (!KEY_PATTERN.test(key)) return null;
+  return key.split('/')[1];
+}
 
 // Supabase bucket that held proofs before the R2 move (transition fallback).
 const LEGACY_PROOFS_BUCKET = 'payment-proofs-private';
@@ -75,6 +110,7 @@ function json(body: unknown, status = 200): Response {
 // --- auth ----------------------------------------------------------------------
 
 interface AdminProfile {
+  id: string;
   role: string;
   parent_tenant_id: string | null;
   staff_financial: boolean | null;
@@ -94,7 +130,7 @@ async function requireAdmin(
   if (error || !data.user) return { error: json({ error: 'invalid session' }, 401) };
   const { data: profile } = await supabase
     .from('profiles')
-    .select('role, parent_tenant_id, staff_financial, staff_shop, staff_branch, is_active')
+    .select('id, role, parent_tenant_id, staff_financial, staff_shop, staff_branch, is_active')
     .eq('id', data.user.id)
     .maybeSingle();
   if (profile?.role !== 'admin' && profile?.role !== 'super_admin') {
@@ -103,16 +139,99 @@ async function requireAdmin(
   return { profile: profile as AdminProfile };
 }
 
-/** Upload/delete gate per key (staff roles): the super admin passes; an
- *  active shop account needs the shop capability for products/ and books/
- *  keys, and must be the shop owner for logos/ and qrs/ (shop settings). */
+/** The tenant the caller acts for: the parent shop for staff accounts, the
+ *  account itself for owners and the super admin (same rule as the
+ *  effective_tenant_id() SQL helper, migration 045). */
+function effectiveTenantId(profile: AdminProfile): string {
+  return profile.parent_tenant_id ?? profile.id;
+}
+
+/** Upload gate per key (staff roles + tenant namespacing, 061): the super
+ *  admin passes; an active shop account may only sign keys namespaced under
+ *  its own effective tenant id, needs the shop capability for products/ and
+ *  books/ keys, and must be the shop owner for logos/ and qrs/ (shop
+ *  settings). */
 function canWriteKey(profile: AdminProfile, key: string): boolean {
   if (profile.role === 'super_admin') return true;
   if (profile.is_active === false) return false;
+  if (keyTenantId(key) !== effectiveTenantId(profile)) return false;
   if (key.startsWith('products/') || key.startsWith('books/')) {
     return profile.staff_shop === true;
   }
   return profile.parent_tenant_id === null;
+}
+
+/** Ownership of a legacy (un-namespaced) products//books/ key: a product of
+ *  the caller's shop references it in images/detail_images — as the full
+ *  public URL or the bare key — or, for books/, one of the shop's
+ *  product_files rows holds it. Thumbnail keys (`-thumb.jpg`) are checked
+ *  against their base image, which is the reference products actually store. */
+async function ownsLegacyShopKey(tenantId: string, key: string): Promise<boolean> {
+  if (key.startsWith('books/')) {
+    const { data, error } = await supabase
+      .from('product_files')
+      .select('id, products!inner(owner_id)')
+      .eq('key', key)
+      .eq('products.owner_id', tenantId)
+      .limit(1);
+    if (error) console.error('legacy book ownership check failed:', error.message ?? error);
+    return (data?.length ?? 0) > 0;
+  }
+  const baseKey = key.replace(/-thumb\.jpg$/, '.jpg');
+  const candidates = [baseKey, `${R2_PUBLIC_BASE_URL}/${baseKey}`];
+  const or = candidates
+    .flatMap((c) => [`images.cs.{${c}}`, `detail_images.cs.{${c}}`])
+    .join(',');
+  const { data, error } = await supabase
+    .from('products')
+    .select('id')
+    .eq('owner_id', tenantId)
+    .or(or)
+    .limit(1);
+  if (error) console.error('legacy image ownership check failed:', error.message ?? error);
+  return (data?.length ?? 0) > 0;
+}
+
+/** Ownership of a legacy (un-namespaced) logos//qrs/ key: the caller's own
+ *  (effective tenant's) profiles row references it in shop_logo_url or one of
+ *  its bank_accounts QR urls. */
+async function ownsLegacyProfileKey(tenantId: string, key: string): Promise<boolean> {
+  const { data: row, error } = await supabase
+    .from('profiles')
+    .select('shop_logo_url, bank_accounts')
+    .eq('id', tenantId)
+    .maybeSingle();
+  if (error) console.error('legacy profile ownership check failed:', error.message ?? error);
+  if (!row) return false;
+  const matches = (value: unknown): boolean =>
+    typeof value === 'string' &&
+    (value === key || value === `${R2_PUBLIC_BASE_URL}/${key}`);
+  if (matches(row.shop_logo_url)) return true;
+  const accounts = Array.isArray(row.bank_accounts) ? row.bank_accounts : [];
+  return accounts.some((a) => matches((a as { qr_image_url?: unknown })?.qr_image_url));
+}
+
+/** Delete gate: namespaced keys follow the same rule as uploads; legacy
+ *  un-namespaced keys are deletable only after the server verifies the
+ *  caller's shop actually references them (the key charset is guessable and
+ *  the bucket public, so capability alone proved nothing about ownership). */
+async function canDeleteKey(profile: AdminProfile, key: string): Promise<boolean> {
+  if (keyTenantId(key) !== null) return canWriteKey(profile, key);
+  if (!LEGACY_KEY_PATTERN.test(key)) return false;
+  // The super admin manages all shops' products — no ownership proof needed.
+  if (profile.role === 'super_admin') return true;
+  const tenantId = effectiveTenantId(profile);
+  if (key.startsWith('products/') || key.startsWith('books/')) {
+    if (profile.role !== 'super_admin') {
+      if (profile.is_active === false || profile.staff_shop !== true) return false;
+    }
+    return ownsLegacyShopKey(tenantId, key);
+  }
+  // logos/qrs are shop settings — owner-only (staff have parent_tenant_id).
+  if (profile.role !== 'super_admin') {
+    if (profile.is_active === false || profile.parent_tenant_id !== null) return false;
+  }
+  return ownsLegacyProfileKey(tenantId, key);
 }
 
 /** Proof viewing gate: the super admin, or an active shop account with the
@@ -138,8 +257,8 @@ async function handleSignUploads(
   const keys: string[] = [];
   for (const f of files) {
     const key = typeof f === 'object' && f !== null ? (f as Record<string, unknown>).key : null;
-    if (typeof key !== 'string' || !KEY_PATTERN.test(key)) {
-      return json({ error: 'each file needs a valid key (products|logos|qrs)/<name>.jpg or books/<name>.pdf' }, 400);
+    if (typeof key !== 'string' || keyTenantId(key) === null) {
+      return json({ error: 'each file needs a valid tenant-namespaced key (products|logos|qrs|books)/<tenantId>/<name>' }, 400);
     }
     if (!canWriteKey(profile, key)) {
       return json({ error: 'not allowed for your role' }, 403);
@@ -173,10 +292,10 @@ async function handleDeletes(
   }
   const keys: string[] = [];
   for (const k of keysRaw) {
-    if (typeof k !== 'string' || !KEY_PATTERN.test(k)) {
+    if (typeof k !== 'string' || (keyTenantId(k) === null && !LEGACY_KEY_PATTERN.test(k))) {
       return json({ error: 'invalid key' }, 400);
     }
-    if (!canWriteKey(profile, k)) {
+    if (!(await canDeleteKey(profile, k))) {
       return json({ error: 'not allowed for your role' }, 403);
     }
     keys.push(k);
@@ -193,11 +312,47 @@ async function handleDeletes(
   return json({ deleted: keys.length - failed.length, failed });
 }
 
+// --- per-IP rate limiting (061) ------------------------------------------------
+
+/** Fixed-window per-IP rate limit via the service-role check_rate_limit RPC
+ *  (public.rate_limits). The IP (first x-forwarded-for entry) is SHA-256
+ *  hashed so no raw addresses are stored. FAILS OPEN: if the RPC errors the
+ *  request is allowed — availability over strictness for these endpoints —
+ *  and the failure is logged. Returns false only when the window is full. */
+async function withinRateLimit(
+  req: Request,
+  scope: string,
+  limit: number,
+  windowSeconds: number
+): Promise<boolean> {
+  const ip = (req.headers.get('x-forwarded-for') ?? '').split(',')[0].trim() || 'unknown';
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(ip));
+  const hash = Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+  try {
+    const { data, error } = await supabase.rpc('check_rate_limit', {
+      p_key: `${scope}:${hash}`,
+      p_limit: limit,
+      p_window_seconds: windowSeconds,
+    });
+    if (error) throw error;
+    return data === true;
+  } catch (error) {
+    console.error(`rate limit check failed (${scope}), allowing request:`, error);
+    return true;
+  }
+}
+
 /** Anonymous shopper proof uploads. No auth — same exposure as the public-
  *  insert Supabase bucket this replaces, but tighter: pattern-restricted
- *  keys, at most 4 per request, URLs expire in 10 minutes, and the bucket
- *  is private so junk uploads are invisible to everyone. */
-async function handleSignProofUpload(body: Record<string, unknown>): Promise<Response> {
+ *  keys, at most 4 per request, 20 presign requests per IP per hour (061),
+ *  URLs expire in 10 minutes, and the bucket is private so junk uploads are
+ *  invisible to everyone. */
+async function handleSignProofUpload(req: Request, body: Record<string, unknown>): Promise<Response> {
+  if (!(await withinRateLimit(req, 'proof-upload', 20, 3600))) {
+    return json({ error: 'too many uploads, try again later' }, 429);
+  }
   const files = Array.isArray(body.files) ? body.files : [];
   if (files.length === 0 || files.length > MAX_PROOF_UPLOADS_PER_REQUEST) {
     return json({ error: `files must contain 1-${MAX_PROOF_UPLOADS_PER_REQUEST} entries` }, 400);
@@ -347,7 +502,7 @@ Deno.serve(async (req) => {
     case 'delete':
       return handleDeletes(body, profile!);
     case 'sign-proof-upload':
-      return handleSignProofUpload(body);
+      return handleSignProofUpload(req, body);
     case 'sign-proof-get':
       return handleSignProofGet(body, profile!);
     case 'sign-book-get':

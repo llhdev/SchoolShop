@@ -5,7 +5,8 @@ import { resizeImage, getThumbnailPath } from '../utils/images';
 /** Public base URL of the Cloudflare R2 bucket that now serves all display
  *  images (product photos + thumbnails, shop logos, bank QRs) and digital-book
  *  PDFs (books/ prefix, migration 044). Public info, safe to inline. Keys are
- *  namespaced: products/, logos/, qrs/, books/. */
+ *  tenant-namespaced (061): products|logos|qrs|books/<tenantId>/<name>, where
+ *  <tenantId> is the uploader's effective tenant id. */
 export const R2_PUBLIC_BASE_URL = 'https://img.timor.et';
 
 function base64ToArrayBuffer(base64: string): ArrayBuffer {
@@ -127,9 +128,36 @@ function newFileName(): string {
   return `${Date.now()}-${Math.random().toString(36).slice(2, 9)}.jpg`;
 }
 
+/** The tenant segment new R2 keys are namespaced under (061): the signed-in
+ *  account's effective tenant id — parent_tenant_id for staff accounts, the
+ *  account's own user id for owners and the super admin (same rule as the
+ *  server's effective_tenant_id). Cached per auth user; the super admin's
+ *  uploads for a shop land under its own id, which the server accepts for
+ *  super_admin sign/delete regardless of the segment. */
+let uploadTenantCache: { userId: string; tenantId: string } | null = null;
+
+export async function getUploadTenantId(): Promise<string> {
+  const { data: sessionData } = await supabase.auth.getSession();
+  const userId = sessionData.session?.user?.id;
+  if (!userId) {
+    uploadTenantCache = null;
+    throw new Error('Sign in as an admin to upload images.');
+  }
+  if (uploadTenantCache?.userId === userId) return uploadTenantCache.tenantId;
+  const { data: profile } = await supabase
+    .from('profiles')
+    .select('parent_tenant_id')
+    .eq('id', userId)
+    .maybeSingle();
+  const tenantId = profile?.parent_tenant_id ?? userId;
+  uploadTenantCache = { userId, tenantId };
+  return tenantId;
+}
+
 /** Upload one image to R2 under the given prefix and return its public URL. */
 async function uploadR2Image(uri: string, prefix: 'products' | 'logos' | 'qrs'): Promise<string> {
-  const key = `${prefix}/${newFileName()}`;
+  const tenantId = await getUploadTenantId();
+  const key = `${prefix}/${tenantId}/${newFileName()}`;
   const buffer = await imageToArrayBuffer(uri);
   const [upload] = await signR2Uploads([key]);
   await putToR2(upload.uploadUrl, buffer);
@@ -154,9 +182,10 @@ async function verifyR2Object(publicUrl: string): Promise<void> {
 }
 
 export async function uploadProductImage(uri: string): Promise<string> {
+  const tenantId = await getUploadTenantId();
   const baseName = newFileName();
-  const key = `products/${baseName}`;
-  const thumbKey = `products/${getThumbnailPath(baseName)}`;
+  const key = `products/${tenantId}/${baseName}`;
+  const thumbKey = `products/${tenantId}/${getThumbnailPath(baseName)}`;
 
   // Upload the full image and a 400px thumbnail companion so list views can
   // fetch small payloads on slow connections. The product record stores the

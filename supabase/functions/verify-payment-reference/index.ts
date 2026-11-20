@@ -14,6 +14,9 @@
 // Credit-burn protection (verify_jwt is off — shoppers are anonymous):
 //   - the proof object must exist in the private R2 proofs bucket (only
 //     real uploads pass; legacy Supabase bucket checked as fallback),
+//   - a per-IP rate limit (061): 30 pre-check requests per IP per hour via
+//     public.check_rate_limit on the SHA-256-hashed IP; fails OPEN (the
+//     request is allowed and the error logged) if the RPC itself errors,
 //   - a daily cap on new pre-checks (same style as DAILY_SUBMISSION_CAP),
 //   - idempotent replays never re-call verify.et.
 //
@@ -243,11 +246,48 @@ function isNotFound(
   return candidates.some((s) => typeof s === 'string' && s.toLowerCase() === 'not_found');
 }
 
+// --- per-IP rate limiting (061) ------------------------------------------------
+
+/** Fixed-window per-IP rate limit via the service-role check_rate_limit RPC
+ *  (public.rate_limits) — additive to DAILY_PRECHECK_CAP below. The IP
+ *  (first x-forwarded-for entry) is SHA-256 hashed so no raw addresses are
+ *  stored. FAILS OPEN: if the RPC errors the request is allowed —
+ *  availability over strictness — and the failure is logged. */
+async function withinRateLimit(
+  req: Request,
+  scope: string,
+  limit: number,
+  windowSeconds: number
+): Promise<boolean> {
+  const ip = (req.headers.get('x-forwarded-for') ?? '').split(',')[0].trim() || 'unknown';
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(ip));
+  const hash = Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+  try {
+    const { data, error } = await supabase.rpc('check_rate_limit', {
+      p_key: `${scope}:${hash}`,
+      p_limit: limit,
+      p_window_seconds: windowSeconds,
+    });
+    if (error) throw error;
+    return data === true;
+  } catch (error) {
+    console.error(`rate limit check failed (${scope}), allowing request:`, error);
+    return true;
+  }
+}
+
 // --- entry point ------------------------------------------------------------------
 
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') return new Response(null, { status: 200, headers: corsHeaders });
   if (req.method !== 'POST') return json({ error: 'Method not allowed' }, 405);
+
+  // Per-IP rate limit before anything that can cost work/credits (061).
+  if (!(await withinRateLimit(req, 'precheck', 30, 3600))) {
+    return json({ error: 'too many uploads, try again later' }, 429);
+  }
 
   if (!(await isVerificationEnabled(supabase))) return json({ skipped: 'verification disabled' });
 

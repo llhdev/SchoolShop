@@ -3,6 +3,7 @@ import { ProductFile } from '../types';
 import {
   R2_PUBLIC_BASE_URL,
   deleteR2Objects,
+  getUploadTenantId,
   imageToArrayBuffer,
   putToR2,
   signR2Uploads,
@@ -55,8 +56,9 @@ export interface PdfUploadSource {
   sizeBytes?: number;
 }
 
-/** Upload one PDF to the public R2 bucket under books/ and return its
- *  metadata. Requires a signed-in admin session (the sign action checks). */
+/** Upload one PDF to the public R2 bucket under books/<tenantId>/ (tenant-
+ *  namespaced since 061) and return its metadata. Requires a signed-in admin
+ *  session (the sign action checks). */
 export async function uploadProductPdf(
   source: PdfUploadSource
 ): Promise<{ key: string; url: string; sizeBytes: number }> {
@@ -66,7 +68,8 @@ export async function uploadProductPdf(
   if (sizeBytes > MAX_PDF_BYTES) {
     throw new Error(`PDF is too large — keep it under ${Math.round(MAX_PDF_BYTES / (1024 * 1024))} MB.`);
   }
-  const key = `books/${Date.now()}-${Math.random().toString(36).slice(2, 9)}.pdf`;
+  const tenantId = await getUploadTenantId();
+  const key = `books/${tenantId}/${Date.now()}-${Math.random().toString(36).slice(2, 9)}.pdf`;
   const [upload] = await signR2Uploads([key]);
   await putToR2(upload.uploadUrl, buffer, 'public, max-age=31536000, immutable', 'application/pdf');
   return { key: upload.key, url: upload.publicUrl, sizeBytes };
