@@ -66,7 +66,7 @@ Key facts:
 │   │   │                            # deletes need ownership proof) + proof GET (052); anon proof PUT
 │   │   │                            # (20/hr/IP, 061) + book GET (order id + phone, 062)
 │   │   └── verify-et-webhook/       # completes queued verifications (signed, idempotent)
-│   └── migrations/                  # 001–065, in order; header comments document each
+│   └── migrations/                  # 001–066, in order; header comments document each
 ├── docs/
 │   ├── architecture.md              # images + checkout/payment-verification deep-dive
 │   ├── staging-setup.md             # staging env runbook (dev branch → preview → staging Supabase)
