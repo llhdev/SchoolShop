@@ -587,21 +587,25 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // A Telegram shopper's order history lives in Supabase (not on the device),
   // so it follows their account across devices. Admins use the admin order
   // list instead, so this stays out of the way while an admin is signed in.
+  // The history read needs the ordersToken telegram-auth issued (062); a
+  // shopper cached before that has none — skip the fetch (keeping whatever is
+  // displayed) until the auth effect refreshes the cache with a token.
   useEffect(() => {
     if (!isHydrated || !shopper) return;
     if (state.role === 'admin' || state.role === 'super_admin') return;
+    if (!shopper.ordersToken) return;
     let cancelled = false;
     let unsubscribe: (() => void) | undefined;
 
     (async () => {
       try {
-        const orders = await fetchOrdersByTelegramId(shopper.telegramId);
+        const orders = await fetchOrdersByTelegramId(shopper.telegramId, shopper.ordersToken);
         if (!cancelled) dispatch({ type: 'SET_ORDERS', payload: orders });
       } catch {
         // Keep whatever is already displayed.
       }
       if (!cancelled) {
-        unsubscribe = subscribeToShopperOrders(shopper.telegramId, (orders) => {
+        unsubscribe = subscribeToShopperOrders(shopper.telegramId, shopper.ordersToken, (orders) => {
           dispatch({ type: 'SET_ORDERS', payload: orders });
         });
       }
@@ -616,20 +620,25 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // Guest live-status sync: a guest (no Telegram identity) has no server-side
   // history — only the orders this device placed — but their statuses must
   // still track the admin side (auto-paid on verified payments, admin status
-  // changes). Refetch exactly those orders by id and keep them live via
-  // realtime; server rows replace local rows by id, while local rows the
-  // server does not return are kept (optimistic adds whose insert is still in
-  // flight). The merged list is re-cached because a guest's history IS the
-  // cache — statuses must survive a restart. Skipped while a shopper exists
-  // (the effect above owns the list for Mini App users) or an admin is
-  // signed in (the admin effect owns it).
+  // changes). Refetch exactly those orders (062: by id + the phone typed at
+  // checkout, which the local cache carries) and keep them live via realtime;
+  // server rows replace local rows by id, while local rows the server does
+  // not return are kept (optimistic adds whose insert is still in flight, or
+  // legacy orders with no phone the server can no longer match). The merged
+  // list is re-cached because a guest's history IS the cache — statuses must
+  // survive a restart. Skipped while a shopper exists (the effect above owns
+  // the list for Mini App users) or an admin is signed in (the admin effect
+  // owns it).
   const guestOrdersKey = state.orders.map((o) => o.id).join(' ');
   useEffect(() => {
     if (!isHydrated) return;
     if (state.role === 'admin' || state.role === 'super_admin') return;
     if (shopper) return;
     if (!guestOrdersKey) return;
-    const ids = guestOrdersKey.split(' ');
+    const ids = new Set(guestOrdersKey.split(' '));
+    const refs = state.orders
+      .filter((o) => ids.has(o.id))
+      .map((o) => ({ id: o.id, phone: o.phoneNumber }));
     let cancelled = false;
     let unsubscribe: (() => void) | undefined;
 
@@ -645,13 +654,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
 
     (async () => {
       try {
-        const orders = await fetchOrdersByIds(ids);
+        const orders = await fetchOrdersByIds(refs);
         if (!cancelled) await mergeAndApply(orders);
       } catch {
         // Keep whatever is already displayed/cached.
       }
       if (!cancelled) {
-        unsubscribe = subscribeToOrdersByIds(ids, (orders) => {
+        unsubscribe = subscribeToOrdersByIds(refs, (orders) => {
           void mergeAndApply(orders);
         });
       }
@@ -679,7 +688,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     const unclaimed = state.orders.filter((o) => !o.telegramId);
     if (unclaimed.length === 0) return;
     unclaimed.forEach((order) => {
-      attachOrderTelegramId(order.id, shopper.telegramId)
+      attachOrderTelegramId(order.id, shopper.telegramId, order.phoneNumber)
         .then(() => {
           dispatch({
             type: 'UPDATE_ORDER',

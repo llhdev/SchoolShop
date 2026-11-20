@@ -2,13 +2,21 @@
 // Called once per Mini App session by the client (no Supabase Auth involved —
 // the signed initData IS the proof of identity).
 //
+// The response also carries `ordersToken`: HMAC-SHA256 hex of the telegram id
+// keyed by the shared internal secret. The client sends it to the
+// get_orders_by_telegram_id RPC (migration 062) to read its order history —
+// a telegram id alone no longer lists orders.
+//
 // Required secrets (Supabase Dashboard > Edge Functions > Secrets):
 //   TELEGRAM_BOT_TOKEN  — from @BotFather
+//   VERIFY_FUNCTION_SECRET — same value as the 'verify_function_secret'
+//     Supabase Vault secret (falls back to TELEGRAM_BOT_TOKEN when unset)
 // SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY are provided automatically.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.112.3';
 
 const BOT_TOKEN = Deno.env.get('TELEGRAM_BOT_TOKEN') ?? '';
+const ORDERS_TOKEN_SECRET = Deno.env.get('VERIFY_FUNCTION_SECRET') ?? BOT_TOKEN;
 
 const CORS_HEADERS = {
   'Access-Control-Allow-Origin': '*',
@@ -138,5 +146,12 @@ Deno.serve(async (req) => {
     return json({ error: 'Failed to register shopper' }, 500);
   }
 
-  return json({ shopper });
+  // Order-history token for get_orders_by_telegram_id (062): the SQL side
+  // recomputes this from the vault copy of the same secret. The key/message
+  // order matches pgcrypto's hmac(data, key, 'sha256').
+  const ordersToken = toHex(
+    await hmacSha256(new TextEncoder().encode(ORDERS_TOKEN_SECRET), String(validated.telegramId))
+  );
+
+  return json({ shopper, ordersToken });
 });

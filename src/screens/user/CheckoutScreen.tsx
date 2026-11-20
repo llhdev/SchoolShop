@@ -225,8 +225,10 @@ export function CheckoutScreen() {
 
   const isWeb = Platform.OS === 'web';
   const isTMA = isTelegramMiniApp();
+  // Phone is REQUIRED (062): every order carries the shopper's phone — it is
+  // the capability that lets the device re-fetch the order after checkout.
   const phoneValid = isValidEthiopianPhoneNumber(phoneNumber);
-  const showPhoneError = phoneTouched && phoneNumber.trim().length > 0 && !phoneValid;
+  const showPhoneError = phoneTouched && !phoneValid;
 
   // Payment is a direct bank transfer to each shop in the cart. Group the
   // cart by tenant so the shopper can transfer each shop's subtotal plus its
@@ -871,7 +873,11 @@ export function CheckoutScreen() {
                   keyboardType="phone-pad"
                 />
                 {(showPhoneError || (showValidation && !phoneValid)) && (
-                  <Text style={styles.errorText}>Enter a correct Ethiopian phone number</Text>
+                  <Text style={styles.errorText}>
+                    {phoneNumber.trim().length === 0
+                      ? 'Phone number is required'
+                      : 'Enter a correct Ethiopian phone number'}
+                  </Text>
                 )}
               </View>
 

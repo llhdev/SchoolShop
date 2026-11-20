@@ -160,7 +160,7 @@ export function OrderDetailScreen() {
         (visibleItems ?? [])
           .filter((item) => DOWNLOAD_UNLOCKED.includes(getItemStatus(order, item)))
           .map(async (item) => {
-            const files = await getPurchasedBookFiles(order.id, item.product.id);
+            const files = await getPurchasedBookFiles(order.id, item.product.id, order.phoneNumber);
             return [getItemKey(item), files] as const;
           })
       );

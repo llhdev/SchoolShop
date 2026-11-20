@@ -15,7 +15,8 @@
 // Digital-book PDFs (migration 044) live in the PUBLIC bucket under books/:
 // admins upload/delete them via the normal sign/delete actions; the anonymous
 // sign-book-get action reveals a paid post's file URLs only when the caller's
-// order item has reached 'paid'.
+// order item has reached 'paid' AND the caller knows the order's phone number
+// (062 — the order id alone is no longer enough, order ids are short codes).
 //
 // Key namespacing (061): new display/PDF keys are tenant-namespaced —
 // products|logos|qrs/<tenantId>/<name>.jpg and books/<tenantId>/<name>.pdf,
@@ -419,18 +420,27 @@ const DOWNLOAD_UNLOCKED_STATUSES = new Set(['paid', 'on_the_way', 'completed']);
  *  The books live in the PUBLIC bucket, so protection comes from never
  *  exposing paid keys to anon clients (product_files RLS only exposes files
  *  of price-0 products) and revealing them here only after the buyer's order
- *  item reached 'paid'. Returns public URLs — no presigning needed. */
+ *  item reached 'paid'. Since 062 the caller must also present the order's
+ *  phone number (trimmed compare) — order id + product id alone no longer
+ *  unlock anything. Returns public URLs — no presigning needed. */
 async function handleSignBookGet(body: Record<string, unknown>): Promise<Response> {
   const orderId = typeof body.orderId === 'string' ? body.orderId : '';
   const productId = typeof body.productId === 'string' ? body.productId : '';
-  if (!orderId || !productId) return json({ error: 'orderId and productId are required' }, 400);
+  const phone = typeof body.phone === 'string' ? body.phone : '';
+  if (!orderId || !productId || !phone.trim()) {
+    return json({ error: 'orderId, productId and phone are required' }, 400);
+  }
 
   const { data: order } = await supabase
     .from('orders')
-    .select('items, status, item_statuses')
+    .select('items, status, item_statuses, phone_number')
     .eq('id', orderId)
     .maybeSingle();
-  if (!order) return json({ error: 'not unlocked' }, 403);
+  // One generic refusal for unknown orders AND phone mismatches — the
+  // response must not confirm an order id exists.
+  if (!order || !order.phone_number || order.phone_number !== phone.trim()) {
+    return json({ error: 'not unlocked' }, 403);
+  }
 
   interface OrderItemSnapshot {
     product?: { id?: string };

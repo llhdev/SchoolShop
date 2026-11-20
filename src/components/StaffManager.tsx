@@ -128,8 +128,8 @@ export function StaffManager({
         return;
       }
     }
-    if (mode !== 'edit' && staffPasswordInput.length < 6) {
-      setStaffError('Password must be at least 6 characters.');
+    if (mode !== 'edit' && staffPasswordInput.length < 12) {
+      setStaffError('Password must be at least 12 characters.');
       return;
     }
     setStaffSaving(true);
@@ -319,7 +319,7 @@ export function StaffManager({
                   style={styles.editInput}
                   value={staffPasswordInput}
                   onChangeText={setStaffPasswordInput}
-                  placeholder="Min 6 characters"
+                  placeholder="Min 12 characters"
                   placeholderTextColor={colors.textSecondary}
                   secureTextEntry
                   autoCapitalize="none"

@@ -141,15 +141,22 @@ export function getOrderItemsForScope(
   return items.filter((item) => item.branchId == null || item.branchId === branchId);
 }
 
-/** Orders placed by one Telegram shopper, newest first. */
-export async function fetchOrdersByTelegramId(telegramId: number): Promise<Order[]> {
-  return fetchAllOrderPages(() =>
-    supabase
-      .from('orders')
-      .select('*')
-      .eq('telegram_id', telegramId)
-      .order('created_at', { ascending: false })
-  );
+/** Orders placed by one Telegram shopper, newest first. Goes through the
+ *  get_orders_by_telegram_id RPC (migration 062): orders are no longer
+ *  publicly readable, so the caller must present the ordersToken issued by
+ *  telegram-auth. A missing token (shopper cached before 062) returns [] —
+ *  the next telegram-auth refresh repopulates it. */
+export async function fetchOrdersByTelegramId(
+  telegramId: number,
+  ordersToken?: string
+): Promise<Order[]> {
+  if (!ordersToken) return [];
+  const { data, error } = await supabase.rpc('get_orders_by_telegram_id', {
+    p_telegram_id: telegramId,
+    p_token: ordersToken,
+  });
+  if (error) throw error;
+  return ((data ?? []) as unknown as DbOrder[]).map(toOrder);
 }
 
 export async function createOrder(order: Order): Promise<Order> {
@@ -168,12 +175,19 @@ export async function createOrder(order: Order): Promise<Order> {
 }
 
 /** Backfill: stamp a shopper's telegram_id onto an order placed before
- *  initData validation finished (telegram_id is still NULL). No-op if the
- *  order already belongs to someone. */
-export async function attachOrderTelegramId(orderId: string, telegramId: number): Promise<void> {
+ *  initData validation finished (telegram_id is still NULL). Since migration
+ *  062 the RPC also requires the order's phone number — knowing the order id
+ *  alone no longer lets anyone claim an order. No-op if the order already
+ *  belongs to someone or the phone does not match. */
+export async function attachOrderTelegramId(
+  orderId: string,
+  telegramId: number,
+  phone: string
+): Promise<void> {
   const { error } = await supabase.rpc('attach_order_telegram_id', {
     p_order_id: orderId,
     p_telegram_id: telegramId,
+    p_phone: phone,
   });
   if (error) throw error;
 }
@@ -258,32 +272,43 @@ export function subscribeToOrders(onChange: (orders: Order[]) => void, tenantId?
 
 /** Orders by id, newest-first NOT guaranteed (callers re-sort). Used by
  *  guest shoppers, whose history is a device-local cache of the orders they
- *  placed: refetching exactly those ids is what lets their status (admin
- *  changes, auto-payment-verification) update after checkout. Chunked so a
- *  long history stays under the PostgREST request URL limit. */
-export async function fetchOrdersByIds(ids: string[]): Promise<Order[]> {
-  if (ids.length === 0) return [];
-  const CHUNK_SIZE = 200;
+ *  placed: refetching exactly those orders is what lets their status (admin
+ *  changes, auto-payment-verification) update after checkout. Since migration
+ *  062 orders are no longer publicly readable, so each fetch goes through
+ *  get_order_for_shopper and must present the order's phone number — the
+ *  shopper typed it at checkout and the local cache keeps it. Orders whose
+ *  cached phone is empty (placed before phone became required) are skipped:
+ *  the server can never match them. */
+export async function fetchOrdersByIds(
+  refs: { id: string; phone: string }[]
+): Promise<Order[]> {
   const all: Order[] = [];
-  for (let from = 0; from < ids.length; from += CHUNK_SIZE) {
-    const { data, error } = await supabase
-      .from('orders')
-      .select('*')
-      .in('id', ids.slice(from, from + CHUNK_SIZE));
-    if (error) throw error;
-    all.push(...(data ?? []).map((row) => toOrder(row as unknown as DbOrder)));
-  }
+  await Promise.all(
+    refs
+      .filter((ref) => ref.phone.trim().length > 0)
+      .map(async (ref) => {
+        const { data, error } = await supabase.rpc('get_order_for_shopper', {
+          p_order_id: ref.id,
+          p_phone: ref.phone,
+        });
+        if (error) throw error;
+        all.push(...((data ?? []) as unknown as DbOrder[]).map(toOrder));
+      })
+  );
   return all;
 }
 
-/** Realtime for one shopper's orders (Telegram Mini App sessions). */
+/** Realtime for one shopper's orders (Telegram Mini App sessions). Since
+ *  migration 062 anonymous clients no longer receive order row events, so
+ *  this rarely fires; the launch-time fetch is the reliable refresh. */
 export function subscribeToShopperOrders(
   telegramId: number,
+  ordersToken: string | undefined,
   onChange: (orders: Order[]) => void
 ) {
   const refetch = debounce(async () => {
     try {
-      const orders = await fetchOrdersByTelegramId(telegramId);
+      const orders = await fetchOrdersByTelegramId(telegramId, ordersToken);
       onChange(orders);
     } catch {
       // Keep cached data if the refresh fails.
@@ -304,14 +329,15 @@ export function subscribeToShopperOrders(
 }
 
 /** Realtime for a guest shopper: refetch exactly the orders this device
- *  knows about whenever any order row changes. */
+ *  knows about whenever any order row changes. Same realtime caveat as
+ *  subscribeToShopperOrders (062): anonymous order events no longer arrive. */
 export function subscribeToOrdersByIds(
-  ids: string[],
+  refs: { id: string; phone: string }[],
   onChange: (orders: Order[]) => void
 ) {
   const refetch = debounce(async () => {
     try {
-      const orders = await fetchOrdersByIds(ids);
+      const orders = await fetchOrdersByIds(refs);
       onChange(orders);
     } catch {
       // Keep cached data if the refresh fails.

@@ -108,18 +108,20 @@ export interface PurchasedBookFile {
 }
 
 /** Paid-book downloads for a shopper: the edge function returns the files
- *  only when the order item has reached 'paid'. Returns [] while locked. */
+ *  only when the order item has reached 'paid' and the caller presents the
+ *  order's phone number (062). Returns [] while locked. */
 export async function getPurchasedBookFiles(
   orderId: string,
-  productId: string
+  productId: string,
+  phone: string
 ): Promise<PurchasedBookFile[]> {
   const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
   const anonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
-  if (!supabaseUrl || !anonKey) return [];
+  if (!supabaseUrl || !anonKey || !phone.trim()) return [];
   const response = await fetch(`${supabaseUrl}/functions/v1/r2-upload-sign`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', apikey: anonKey },
-    body: JSON.stringify({ action: 'sign-book-get', orderId, productId }),
+    body: JSON.stringify({ action: 'sign-book-get', orderId, productId, phone }),
   });
   const body = (await response.json().catch(() => null)) as
     | { files?: { name: string; url: string; sizeBytes?: number | null }[] }

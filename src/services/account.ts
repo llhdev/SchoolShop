@@ -134,8 +134,8 @@ export async function changePassword(
   currentPassword: string,
   newPassword: string
 ): Promise<void> {
-  if (newPassword.length < 6) {
-    throw new Error('New password must be at least 6 characters.');
+  if (newPassword.length < 12) {
+    throw new Error('New password must be at least 12 characters.');
   }
 
   const {

@@ -261,10 +261,10 @@ export function AdminAccountScreen() {
 
   async function handleChangePassword() {
     setPasswordMessage(null);
-    if (newPassword.length < 6) {
+    if (newPassword.length < 12) {
       setPasswordMessage({
         kind: 'error',
-        text: 'New password must be at least 6 characters.',
+        text: 'New password must be at least 12 characters.',
       });
       return;
     }
@@ -587,7 +587,7 @@ export function AdminAccountScreen() {
               style={styles.input}
               value={newPassword}
               onChangeText={setNewPassword}
-              placeholder="New password (min 6 characters)"
+              placeholder="New password (min 12 characters)"
               placeholderTextColor={colors.textSecondary}
               secureTextEntry
             />

@@ -219,8 +219,8 @@ export async function adminSetTenantPassword(
   id: string,
   newPassword: string
 ): Promise<void> {
-  if (newPassword.length < 6) {
-    throw new Error('Password must be at least 6 characters.');
+  if (newPassword.length < 12) {
+    throw new Error('Password must be at least 12 characters.');
   }
   const { error } = await supabase.rpc('admin_set_tenant_password', {
     tenant_id: id,
@@ -256,8 +256,8 @@ export async function createTenant(
   if (!cleanUsername) {
     throw new Error('Username is required.');
   }
-  if (password.length < 6) {
-    throw new Error('Password must be at least 6 characters.');
+  if (password.length < 12) {
+    throw new Error('Password must be at least 12 characters.');
   }
   if (!cleanShopName) {
     throw new Error('Shop name is required.');
@@ -536,8 +536,8 @@ export async function createStaffAccount(
   }
 ): Promise<StaffAccount> {
   const label = args.label.trim();
-  if (args.password.length < 6) {
-    throw new Error('Password must be at least 6 characters.');
+  if (args.password.length < 12) {
+    throw new Error('Password must be at least 12 characters.');
   }
   if (!args.capabilities.financial && !args.capabilities.shop && !args.capabilities.branch) {
     throw new Error('Turn on at least one capability.');
@@ -650,8 +650,8 @@ export async function setStaffPassword(
   staffId: string,
   newPassword: string
 ): Promise<void> {
-  if (newPassword.length < 6) {
-    throw new Error('Password must be at least 6 characters.');
+  if (newPassword.length < 12) {
+    throw new Error('Password must be at least 12 characters.');
   }
   const { error } = await supabase.rpc('admin_set_tenant_password', {
     tenant_id: staffId,

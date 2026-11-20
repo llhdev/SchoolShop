@@ -197,6 +197,10 @@ export interface Shopper {
   firstName: string;
   lastName?: string;
   username?: string;
+  /** Token for the get_orders_by_telegram_id RPC (migration 062), issued by
+   *  telegram-auth after initData validation. Missing on shoppers cached
+   *  before 062 — the next successful telegram-auth refresh repopulates it. */
+  ordersToken?: string;
 }
 
 /** verify.et verification of one merchant's payment proof (migration 040).

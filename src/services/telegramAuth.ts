@@ -31,6 +31,8 @@ export async function authenticateTelegramShopper(
         last_name: string | null;
         username: string | null;
       };
+      // Order-history token for get_orders_by_telegram_id (migration 062).
+      ordersToken?: string;
     };
     const row = data.shopper;
     if (!row) return null;
@@ -40,6 +42,7 @@ export async function authenticateTelegramShopper(
       firstName: row.first_name,
       lastName: row.last_name ?? undefined,
       username: row.username ?? undefined,
+      ordersToken: data.ordersToken ?? undefined,
     };
   } catch {
     // Offline or unreachable: the caller keeps any cached shopper.

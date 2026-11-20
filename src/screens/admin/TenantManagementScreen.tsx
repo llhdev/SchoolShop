@@ -197,8 +197,8 @@ export function TenantManagementScreen() {
     if (fee !== null && (!Number.isFinite(fee) || fee < 0)) {
       errors.shippingFee = 'Enter a valid shipping fee in Birr (or leave it empty for free delivery).';
     }
-    if (password.length < 6) {
-      errors.password = 'Password must be at least 6 characters.';
+    if (password.length < 12) {
+      errors.password = 'Password must be at least 12 characters.';
     } else if (password !== confirmPassword) {
       errors.confirmPassword = 'Passwords do not match.';
     }
@@ -512,7 +512,7 @@ export function TenantManagementScreen() {
                         setPassword(text);
                         clearFieldError('password');
                       }}
-                      placeholder="Min 6 characters"
+                      placeholder="Min 12 characters"
                       placeholderTextColor={colors.textSecondary}
                       secureTextEntry={!showPassword}
                       autoCapitalize="none"
