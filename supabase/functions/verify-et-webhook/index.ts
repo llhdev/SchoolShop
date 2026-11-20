@@ -1,10 +1,11 @@
 // Receives verify.et webhook callbacks for verifications that were still
 // queued when verify-order-payment finished waiting. Verifies the webhook
 // signature, completes the matching payment_verifications attempt (same
-// shared evaluation as the synchronous path), and notifies the merchant.
+// shared evaluation as the synchronous path), and marks the merchant's
+// Telegram order message verified in place (no separate message).
 //
 // Idempotent: duplicate deliveries find the attempt already final and are
-// acknowledged without re-notifying.
+// acknowledged without re-editing.
 //
 // Required secrets: VERIFY_ET_WEBHOOK_SECRET, TELEGRAM_BOT_TOKEN. Optional:
 // RECEIPT_MAX_AGE_HOURS (default 24).
@@ -14,7 +15,7 @@
 // platform_settings.payment_verification_enabled (migration 042) and the
 // per-tenant profiles.payment_verification_enabled (043). While disabled,
 // webhook deliveries are acknowledged without completing attempts
-// or messaging merchants.
+// or touching the order messages.
 
 import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.112.3';
 import { extractResultItem, parseReceipt } from '../_shared/verifyEvaluation.ts';

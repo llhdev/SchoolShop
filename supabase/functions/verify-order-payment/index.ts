@@ -8,7 +8,8 @@
 // only — masked digits are never sufficient) · exact amount (items + delivery
 // fee) · not previously claimed (atomic claim, only for fully passing
 // payments) · receipt recency. Results land in payment_verifications (one row
-// per attempt, full history) and are sent to the merchant's Telegram group.
+// per attempt, full history) and a verified verdict flips the payment line of
+// the merchant's Telegram order message in place (no separate message).
 //
 // Required secrets: VERIFY_ET_API_KEY, VERIFY_FUNCTION_SECRET,
 // TELEGRAM_BOT_TOKEN (already used by telegram-order-notify). Optional:

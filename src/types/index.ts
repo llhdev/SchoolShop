@@ -180,6 +180,15 @@ export interface Order {
   /** Per-item statuses, keyed by "productId:selectedImageIndex" (migration 022).
    *  Items without an entry fall back to the order-level `status`. */
   itemStatuses?: Record<string, string>;
+  /** Soft-launch verification warning passes, keyed by tenant owner id
+   *  (migration 056): the payment could not be confirmed at checkout, so staff
+   *  should eyeball the proof before marking paid. */
+  paymentWarnings?: Record<string, PaymentWarning>;
+}
+
+export interface PaymentWarning {
+  reason: 'unreadable' | 'not_found' | 'unavailable';
+  detail?: string;
 }
 
 /** A shopper identified via a validated Telegram Mini App session. */

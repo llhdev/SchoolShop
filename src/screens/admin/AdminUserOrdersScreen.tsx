@@ -9,14 +9,15 @@ import { AdminHeader } from '../../components/AdminHeader';
 import { ProductImage } from '../../components/ProductImage';
 import { OrderStatusBadge } from '../../components/OrderStatusBadge';
 import { VerificationBadge } from '../../components/VerificationBadge';
+import { PaymentWarningBadge } from '../../components/PaymentWarningBadge';
 import { useApp } from '../../context/AppContext';
 import { useResponsive } from '../../hooks/useResponsive';
 import { formatPrice } from '../../utils/format';
 import { formatVariantLabel, getUnitPrice } from '../../utils/variants';
-import { getOrderItemsForScope, getOrderItemsForTenant } from '../../services/orders';
+import { getOrderItemsForScope, getOrderItemsForTenant, hasPaymentWarning } from '../../services/orders';
 import { fetchVerificationsForOrders, subscribeToVerifications } from '../../services/paymentVerifications';
 import { getProductCoverImage } from '../../utils/images';
-import { PaymentVerification } from '../../types';
+import { PaymentVerification, PaymentWarning } from '../../types';
 import { RootStackParamList } from '../../types/navigation';
 import { useThemeColors, spacing, borderRadius, fontSizes, pageWidth, ColorPalette } from '../../constants/theme';
 
@@ -80,6 +81,17 @@ export function AdminUserOrdersScreen() {
     verifications.find(
       (v) => v.orderId === orderId && (!scopedTenantId || v.tenantId === scopedTenantId)
     );
+
+  // Unresolved payment-verification warning for this scope (migration 056).
+  // Shown to every staff viewer — branch staff process these orders too, so
+  // unlike the VerificationBadge this is not money-gated.
+  const paymentWarningFor = (order: (typeof orders)[number]): PaymentWarning | undefined => {
+    const warnings = order.paymentWarnings;
+    if (!warnings || !hasPaymentWarning(order, scopedTenantId ?? null)) return undefined;
+    if (scopedTenantId) return warnings[scopedTenantId];
+    const warnedTenantId = Object.keys(warnings).find((id) => hasPaymentWarning(order, id));
+    return warnedTenantId ? warnings[warnedTenantId] : undefined;
+  };
 
   const isWeb = Platform.OS === 'web';
 
@@ -157,6 +169,9 @@ export function AdminUserOrdersScreen() {
                   <OrderStatusBadge status={item.status} />
                   {canSeeMoney && verificationFor(item.id) && (
                     <VerificationBadge status={verificationFor(item.id)!.status} />
+                  )}
+                  {paymentWarningFor(item) && (
+                    <PaymentWarningBadge reason={paymentWarningFor(item)!.reason} />
                   )}
                 </View>
               </TouchableOpacity>

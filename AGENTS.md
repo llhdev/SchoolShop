@@ -44,7 +44,7 @@ Key facts:
 | Local cache | AsyncStorage | `2.2.0` |
 | File storage | Cloudflare R2 | `timor-shop-images` bucket (public, `img.timor.et`) + `timor-shop-proofs` bucket (private, presigned access only) |
 | Styling | RN `StyleSheet` | tokens in `src/constants/theme.ts` |
-| UI helpers | `@expo/vector-icons` (Ionicons), `expo-image-picker`, `expo-image-manipulator`, `@react-native-picker/picker` | icons, admin uploads, category selector |
+| UI helpers | `@expo/vector-icons` (Ionicons), `expo-image-picker`, `expo-image-manipulator` | icons, admin uploads |
 
 ---
 
@@ -58,12 +58,12 @@ Key facts:
 ├── supabase/
 │   ├── functions/
 │   │   ├── telegram-auth/           # validates Telegram initData, upserts shoppers
-│   │   ├── telegram-order-notify/   # sends each order to every shop's Telegram group
+│   │   ├── telegram-order-notify/   # one message per order to each shop's group; verification state rides inline
 │   │   ├── verify-order-payment/    # DB-triggered verify.et check of payment proofs
 │   │   ├── verify-payment-reference/ # pre-order read-only reference check (checkout calls it)
 │   │   ├── r2-upload-sign/          # presigned R2 access: capability-gated PUT/delete + proof GET (052), anon proof PUT/book GET
 │   │   └── verify-et-webhook/       # completes queued verifications (signed, idempotent)
-│   └── migrations/                  # 001–055, in order; header comments document each
+│   └── migrations/                  # 001–058, in order; header comments document each
 ├── docs/
 │   ├── architecture.md              # images + checkout/payment-verification deep-dive
 │   ├── staging-setup.md             # staging env runbook (dev branch → preview → staging Supabase)
@@ -91,14 +91,16 @@ Key facts:
     │                                # AdminStackNavigator, UserTabNavigator
     ├── screens/
     │   ├── admin/                   # AdminDashboard, AdminOrders, AdminAnalysis,
-    │   │                            # AdminUserOrders, AddEditItem, TenantManagement
+    │   │                            # AdminReports, AdminUserOrders, AddEditItem,
+    │   │                            # TenantManagement
     │   └── user/                    # Home, ProductDetail, Cart, Checkout, Orders, OrderDetail
     ├── services/                    # cache, categories, images, orders, products, tenants,
     │                                # paymentVerifications (040), paymentVerificationCheckout (041),
     │                                # settings (042), telegramAuth, telegramOrderNotify, productFiles (044)
     ├── types/                       # index.ts (domain), navigation.ts (param lists)
     └── utils/                       # format, images, storage, validation, variants,
-                                     # checkoutFields, notify (cross-platform toast)
+                                     # checkoutFields, notify (cross-platform toast),
+                                     # reports (AdminReports aggregations)
 ```
 
 ---
@@ -143,7 +145,8 @@ All shared state lives in `src/context/AppContext.tsx`:
 - Mutations are optimistic: reducer → cache → Supabase; failures roll back.
 - Realtime subscriptions refresh state + cache on product/order/category changes (refetches debounced).
 - Orders are admin-only: shoppers never fetch the global order list — their history is orders placed on that device (cached locally). Super admin fetches all; tenant admins fetch orders whose `tenant_ids` include them (018) and see only their line items in mixed orders. Sign-out clears orders from memory and cache.
-- Shopper Analysis (`AdminAnalysisScreen`): tenant-scoped orders, one row per line item (order code, date, phone, Telegram name from the public-read `shoppers` table, student name, product, qty, status, one column per checkout-question label, location last). Revenue card is super-admin-only. Rows open `OrderDetail`; web exports `.xlsx` (`src/utils/exportAnalysis.ts`, SheetJS lazy).
+- Shopper Analysis (`AdminAnalysisScreen`): tenant-scoped orders, one row per line item (order code, date, phone, Telegram name from the public-read `shoppers` table, student name, product, qty, status, one column per checkout-question label, location last). Revenue card is super-admin-only. Rows open `OrderDetail`; web exports `.xlsx` (`src/utils/exportAnalysis.ts`, SheetJS lazy — installed from the SheetJS CDN tarball, not npm; the npm registry version is unmaintained and carries known CVEs).
+- Reports (`AdminReportsScreen`): client-side shop analytics over the same scoped lines (`src/utils/reports.ts` flattens orders once per render) — sales snapshot with previous-period deltas, trend chart, hot sellers, units per product, slow movers, status counts, repeat-customer rate, locations, peak times. Same scoping as Analysis; revenue hidden without the financial capability. Bar charts are plain RN views (no chart dependency).
 - In the Mini App, a validated `shopper` (from `telegram-auth`, cached at `@schoolshop_shopper`) gives server-side order history by `telegram_id` across devices. Skipped while an admin is signed in.
 - The Supabase client persists auth sessions via AsyncStorage, so admin sign-in survives restarts.
 - Derived values (`cartTotal`, `cartCount`) are computed at render time.
@@ -159,7 +162,7 @@ Actions (full list in the reducer): `SET_ROLE`, product/cart/order/category CRUD
 
 The app starts as a shopper. Typing an admin **username** into the home search bar resolves its accounts (045's `get_accounts_by_username`) and opens the login screen.
 
-Tenant admins are created in-app from **Tenant Management**: super admin enters username, password, shop name; the app derives `<username>@tenant.schoolshop.app` and calls `supabase.auth.signUp()` with a secondary in-memory client so the super admin's session survives. The `on_auth_user_created` trigger creates the profile with `role='admin'`. Deletion uses `delete_tenant_user`; migration 026 also deletes the tenant's products.
+Tenant admins are created in-app from **Tenant Management**: super admin enters username, password, shop name; the app derives `<username>@tenant.schoolshop.app` and calls `supabase.auth.signUp()` with a secondary in-memory client so the super admin's session survives. Since 058, the signup trigger always creates `role='user'` (client-controlled metadata must never grant roles) and the app promotes the account via the super-admin-only `admin_promote_to_tenant` RPC. Deletion uses `delete_tenant_user`; migration 026 also deletes the tenant's products.
 
 Within the admin stack:
 - `super_admin`: categories, tenants, all products — never posts items (Add Item hidden/blocked). Orders screen lists tenants; tapping a shop shows its orders grouped by customer phone, scoped to its line items.
@@ -171,7 +174,7 @@ Param lists in `src/types/navigation.ts`. Web has a `linking` config (`product/:
 
 - `Product`: `id`, `name`, `description`, `price`, `compareAtPrice` (optional "original" price for discount display), `category`, `images` (string array), `detailImages` (extra photos under description, 027), `priceHidden` ("price on request", 029 — no price/cart; ordered via the shop's Telegram chat, price 0), `orderCount` (server-maintained, 030 — Popular sort), `coverImageIndex`, `createdAt`, `ownerId`, `shopName` (via `fetch_products_with_shop`), `ownerShopLogoUrl` (023) / `ownerShopDescription` (024) / `ownerTelegramUsername` (025) (same RPC; Store filter), `ownerBankAccounts` (`{ accountNumber, bankName?, qrImageUrl? }[]`, 031), `ownerShippingFee` (flat fee once per order per shop, 031; 0/undefined = free), `variantGroups` (`{ name, affectsPrice, options: { name, price?, imageIndex? }[] }[]`, 035 — exactly one group sets the price; `imageIndex` points into `images`), `checkoutFields` (`{ label, type: 'text'|'dropdown', required, options? }[]`, 036 — tenant-defined checkout questions)
 - `CartItem`: `{ product, quantity, selectedImageIndex, selectedOptions?, unitPrice?, fieldAnswers?, branchId?, branchName? }` — `selectedOptions` is the chosen variant (`{ group, option }[]`), `unitPrice` snapshots the variant price at add-to-cart (cart/order lines keyed by `productId:selectedImageIndex[:variantKey]`, see `utils/variants.ts`), `fieldAnswers` snapshots checkout answers (`{ label, value }[]`, 036), `branchId`/`branchName` snapshot the checkout branch choice (045, server re-validated)
-- `Order`: `id` (short random code like `K7QX-9M2R`; sequential numbers would leak volume), `items` (snapshots stamped server-side with `owner_id`/`shop_name` by `stamp_order_tenants` — SECURITY DEFINER since 054, when it also began forcing `status='pending'` and wiping `item_statuses` on insert so a crafted insert can't skip the staff lifecycle), `total`, `paymentMethod`, `status`, `location` (optional since 034), `phoneNumber`, `studentName` (legacy only — not collected since 036), `createdAt` (server-forced to `now()` on insert, 041), `telegramId`, `tenantIds`, `paymentProofs` (jsonb: tenant owner id → proof URL), `paymentReferences` (jsonb: tenant owner id → verified `{ provider, reference, key }`, 041), `shippingFees` (jsonb: tenant owner id → fee, 031; in `total`), `itemStatuses` (jsonb: line key → per-item status, 022/038; missing entries fall back to `status`)
+- `Order`: `id` (short random code like `K7QX-9M2R`; sequential numbers would leak volume), `items` (snapshots stamped server-side with `owner_id`/`shop_name` by `stamp_order_tenants` — SECURITY DEFINER since 054, when it also began forcing `status='pending'` and wiping `item_statuses` on insert so a crafted insert can't skip the staff lifecycle), `total`, `paymentMethod`, `status`, `location` (optional since 034), `phoneNumber`, `studentName` (legacy only — not collected since 036), `createdAt` (server-forced to `now()` on insert, 041), `telegramId`, `tenantIds`, `paymentProofs` (jsonb: tenant owner id → proof URL), `paymentReferences` (jsonb: tenant owner id → verified `{ provider, reference, key }`, 041; also stamped for warning passes that carry a reference, 056), `shippingFees` (jsonb: tenant owner id → fee, 031; in `total`), `itemStatuses` (jsonb: line key → per-item status, 022/038; missing entries fall back to `status`), `paymentWarnings` (jsonb: tenant owner id → `{ reason: 'unreadable'|'not_found'|'unavailable', detail? }`, 056 — checkout placed the order although verification couldn't confirm the payment; tag shows while the tenant still has pending/received items, and the admin orders screen has a finance-only "Needs review" filter for them), `telegram_notifications` (jsonb column, server-only — tenant owner id → `{ chat_id, message_id, kind, text }`, 057: locator + exact text of the caption-bearing Telegram order message so a late verification can edit it in place; not mapped client-side)
 - `Shopper`: `telegramId`, `firstName`, optional `lastName`/`username` (validated via `telegram-auth`)
 - `ProductFile` (table `product_files`, 044): downloadable PDFs attached to a product post, stored in the public R2 bucket under `books/`. Price-0 posts = free downloads (anon-readable via RLS, listed on ProductDetail; no cart/checkout — `addToCart` ignores price-0 products). Priced posts = paid: files are hidden from anon clients and revealed by the anonymous `sign-book-get` action of `r2-upload-sign` only when the buyer's order item reached `paid`; the shopper's OrderDetail then shows download buttons. Uploaded from AddEditItem's "Digital books (PDF)" section (web: `pickPdfWeb`; native: `expo-document-picker`), bytes PUT straight to R2 via the `sign` action.
 - `Category`: arbitrary string; defaults `School Uniform`, `Stationery`, `Books`, `Sports`, `Electronics`, `Accessories`

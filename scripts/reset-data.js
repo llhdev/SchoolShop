@@ -8,10 +8,22 @@ if (!url || !key) {
   process.exit(1);
 }
 
+// Destructive: deletes ALL orders, products and categories using only the
+// anon key. Require an explicit confirmation that names the target project
+// ref so this can't be run against production by accident.
+const projectRef = new URL(url).hostname.split('.')[0];
+if (process.env.CONFIRM_RESET !== projectRef) {
+  console.error(
+    `Refusing to reset "${projectRef}".\n` +
+      `Re-run with CONFIRM_RESET=${projectRef} to confirm you really mean this target.`
+  );
+  process.exit(1);
+}
+
 const supabase = createClient(url, key);
 
 async function run() {
-  console.log('Resetting Supabase data...\n');
+  console.log(`Resetting Supabase data on ${projectRef}...\n`);
 
   const { error: deleteOrdersError } = await supabase.from('orders').delete().neq('id', '');
   if (deleteOrdersError) throw deleteOrdersError;

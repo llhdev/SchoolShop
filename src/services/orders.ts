@@ -1,6 +1,6 @@
 import { supabase } from '../lib/supabase';
 import { debounce } from '../lib/debounce';
-import { CartItem, Order, OrderStatus } from '../types';
+import { CartItem, Order, OrderStatus, PaymentWarning } from '../types';
 import { generateOrderCode } from '../utils/orderCode';
 import { getCartItemLineId } from '../utils/variants';
 import { CACHE_KEYS, getCached, setCached } from './cache';
@@ -23,6 +23,7 @@ interface DbOrder {
   payment_references: Record<string, { provider: 'cbe' | 'telebirr'; reference: string; key: string }> | null;
   shipping_fees: Record<string, number> | null;
   item_statuses: Record<string, string> | null;
+  payment_warnings: Record<string, PaymentWarning> | null;
 }
 
 function toOrder(db: DbOrder): Order {
@@ -42,6 +43,7 @@ function toOrder(db: DbOrder): Order {
     paymentReferences: db.payment_references ?? undefined,
     shippingFees: db.shipping_fees ?? undefined,
     itemStatuses: db.item_statuses ?? undefined,
+    paymentWarnings: db.payment_warnings ?? undefined,
   };
 }
 
@@ -62,6 +64,7 @@ function toDbOrder(order: Order): DbOrder {
     payment_references: order.paymentReferences ?? {},
     shipping_fees: order.shippingFees ?? {},
     item_statuses: order.itemStatuses ?? {},
+    payment_warnings: order.paymentWarnings ?? {},
   };
 }
 
@@ -190,6 +193,30 @@ export function getItemStatus(order: Order, item: CartItem): OrderStatus {
   return (order.itemStatuses?.[getItemKey(item)] ?? order.status) as OrderStatus;
 }
 
+/** True while an order carries an unresolved payment-verification warning for
+ *  a tenant (migration 056 soft-launch): the warning exists and the tenant
+ *  still has items awaiting payment. The tag hides itself once every warned
+ *  item leaves pending/received — auto-payed verifications and manual
+ *  mark-paid both clear it without any extra writes. Pass null as tenantId
+ *  (super admin) to match any tenant's warning. */
+export function hasPaymentWarning(order: Order, tenantId: string | null): boolean {
+  const warnings = order.paymentWarnings;
+  if (!warnings) return false;
+  const tenantIds = tenantId
+    ? warnings[tenantId]
+      ? [tenantId]
+      : []
+    : Object.keys(warnings);
+  if (tenantIds.length === 0) return false;
+  return order.items.some((item) => {
+    const product = item.product as { owner_id?: string; ownerId?: string } | null | undefined;
+    const owner = product?.owner_id ?? product?.ownerId;
+    if (!owner || !tenantIds.includes(owner)) return false;
+    const status = getItemStatus(order, item);
+    return status === 'pending' || status === 'received';
+  });
+}
+
 /** Set the status of a single line item. Enforced server-side: super admin or
  *  the tenant that owns the item (migration 022 RPC). */
 export async function updateOrderItemStatus(
@@ -229,6 +256,26 @@ export function subscribeToOrders(onChange: (orders: Order[]) => void, tenantId?
   };
 }
 
+/** Orders by id, newest-first NOT guaranteed (callers re-sort). Used by
+ *  guest shoppers, whose history is a device-local cache of the orders they
+ *  placed: refetching exactly those ids is what lets their status (admin
+ *  changes, auto-payment-verification) update after checkout. Chunked so a
+ *  long history stays under the PostgREST request URL limit. */
+export async function fetchOrdersByIds(ids: string[]): Promise<Order[]> {
+  if (ids.length === 0) return [];
+  const CHUNK_SIZE = 200;
+  const all: Order[] = [];
+  for (let from = 0; from < ids.length; from += CHUNK_SIZE) {
+    const { data, error } = await supabase
+      .from('orders')
+      .select('*')
+      .in('id', ids.slice(from, from + CHUNK_SIZE));
+    if (error) throw error;
+    all.push(...(data ?? []).map((row) => toOrder(row as unknown as DbOrder)));
+  }
+  return all;
+}
+
 /** Realtime for one shopper's orders (Telegram Mini App sessions). */
 export function subscribeToShopperOrders(
   telegramId: number,
@@ -245,6 +292,34 @@ export function subscribeToShopperOrders(
 
   const subscription = supabase
     .channel(`orders_shopper_${telegramId}`)
+    .on(
+      'postgres_changes',
+      { event: '*', schema: 'public', table: 'orders' },
+      () => refetch()
+    )
+    .subscribe();
+  return () => {
+    supabase.removeChannel(subscription);
+  };
+}
+
+/** Realtime for a guest shopper: refetch exactly the orders this device
+ *  knows about whenever any order row changes. */
+export function subscribeToOrdersByIds(
+  ids: string[],
+  onChange: (orders: Order[]) => void
+) {
+  const refetch = debounce(async () => {
+    try {
+      const orders = await fetchOrdersByIds(ids);
+      onChange(orders);
+    } catch {
+      // Keep cached data if the refresh fails.
+    }
+  }, REFETCH_DEBOUNCE_MS);
+
+  const subscription = supabase
+    .channel('orders_guest')
     .on(
       'postgres_changes',
       { event: '*', schema: 'public', table: 'orders' },

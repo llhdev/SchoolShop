@@ -9,18 +9,19 @@ import { EmptyState } from '../../components/EmptyState';
 import { AdminHeader } from '../../components/AdminHeader';
 import { Chip } from '../../components/Chip';
 import { StatCard } from '../../components/StatCard';
+import { PaymentWarningBadge } from '../../components/PaymentWarningBadge';
 import { useApp } from '../../context/AppContext';
 import { useResponsive } from '../../hooks/useResponsive';
 import { formatPrice } from '../../utils/format';
 import { getUnitPrice } from '../../utils/variants';
-import { getOrderItemsForScope, getOrderItemsForTenant } from '../../services/orders';
+import { getOrderItemsForScope, getOrderItemsForTenant, hasPaymentWarning } from '../../services/orders';
 import { fetchTenants, Tenant } from '../../services/tenants';
-import { AdminStackParamList } from '../../types/navigation';
-import { Order, OrderStatus } from '../../types';
+import { AdminStackParamList, RootStackParamList } from '../../types/navigation';
+import { Order, OrderStatus, PaymentWarning } from '../../types';
 import { ALL_ORDER_STATUSES, ORDER_STATUSES, ORDER_STATUS_LABELS } from '../../constants/orderStatus';
 import { useThemeColors, spacing, borderRadius, fontSizes, pageWidth, ColorPalette } from '../../constants/theme';
 
-type StatusFilter = OrderStatus | 'all';
+type StatusFilter = OrderStatus | 'all' | 'needs_review';
 
 interface UserOrderGroup {
   phoneNumber: string;
@@ -37,7 +38,7 @@ const FILTERS: { key: StatusFilter; label: string }[] = [
 ];
 
 export function AdminOrdersScreen() {
-  const navigation = useNavigation<NativeStackNavigationProp<AdminStackParamList>>();
+  const navigation = useNavigation<NativeStackNavigationProp<AdminStackParamList & RootStackParamList>>();
   const { orders, role, staffSession, effectiveTenantId } = useApp();
   const { isPhone } = useResponsive();
   const colors = useThemeColors();
@@ -129,6 +130,25 @@ export function AdminOrdersScreen() {
     statusFilter === 'all'
       ? visibleOrders
       : visibleOrders.filter((order) => order.status === statusFilter);
+
+  // "Needs review" (finance-only filter): flat list of orders whose payment
+  // could not be confirmed automatically (migration 056) and still have items
+  // awaiting payment for this scope.
+  const needsReviewOrders = useMemo(
+    () => visibleOrders.filter((order) => hasPaymentWarning(order, activeTenantId ?? null)),
+    [visibleOrders, activeTenantId]
+  );
+
+  /** Tenants with an active payment warning on this order, within the current
+   *  scope (the picked shop for staff / scoped super admin, every tenant
+   *  otherwise). Used to render one warning badge per warned tenant. */
+  const warnedTenantsOf = (order: Order): { tenantId: string; warning: PaymentWarning }[] => {
+    const warnings = order.paymentWarnings ?? {};
+    const ids = activeTenantId ? [activeTenantId] : Object.keys(warnings);
+    return ids
+      .filter((id) => warnings[id] && hasPaymentWarning(order, id))
+      .map((id) => ({ tenantId: id, warning: warnings[id] }));
+  };
 
   const grouped = filteredOrders.reduce<Record<string, UserOrderGroup>>((acc, order) => {
     const phoneNumber = order.phoneNumber?.trim() || 'No phone number';
@@ -276,9 +296,65 @@ export function AdminOrdersScreen() {
               onPress={() => setStatusFilter(filter.key)}
             />
           ))}
+          {canSeeMoney && (
+            <Chip
+              label="Needs review"
+              active={statusFilter === 'needs_review'}
+              onPress={() => setStatusFilter('needs_review')}
+            />
+          )}
         </View>
 
-        {userGroups.length === 0 ? (
+        {statusFilter === 'needs_review' ? (
+          needsReviewOrders.length === 0 ? (
+            <EmptyState message="No payments waiting for review." icon="receipt-outline" />
+          ) : (
+          <FlatList
+            data={needsReviewOrders}
+            keyExtractor={(item) => item.id}
+            renderItem={({ item }) => {
+              const scopeItems = itemsOf(item);
+              const scopeTotal = scopeItems.reduce(
+                (sum, orderItem) => sum + getUnitPrice(orderItem) * orderItem.quantity,
+                0
+              );
+              return (
+                <TouchableOpacity
+                  style={styles.card}
+                  onPress={() => navigation.navigate('OrderDetail', { orderId: item.id })}
+                >
+                  <View style={styles.cardHeader}>
+                    <Text style={styles.phoneNumber} numberOfLines={1}>
+                      {item.phoneNumber?.trim() || 'No phone number'}
+                    </Text>
+                    <Text style={styles.orderNumber} numberOfLines={1}>
+                      #{item.id}
+                    </Text>
+                  </View>
+
+                  <View style={styles.badgeRow}>
+                    {warnedTenantsOf(item).map(({ tenantId, warning }) => (
+                      <PaymentWarningBadge key={tenantId} reason={warning.reason} />
+                    ))}
+                  </View>
+
+                  <View style={styles.cardFooter}>
+                    {canSeeMoney ? (
+                      <Text style={styles.total}>{formatPrice(scopeTotal)}</Text>
+                    ) : (
+                      <View />
+                    )}
+                    <Text style={styles.date}>
+                      {scopeItems.length} item{scopeItems.length === 1 ? '' : 's'} ·{' '}
+                      {new Date(item.createdAt).toLocaleDateString()}
+                    </Text>
+                  </View>
+                </TouchableOpacity>
+              );
+            }}
+          />
+          )
+        ) : userGroups.length === 0 ? (
           <EmptyState
             message={`No ${FILTERS.find((f) => f.key === statusFilter)?.label.toLowerCase() ?? ''} orders.`}
             icon="receipt-outline"
@@ -287,7 +363,18 @@ export function AdminOrdersScreen() {
         <FlatList
           data={userGroups}
           keyExtractor={(item) => item.phoneNumber}
-          renderItem={({ item }) => (
+          renderItem={({ item }) => {
+            // Surface unresolved payment warnings on the group card (one badge
+            // per distinct reason across the group's warned orders) so branch
+            // staff spot them too — no money gating here.
+            const warningReasons = [
+              ...new Set(
+                item.orders.flatMap((o) =>
+                  warnedTenantsOf(o).map(({ warning }) => warning.reason)
+                )
+              ),
+            ];
+            return (
             <TouchableOpacity
               style={styles.card}
               onPress={() =>
@@ -305,6 +392,14 @@ export function AdminOrdersScreen() {
                   #{item.latestOrderId}
                 </Text>
               </View>
+
+              {warningReasons.length > 0 && (
+                <View style={styles.badgeRow}>
+                  {warningReasons.map((reason) => (
+                    <PaymentWarningBadge key={reason} reason={reason} />
+                  ))}
+                </View>
+              )}
 
               <View style={styles.cardFooter}>
                 {canSeeMoney ? (
@@ -324,7 +419,8 @@ export function AdminOrdersScreen() {
                   </Text>
                 )}
             </TouchableOpacity>
-          )}
+            );
+          }}
         />
         )}
       </View>
@@ -441,6 +537,12 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
+    marginBottom: spacing.sm,
+  },
+  badgeRow: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.xs,
     marginBottom: spacing.sm,
   },
   phoneNumber: {

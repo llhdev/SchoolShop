@@ -78,7 +78,7 @@ export function AdminLoginScreen() {
         setLockRemaining(lockoutSeconds);
         setError(null);
       } else {
-        setError(`Incorrect password — ${maxAttempts - nextAttempts} attempts remaining.`);
+        setError('Invalid credentials. Please try again.');
       }
 
       setPassword('');

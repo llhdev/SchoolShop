@@ -36,6 +36,10 @@ export function notifyTelegramOrder(
       created_at: order.createdAt,
       payment_proofs: order.paymentProofs ?? {},
       shipping_fees: order.shippingFees ?? {},
+      // Verification state rides inline in the per-shop Telegram message:
+      // verified shops carry a reference, warning passes carry a warning.
+      payment_references: order.paymentReferences ?? {},
+      payment_warnings: order.paymentWarnings ?? {},
       telegram_user: telegramUser
         ? {
             first_name: telegramUser.firstName,

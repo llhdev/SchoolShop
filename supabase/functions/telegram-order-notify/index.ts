@@ -6,6 +6,24 @@
 // Called by the client right after a successful order insert (fire-and-forget)
 // — the bot token stays server-side.
 //
+// SECURITY: the HTTP body is trusted ONLY as a carrier for the order id
+// (`id`, or `order_id`). The full order is re-read from the orders table
+// with the service role before anything is sent — the row is trustworthy
+// (stamp_order_tenants stamps item owner_id/shop_name and forces status
+// server-side, migration 054; created_at is forced by 041) — so a forged
+// payload cannot inject fake order messages: an id matching no order gets
+// a 404, and an id matching a real order sends exactly what the row says.
+// This makes the public-key auth gate below harmless: anyone holding the
+// shipped anon/publishable key can only trigger a re-send of a real order's
+// own summary.
+//
+// Payment-verification state rides INLINE in the per-shop summary: a warning
+// line when checkout could not confirm the payment (payment_warnings, 056), a
+// verified line when a reference was already confirmed (payment_references,
+// 041). The caption-bearing message id + text are persisted to
+// orders.telegram_notifications (057) so a verification completing AFTER the
+// message was sent can edit the same message in place — never a second one.
+//
 // Required secrets (Supabase Dashboard > Edge Functions > Secrets):
 //   TELEGRAM_BOT_TOKEN — from @BotFather (already set for telegram-auth)
 //   PUBLISHABLE_KEY    — the project's sb_publishable_… API key; accepted by
@@ -87,6 +105,12 @@ interface OrderPayload {
   /** Per-shop shipping fees charged at checkout, keyed by tenant owner id
    *  (migration 031). Added once to the tenant's slice total. */
   shipping_fees?: Record<string, number>;
+  /** Verified payment references, keyed by tenant owner id (migration 041;
+   *  warning passes also stamp one, 056). Renders the ✅ line inline. */
+  payment_references?: Record<string, { provider: string; reference: string; key: string }>;
+  /** Unconfirmed-payment warnings, keyed by tenant owner id (migration 056).
+   *  Renders the ⚠️ line inline; takes precedence over the ✅ line. */
+  payment_warnings?: Record<string, { reason: string; detail?: string }>;
   telegram_user?: { first_name?: string; last_name?: string; username?: string };
 }
 
@@ -164,6 +188,7 @@ function sliceTotal(items: OrderItem[]): number {
 
 function buildSummary(
   order: OrderPayload,
+  ownerId: string,
   shopName: string,
   items: OrderItem[],
   shippingFee: number
@@ -186,6 +211,16 @@ function buildSummary(
   if (order.phone_number) lines.push(`📞 ${escapeHtml(order.phone_number)}`);
   if (order.location) lines.push(`📍 ${escapeHtml(order.location)}`);
   lines.push('💳 Bank Transfer');
+  // Payment-verification state rides inline, per shop (056/057): the warning
+  // line wins when checkout could not confirm the payment; a verified
+  // reference without a warning shows the ✅ line. The ⚠️ text must stay
+  // exactly this — verifyWorkflow matches it when editing the message after
+  // a late verification completes.
+  if (order.payment_warnings?.[ownerId]) {
+    lines.push('⚠️ Payment unconfirmed — check proof');
+  } else if (order.payment_references?.[ownerId]) {
+    lines.push('✅ Payment Verified');
+  }
   if (order.telegram_id) {
     const tg = order.telegram_user;
     const name = tg ? [tg.first_name, tg.last_name].filter(Boolean).join(' ') : '';
@@ -227,6 +262,36 @@ interface SendResult {
   /** Non-fatal problem (e.g. images dropped, text summary still delivered).
    *  Surfaced on the notified entry so degraded deliveries are visible. */
   warning?: string;
+  /** Telegram's parsed `result` payload on success (a Message object, or an
+   *  array of Messages for sendMediaGroup) — lets the send ladder capture the
+   *  caption-bearing message id instead of discarding the success body. */
+  result?: unknown;
+  /** Message id of the message carrying the order summary (caption or text),
+   *  persisted to orders.telegram_notifications for in-place edits (057). */
+  captionMessageId?: number;
+  /** Chat the summary was delivered to (post-supergroup-migration). */
+  chatId?: number;
+  /** Which send path delivered the summary — picks editMessageCaption vs
+   *  editMessageText later. */
+  captionKind?: 'photo' | 'album' | 'document' | 'text';
+  /** Exact caption/message text sent — stored so the late-verification edit
+   *  can reconstruct the new text (the Bot API cannot read a caption back). */
+  captionText?: string;
+}
+
+/** Extract message id + chat id from a Telegram `result` payload: a Message
+ *  for single-message sends, an array of Messages for sendMediaGroup (the
+ *  caption rides on the first item). */
+function messageMeta(result: unknown): { messageId?: number; chatId?: number } {
+  const message = Array.isArray(result) ? result[0] : result;
+  if (message && typeof message === 'object') {
+    const m = message as { message_id?: unknown; chat?: { id?: unknown } };
+    return {
+      messageId: typeof m.message_id === 'number' ? m.message_id : undefined,
+      chatId: typeof m.chat?.id === 'number' ? m.chat.id : undefined,
+    };
+  }
+  return {};
 }
 
 /** Proofs live in the PRIVATE R2 bucket (bare object paths on
@@ -266,7 +331,12 @@ async function sendTelegram(method: string, payload: unknown): Promise<SendResul
       console.error(`telegram ${method} failed:`, res.status, body);
       return { ok: false, error: `${method} ${res.status}: ${body.slice(0, 300)}` };
     }
-    return { ok: true };
+    // Keep the parsed result payload (Message / Message[]) — the caller
+    // captures the caption-bearing message id from it.
+    const body = await res.json().catch(() => null);
+    const result =
+      body && typeof body === 'object' ? (body as { result?: unknown }).result : undefined;
+    return { ok: true, result };
   } catch (error) {
     console.error(`telegram ${method} error:`, error);
     return { ok: false, error: `${method} threw: ${String(error)}` };
@@ -295,7 +365,10 @@ async function sendTelegramMultipart(
       console.error(`telegram ${method} (multipart) failed:`, res.status, body);
       return { ok: false, error: `${method} ${res.status}: ${body.slice(0, 300)}` };
     }
-    return { ok: true };
+    const body = await res.json().catch(() => null);
+    const result =
+      body && typeof body === 'object' ? (body as { result?: unknown }).result : undefined;
+    return { ok: true, result };
   } catch (error) {
     console.error(`telegram ${method} (multipart) error:`, error);
     return { ok: false, error: `${method} threw: ${String(error)}` };
@@ -380,7 +453,7 @@ async function sendToTenant(
   items: OrderItem[]
 ): Promise<SendResult> {
   const shippingFee = order.shipping_fees?.[target.ownerId] ?? 0;
-  const summary = buildSummary(order, target.shopName, items, shippingFee);
+  const summary = buildSummary(order, target.ownerId, target.shopName, items, shippingFee);
 
   // Cover image of each line item, deduped. One album slot is reserved for
   // the payment proof below, so the cap is applied to item photos only.
@@ -458,6 +531,26 @@ async function sendToTenant(
 
   const errors: string[] = [];
   let summaryDelivered = false;
+  // Locator for the caption-bearing message, persisted to
+  // orders.telegram_notifications so a late payment verification can edit
+  // THIS message in place (057).
+  let captionMessageId: number | undefined;
+  let captionChatId: number | undefined;
+  let captionKind: 'photo' | 'album' | 'document' | 'text' | undefined;
+
+  const fallbackChatId = (): number | undefined => {
+    const parsed = Number(target.chatId);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  };
+  const captureCaption = (
+    sent: SendResult,
+    kind: 'photo' | 'album' | 'document' | 'text'
+  ): void => {
+    const meta = messageMeta(sent.result);
+    captionMessageId = meta.messageId;
+    captionChatId = meta.chatId ?? fallbackChatId();
+    captionKind = kind;
+  };
 
   // 1) Photo message: a lone photo goes through sendPhoto (albums require
   //    2-10 items), otherwise a media-group album.
@@ -465,17 +558,20 @@ async function sendToTenant(
     const single = await sendPhotoItem(target.chatId, media[0], proofAsPhoto ? proofAttach : null);
     if (single.ok) {
       summaryDelivered = true;
+      captureCaption(single, 'photo');
     } else {
       errors.push(single.error ?? 'sendPhoto failed');
     }
   } else if (media.length > 1) {
     let album = await sendAlbumItems(target.chatId, media, proofAsPhoto ? proofAttach : null);
+    let albumKind: 'album' | 'photo' = 'album';
     if (!album.ok && proofAsPhoto && (album.error ?? '').includes('IMAGE_PROCESS_FAILED')) {
       // The sniffed JPEG/PNG still failed to process (corrupt/odd encoding)
       // and poisoned the album — retry photos only, proof becomes a document.
       errors.push(album.error ?? 'sendMediaGroup failed');
       proofAsDocument = true;
       const photosOnly = media.filter((m) => !m.media.startsWith('attach://'));
+      albumKind = photosOnly.length === 1 ? 'photo' : 'album';
       album =
         photosOnly.length === 1
           ? await sendPhotoItem(target.chatId, photosOnly[0], null)
@@ -483,6 +579,7 @@ async function sendToTenant(
     }
     if (album.ok) {
       summaryDelivered = true;
+      captureCaption(album, albumKind);
     } else {
       errors.push(album.error ?? 'sendMediaGroup failed');
     }
@@ -490,13 +587,17 @@ async function sendToTenant(
 
   // 2) Proof as a downloadable document when it couldn't ride as a photo.
   if (proofAsDocument && proofAttach) {
+    const summaryAlreadySent = summaryDelivered;
     const doc = await sendProofDocument(
       target.chatId,
       proofAttach,
-      summaryDelivered ? '🧾 Payment proof' : summary
+      summaryAlreadySent ? '🧾 Payment proof' : summary
     );
     if (doc.ok) {
       summaryDelivered = true;
+      // Only capture when the document carries the SUMMARY caption; the
+      // '🧾 Payment proof' companion caption is not the order message.
+      if (!summaryAlreadySent) captureCaption(doc, 'document');
     } else {
       errors.push(doc.error ?? 'sendDocument failed');
     }
@@ -514,15 +615,24 @@ async function sendToTenant(
     });
     if (text.ok) {
       summaryDelivered = true;
+      captureCaption(text, 'text');
     } else {
       errors.push(text.error ?? 'sendMessage failed');
     }
   }
 
   if (summaryDelivered) {
-    return errors.length > 0
-      ? { ok: true, warning: `degraded delivery (${errors.join(' | ')})` }
-      : { ok: true };
+    const delivered: SendResult =
+      errors.length > 0
+        ? { ok: true, warning: `degraded delivery (${errors.join(' | ')})` }
+        : { ok: true };
+    if (captionMessageId !== undefined && captionKind !== undefined) {
+      delivered.captionMessageId = captionMessageId;
+      delivered.captionKind = captionKind;
+      delivered.captionText = summary;
+      if (captionChatId !== undefined) delivered.chatId = captionChatId;
+    }
+    return delivered;
   }
   return { ok: false, error: errors.join(' | ') };
 }
@@ -538,7 +648,9 @@ Deno.serve(async (req) => {
   // Light auth gate: caller must present a recognized public key (keeps random
   // internet traffic from borrowing our bot to spam chats). Accepts both the
   // legacy anon JWT and the new sb_publishable_ key so old and new client
-  // builds keep working.
+  // builds keep working. Both keys ship in the web bundle, so this is NOT
+  // the security boundary — that is the DB re-read below: only the order id
+  // is taken from the request and everything else comes from the orders row.
   const auth = req.headers.get('authorization') ?? '';
   const allowed = [ANON_KEY, PUBLISHABLE_KEY]
     .filter(Boolean)
@@ -547,11 +659,18 @@ Deno.serve(async (req) => {
     return json({ error: 'Unauthorized' }, 401);
   }
 
-  let order: OrderPayload;
+  // The body is trusted ONLY as a carrier for the order id: `id` (current
+  // clients) or `order_id` (future). Every other field is ignored — the
+  // order is re-read from the DB below.
+  let orderId: unknown;
   try {
-    order = (await req.json()) as OrderPayload;
+    const body = (await req.json()) as { id?: unknown; order_id?: unknown } | null;
+    orderId = typeof body?.id === 'string' ? body.id : body?.order_id;
   } catch {
     return json({ error: 'Invalid JSON body' }, 400);
+  }
+  if (typeof orderId !== 'string' || orderId.length === 0) {
+    return json({ error: 'order id required' }, 400);
   }
 
   if (!BOT_TOKEN) {
@@ -561,6 +680,66 @@ Deno.serve(async (req) => {
   if (!SUPABASE_URL || !SERVICE_ROLE_KEY) {
     console.error('SUPABASE_URL / SUPABASE_SERVICE_ROLE_KEY not available');
     return json({ notified: [], skipped: [], reason: 'supabase not configured' });
+  }
+
+  // Service role: reads orders, profiles.telegram_chat_id and shoppers
+  // (profiles is not anon-readable), and persists telegram_notifications.
+  const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
+    auth: { persistSession: false, autoRefreshToken: false },
+  });
+
+  // Re-read the order row — this is the ONLY source of truth for what gets
+  // sent. A payload id that matches no row is rejected, which kills forged
+  // "New Order" injection entirely.
+  const { data: row, error: orderError } = await supabase
+    .from('orders')
+    .select(
+      'id, items, total, payment_method, status, location, phone_number, telegram_id, created_at, payment_proofs, shipping_fees, payment_references, payment_warnings'
+    )
+    .eq('id', orderId)
+    .maybeSingle();
+  if (orderError) {
+    console.error('failed to load order:', orderError);
+    return json({ notified: [], skipped: [], reason: 'order lookup failed' }, 500);
+  }
+  if (!row) {
+    return json({ notified: [], skipped: [], reason: 'unknown order' }, 404);
+  }
+
+  const order: OrderPayload = {
+    id: row.id ?? undefined,
+    items: row.items ?? undefined,
+    total: row.total ?? undefined,
+    payment_method: row.payment_method ?? undefined,
+    status: row.status ?? undefined,
+    location: row.location ?? undefined,
+    phone_number: row.phone_number ?? undefined,
+    telegram_id: row.telegram_id ?? undefined,
+    created_at: row.created_at ?? undefined,
+    payment_proofs: row.payment_proofs ?? undefined,
+    shipping_fees: row.shipping_fees ?? undefined,
+    payment_references: row.payment_references ?? undefined,
+    payment_warnings: row.payment_warnings ?? undefined,
+  };
+
+  // The orders row has no shopper name/username — buildSummary's
+  // "✈️ Telegram user" line needs it, so look the shopper up in the public
+  // shoppers table (telegram_id PK) when the order carries a telegram_id.
+  if (order.telegram_id) {
+    const { data: shopper, error: shopperError } = await supabase
+      .from('shoppers')
+      .select('first_name, last_name, username')
+      .eq('telegram_id', order.telegram_id)
+      .maybeSingle();
+    if (shopperError) {
+      console.error('failed to load shopper:', shopperError);
+    } else if (shopper) {
+      order.telegram_user = {
+        first_name: shopper.first_name ?? undefined,
+        last_name: shopper.last_name ?? undefined,
+        username: shopper.username ?? undefined,
+      };
+    }
   }
 
   // Group line items by owning tenant. Items with no resolvable owner
@@ -582,11 +761,8 @@ Deno.serve(async (req) => {
     return json({ notified: [], skipped: [], reason: 'no tenant-owned items' });
   }
 
-  // Resolve group chat ids + shop names. profiles is not anon-readable, so
-  // this uses the service role (server-side only).
-  const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
-    auth: { persistSession: false, autoRefreshToken: false },
-  });
+  // Resolve group chat ids + shop names via the service-role client created
+  // above (profiles is not anon-readable).
   const ownerIds = [...itemsByOwner.keys()];
   const { data: profiles, error: profilesError } = await supabase
     .from('profiles')
@@ -651,6 +827,49 @@ Deno.serve(async (req) => {
         chat_id: effectiveChatId,
         ...(result.warning ? { warning: result.warning } : {}),
       });
+
+      // Persist the caption-bearing message locator so a payment verification
+      // completing AFTER this message was sent can edit it in place (057).
+      // Read-modify-write is safe here: one order is processed by a single
+      // invocation. Failures are logged, never fail the response — the admin
+      // UI badge still carries the verification state.
+      if (
+        order.id &&
+        result.captionMessageId !== undefined &&
+        result.captionKind !== undefined &&
+        result.chatId !== undefined
+      ) {
+        try {
+          const entry = {
+            chat_id: result.chatId,
+            message_id: result.captionMessageId,
+            kind: result.captionKind,
+            text: result.captionText ?? '',
+          };
+          const { data: row, error: readError } = await supabase
+            .from('orders')
+            .select('telegram_notifications')
+            .eq('id', order.id)
+            .single();
+          if (readError) throw readError;
+          const existing =
+            row?.telegram_notifications &&
+            typeof row.telegram_notifications === 'object' &&
+            !Array.isArray(row.telegram_notifications)
+              ? (row.telegram_notifications as Record<string, unknown>)
+              : {};
+          const { error: updateError } = await supabase
+            .from('orders')
+            .update({ telegram_notifications: { ...existing, [ownerId]: entry } })
+            .eq('id', order.id);
+          if (updateError) throw updateError;
+        } catch (error) {
+          console.error(
+            `failed to persist telegram notification for order ${order.id} tenant ${ownerId}:`,
+            error
+          );
+        }
+      }
     } else {
       skipped.push({
         shop: shopName,

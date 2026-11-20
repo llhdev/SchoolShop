@@ -38,6 +38,16 @@ function toHex(buffer: ArrayBuffer): string {
   return [...new Uint8Array(buffer)].map((b) => b.toString(16).padStart(2, '0')).join('');
 }
 
+/** Constant-time comparison for equal-length hex digests. */
+function timingSafeEqualHex(a: string, b: string): boolean {
+  if (a.length !== b.length) return false;
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) {
+    diff |= a.charCodeAt(i) ^ b.charCodeAt(i);
+  }
+  return diff === 0;
+}
+
 /**
  * Telegram initData validation: the `hash` field must equal
  * HMAC-SHA256(data_check_string, secret_key) where
@@ -64,7 +74,16 @@ async function validateInitData(
   const secretKey = await hmacSha256(new TextEncoder().encode('WebAppData'), BOT_TOKEN);
   const signature = await hmacSha256(secretKey, dataCheckString);
 
-  if (toHex(signature) !== hash) return null;
+  if (!timingSafeEqualHex(toHex(signature), hash)) return null;
+
+  // Replay protection: reject captured initData older than 24 hours.
+  // auth_date is part of the signed payload, so it cannot be forged once the
+  // hash checks out.
+  const MAX_AGE_SECONDS = 24 * 60 * 60;
+  const authDate = Number(params.get('auth_date'));
+  if (!Number.isFinite(authDate) || Math.abs(Date.now() / 1000 - authDate) > MAX_AGE_SECONDS) {
+    return null;
+  }
 
   try {
     const user = JSON.parse(userJson) as Record<string, unknown>;

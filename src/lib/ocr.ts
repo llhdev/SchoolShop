@@ -18,6 +18,9 @@ export interface ReceiptParseResult {
 }
 
 export interface ReceiptOcrResult extends ReceiptParseResult {
+  /** False when the OCR text shows no bank brand and no receipt vocabulary —
+   *  the shopper uploaded a random image, not a payment receipt. */
+  receiptLike: boolean;
   rawText: string;
 }
 
@@ -59,6 +62,22 @@ const PROVIDER_LABELS: Record<ReceiptProvider, RegExp> = {
   // "transaction ID" on the in-app success screen.
   cbe: /receipt\s*(?:id|no\.?|number)?|transaction\s*id|reference/gi,
 };
+
+/** Does the OCR text look like a payment receipt at all? True when a bank
+ *  brand shows up (same patterns as detectProvider) or any receipt
+ *  vocabulary appears. A random photo — no brand, no vocabulary — yields
+ *  false so the caller can reject the upload as "not a receipt". */
+export function isReceiptLike(text: string): boolean {
+  if (TELEBIRR_PATTERN.test(text) || CBE_PATTERNS.some((pattern) => pattern.test(text))) {
+    return true;
+  }
+  // PROVIDER_LABELS carry the /g flag for matchAll — reset lastIndex before
+  // test() so a previous match position can't hide a hit.
+  return Object.values(PROVIDER_LABELS).some((label) => {
+    label.lastIndex = 0;
+    return label.test(text);
+  });
+}
 
 /** Whitespace-delimited tokens with OCR punctuation artifacts stripped. */
 function tokensOf(text: string): string[] {
@@ -142,7 +161,11 @@ export async function extractReceiptReference(
   });
   try {
     const { data } = await worker.recognize(dataUri);
-    return { ...parseReceiptText(data.text, providerHint), rawText: data.text };
+    return {
+      ...parseReceiptText(data.text, providerHint),
+      receiptLike: isReceiptLike(data.text),
+      rawText: data.text,
+    };
   } finally {
     await worker.terminate();
   }

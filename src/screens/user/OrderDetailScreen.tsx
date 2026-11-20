@@ -10,8 +10,9 @@ import { AdminHeader } from '../../components/AdminHeader';
 import { TelegramChatButton } from '../../components/TelegramChatButton';
 import { Button } from '../../components/Button';
 import { VerificationBadge } from '../../components/VerificationBadge';
+import { PaymentWarningBadge } from '../../components/PaymentWarningBadge';
 import { useApp } from '../../context/AppContext';
-import { getItemKey, getItemStatus, getOrderItemsForScope } from '../../services/orders';
+import { getItemKey, getItemStatus, getOrderItemsForScope, hasPaymentWarning } from '../../services/orders';
 import {
   approvePaymentVerification,
   fetchVerificationsForOrders,
@@ -25,7 +26,7 @@ import { formatFileSize, formatPrice } from '../../utils/format';
 import { formatVariantLabel, getUnitPrice } from '../../utils/variants';
 import { confirmAction } from '../../utils/confirm';
 import { ORDER_STATUS_LABELS } from '../../constants/orderStatus';
-import { OrderStatus, PaymentVerification } from '../../types';
+import { OrderStatus, PaymentVerification, PaymentWarning } from '../../types';
 import { RootStackParamList } from '../../types/navigation';
 import { OrderStatusBadge } from '../../components/OrderStatusBadge';
 import { useThemeColors, spacing, borderRadius, fontSizes, pageWidth, ColorPalette } from '../../constants/theme';
@@ -95,6 +96,21 @@ export function OrderDetailScreen() {
   // Staff see only their shop's line items inside a mixed order, narrowed to
   // their branch when branch-scoped.
   const isStaffViewer = role === 'admin' && !!effectiveTenantId;
+
+  // Unresolved payment-verification warnings (migration 056): admin viewers
+  // only — shoppers never see them. Staff are scoped to their own shop, the
+  // super admin sees every warned tenant. Unlike the verification section
+  // this is not money-gated: branch staff process these orders too.
+  const warningTenantId = isStaffViewer ? effectiveTenantId : null;
+  const activePaymentWarnings: PaymentWarning[] = (() => {
+    const warnings = order?.paymentWarnings;
+    if (!order || !isAdminViewer || !warnings) return [];
+    if (!hasPaymentWarning(order, warningTenantId)) return [];
+    if (warningTenantId) return warnings[warningTenantId] ? [warnings[warningTenantId]] : [];
+    return Object.keys(warnings)
+      .filter((id) => hasPaymentWarning(order, id))
+      .map((id) => warnings[id]);
+  })();
   const visibleItems =
     order && isStaffViewer
       ? getOrderItemsForScope(
@@ -342,6 +358,19 @@ export function OrderDetailScreen() {
             </View>
             <OrderStatusBadge status={order.status} />
           </View>
+
+          {activePaymentWarnings.length > 0 && (
+            <View style={styles.warningBanner}>
+              <View style={styles.warningBadges}>
+                {activePaymentWarnings.map((warning, index) => (
+                  <PaymentWarningBadge key={index} reason={warning.reason} />
+                ))}
+              </View>
+              <Text style={styles.warningText}>
+                Payment couldn't be confirmed automatically — check the proof before marking paid.
+              </Text>
+            </View>
+          )}
 
           <View style={styles.section}>
             <Text style={styles.sectionTitle}>Items</Text>
@@ -661,6 +690,24 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
     justifyContent: 'space-between',
     alignItems: 'flex-start',
     marginBottom: spacing.lg,
+  },
+  warningBanner: {
+    backgroundColor: colors.warning + '1A',
+    borderRadius: borderRadius.md,
+    borderWidth: 1,
+    borderColor: colors.warning,
+    padding: spacing.md,
+    marginBottom: spacing.lg,
+    gap: spacing.xs,
+  },
+  warningBadges: {
+    flexDirection: 'row',
+    flexWrap: 'wrap',
+    gap: spacing.xs,
+  },
+  warningText: {
+    fontSize: fontSizes.sm,
+    color: colors.text,
   },
   orderCode: {
     fontSize: fontSizes.md,

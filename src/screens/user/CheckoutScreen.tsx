@@ -21,7 +21,7 @@ import { WebHeader } from '../../components/WebHeader';
 import { useApp } from '../../context/AppContext';
 import { useResponsive } from '../../hooks/useResponsive';
 import { RootStackParamList } from '../../types/navigation';
-import { BankAccount, CartItem, Order, Product } from '../../types';
+import { BankAccount, CartItem, Order, PaymentWarning, Product } from '../../types';
 import { useThemeColors, spacing, borderRadius, fontSizes, pageWidth, ColorPalette } from '../../constants/theme';
 import { notify } from '../../utils/notify';
 import { isValidEthiopianPhoneNumber } from '../../utils/validation';
@@ -71,14 +71,17 @@ interface TenantPaymentGroup {
 }
 
 /** Per-shop verification lifecycle: reading = OCR in progress (web);
- *  unverified = waiting for a reference / a Verify tap; the rest mirror the
- *  verify-payment-reference verdicts. */
+ *  unverified = waiting for a reference / a Verify tap; not_receipt = the
+ *  uploaded image shows no receipt at all (OCR found neither a bank brand
+ *  nor receipt vocabulary); the rest mirror the verify-payment-reference
+ *  verdicts. */
 type ShopVerifyState =
   | 'reading'
   | 'unverified'
   | 'verifying'
   | 'verified'
   | 'not_found'
+  | 'not_receipt'
   | 'wrong_recipient'
   | 'wrong_amount'
   | 'already_claimed'
@@ -93,8 +96,33 @@ interface ShopReference {
 }
 
 /** Verdicts that reject the payment outright: the shop stays blocked until
- *  the shopper pays correctly and picks a NEW proof image. */
-const HARD_FAILURES: ShopVerifyState[] = ['wrong_recipient', 'wrong_amount', 'already_claimed'];
+ *  the shopper pays correctly and picks a NEW proof image — except
+ *  not_receipt, which also unblocks by typing the transaction reference and
+ *  passing Verify. not_receipt is client-side (OCR saw no receipt at all);
+ *  the rest come from verify.et. */
+const HARD_FAILURES: ShopVerifyState[] = [
+  'not_receipt',
+  'wrong_recipient',
+  'wrong_amount',
+  'already_claimed',
+];
+
+/** States that hide the manual reference form entirely — the only way out
+ *  is a new proof of a correct payment. not_receipt keeps the form as a
+ *  verified-only escape hatch (type the reference, tap Verify — only a
+ *  'verified' verdict unblocks Place Order from there). */
+const FORM_BLOCKED: ShopVerifyState[] = [
+  'wrong_recipient',
+  'wrong_amount',
+  'already_claimed',
+];
+
+/** Soft-launch warning passes (migration 056): the payment could not be
+ *  confirmed, but the order may still be placed with a warning stamped —
+ *  the shop reviews the proof manually before marking it paid. NOT available
+ *  in the not_receipt escape hatch (verifiedOnly): a rejected image plus an
+ *  unconfirmed reference leaves finance nothing to review. */
+const WARNING_PASSES: ShopVerifyState[] = ['unverified', 'not_found', 'unavailable'];
 
 /** Status chip text per verification state. */
 const VERIFY_CHIP_LABELS: Record<ShopVerifyState, string> = {
@@ -103,6 +131,7 @@ const VERIFY_CHIP_LABELS: Record<ShopVerifyState, string> = {
   verifying: 'Verifying…',
   verified: 'Verified',
   not_found: 'Not found',
+  not_receipt: 'Not a receipt',
   wrong_recipient: 'Wrong recipient',
   wrong_amount: 'Wrong amount',
   already_claimed: 'Already used',
@@ -111,10 +140,13 @@ const VERIFY_CHIP_LABELS: Record<ShopVerifyState, string> = {
 
 export function CheckoutScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
-  const { cart, cartTotal, cartCount, clearCart, addOrder, shopper, products } = useApp();
+  const { cart, cartTotal, cartCount, clearCart, addOrder, shopper, products, theme } = useApp();
   const { isDesktop, isPhone } = useResponsive();
   const colors = useThemeColors();
   const styles = makeStyles(colors);
+  // Toned amber for warning-pass notes — raw colors.warning is unreadable
+  // on the light theme (same convention as PaymentWarningBadge).
+  const warningTextColor = theme === 'dark' ? colors.warning : '#8A6D03';
   const [location, setLocation] = useState('');
   const [landmarkPickerVisible, setLandmarkPickerVisible] = useState(false);
   const [landmarkQuery, setLandmarkQuery] = useState('');
@@ -127,6 +159,10 @@ export function CheckoutScreen() {
    *  same tenant group key as proofsByTenant. */
   const [references, setReferences] = useState<Record<string, ShopReference>>({});
   const [verifyStates, setVerifyStates] = useState<Record<string, ShopVerifyState>>({});
+  /** Groups whose proof was rejected as not-a-receipt: the typed-reference
+   *  escape hatch is verified-only — not_found/unavailable keep blocking
+   *  (no receipt on file for the shop to review). Set/cleared per proof. */
+  const [verifiedOnly, setVerifiedOnly] = useState<Record<string, boolean>>({});
   /** Amount the verifier saw on the receipt, for the wrong-amount message. */
   const [verifyPaidAmounts, setVerifyPaidAmounts] = useState<Record<string, number | null>>({});
   /** Server-provided reason behind the latest verdict, shown under the
@@ -325,6 +361,12 @@ export function CheckoutScreen() {
   const branchMissing = (group: TenantPaymentGroup) =>
     isBranchSelectionVisible(group) && !branchByTenant[group.key];
 
+  // Soft launch (056): a verification-required shop only has to reach
+  // 'verified' OR a warning pass ('unverified' / 'not_found' / 'unavailable')
+  // — inconclusive results place the order with a warning stamped for the
+  // shop to review. 'reading'/'verifying' and HARD_FAILURES still block.
+  // Exception: the not_receipt escape hatch (verifiedOnly) has no receipt on
+  // file to review, so ONLY 'verified' unblocks it.
   const canPlaceOrder =
     cart.length > 0 &&
     phoneValid &&
@@ -334,10 +376,13 @@ export function CheckoutScreen() {
     tenantGroups.length > 0 &&
     tenantGroups.every((group) => !!proofsByTenant[group.key]) &&
     !tenantGroups.some(branchMissing) &&
-    tenantGroups.every(
-      (group) =>
-        !isGroupVerificationRequired(group) || verifyStates[group.key] === 'verified'
-    );
+    tenantGroups.every((group) => {
+      if (!isGroupVerificationRequired(group)) return true;
+      const state = verifyStates[group.key];
+      if (state === 'verified') return true;
+      if (verifiedOnly[group.key]) return false;
+      return !!state && WARNING_PASSES.includes(state);
+    });
 
   // Drop the red validation marks as soon as everything required is filled.
   useEffect(() => {
@@ -442,6 +487,11 @@ export function CheckoutScreen() {
       delete next[groupKey];
       return next;
     });
+    setVerifiedOnly((prev) => {
+      const next = { ...prev };
+      delete next[groupKey];
+      return next;
+    });
   }
 
   /** Reset one shop's verification for a freshly uploaded proof, then read
@@ -470,6 +520,7 @@ export function CheckoutScreen() {
     });
 
     if (Platform.OS !== 'web') {
+      setVerifiedOnly((prev) => ({ ...prev, [groupKey]: false }));
       setVerifyStates((prev) => ({ ...prev, [groupKey]: 'unverified' }));
       return;
     }
@@ -486,12 +537,21 @@ export function CheckoutScreen() {
         };
         setReferences((prev) => ({ ...prev, [groupKey]: next }));
         if (next.provider && next.reference) {
+          setVerifiedOnly((prev) => ({ ...prev, [groupKey]: false }));
           void verifyShop(groupKey, proofRef, next);
+        } else if (!ocr.receiptLike) {
+          // No usable reference AND nothing receipt-like in the image — the
+          // shopper uploaded a random photo, not a payment confirmation. The
+          // typed-reference escape hatch is verified-only from here.
+          setVerifiedOnly((prev) => ({ ...prev, [groupKey]: true }));
+          setVerifyStates((prev) => ({ ...prev, [groupKey]: 'not_receipt' }));
         } else {
+          setVerifiedOnly((prev) => ({ ...prev, [groupKey]: false }));
           setVerifyStates((prev) => ({ ...prev, [groupKey]: 'unverified' }));
         }
       } catch {
         if (verificationKeys.current[groupKey] !== key) return;
+        setVerifiedOnly((prev) => ({ ...prev, [groupKey]: false }));
         setVerifyStates((prev) => ({ ...prev, [groupKey]: 'unverified' }));
       }
     })();
@@ -541,8 +601,10 @@ export function CheckoutScreen() {
       verificationKeys.current[groupKey] = key;
       return { ...prev, [groupKey]: { ...current, reference: text, key } };
     });
+    // not_receipt must NOT soften to 'unverified' here: typing alone never
+    // unblocks it — only a Verify tap (verifyShop) may replace the state.
     setVerifyStates((prev) =>
-      prev[groupKey] && prev[groupKey] !== 'unverified'
+      prev[groupKey] && prev[groupKey] !== 'unverified' && prev[groupKey] !== 'not_receipt'
         ? { ...prev, [groupKey]: 'unverified' }
         : prev
     );
@@ -559,7 +621,7 @@ export function CheckoutScreen() {
       return { ...prev, [groupKey]: { ...current, provider, key } };
     });
     setVerifyStates((prev) =>
-      prev[groupKey] && prev[groupKey] !== 'unverified'
+      prev[groupKey] && prev[groupKey] !== 'unverified' && prev[groupKey] !== 'not_receipt'
         ? { ...prev, [groupKey]: 'unverified' }
         : prev
     );
@@ -598,6 +660,39 @@ export function CheckoutScreen() {
         notify(message, 'info', 'Missing Information');
       }
       return;
+    }
+
+    // Stamp each verification-required shop (056 soft launch). 'verified'
+    // carries its reference — the post-order verification replays the same
+    // key, which verify.et does not bill. A warning pass with a usable
+    // reference ('not_found' / 'unavailable') carries the reference too, so
+    // the order-time replay can auto-upgrade it to verified, plus a warning
+    // for the shop; 'unverified' (no usable reference) carries the warning
+    // alone. Shops whose verification is off (global kill-switch or their own
+    // flag) get neither — verify-order-payment skips them (043).
+    const paymentReferences: Record<
+      string,
+      { provider: 'cbe' | 'telebirr'; reference: string; key: string }
+    > = {};
+    const paymentWarnings: Record<string, PaymentWarning> = {};
+    for (const group of tenantGroups) {
+      if (!isGroupVerificationRequired(group)) continue;
+      const state = verifyStates[group.key];
+      const ref = references[group.key];
+      const reference = ref?.reference.trim() ?? '';
+      if (
+        ref?.provider &&
+        reference.length > 0 &&
+        (state === 'verified' || state === 'not_found' || state === 'unavailable')
+      ) {
+        paymentReferences[group.key] = { provider: ref.provider, reference, key: ref.key };
+      }
+      if (state === 'not_found' || state === 'unavailable') {
+        const detail = verifyDetails[group.key];
+        paymentWarnings[group.key] = { reason: state, ...(detail ? { detail } : {}) };
+      } else if (state === 'unverified') {
+        paymentWarnings[group.key] = { reason: 'unreadable' };
+      }
     }
 
     const order: Order = {
@@ -641,20 +736,8 @@ export function CheckoutScreen() {
       createdAt: new Date().toISOString(),
       telegramId: shopper?.telegramId,
       paymentProofs: proofsByTenant,
-      // Every required group is verified at this point (canPlaceOrder), so
-      // each has a provider + reference. The post-order verification replays
-      // the same key, which verify.et does not bill. Shops whose verification
-      // is off (global kill-switch or their own flag) get no reference — their
-      // slice is skipped by verify-order-payment (043).
-      paymentReferences: Object.fromEntries(
-        tenantGroups.flatMap((group): [string, { provider: 'cbe' | 'telebirr'; reference: string; key: string }][] => {
-          if (!isGroupVerificationRequired(group)) return [];
-          const ref = references[group.key];
-          return ref?.provider
-            ? [[group.key, { provider: ref.provider, reference: ref.reference.trim(), key: ref.key }]]
-            : [];
-        })
-      ),
+      paymentReferences,
+      ...(Object.keys(paymentWarnings).length > 0 ? { paymentWarnings } : {}),
       shippingFees: Object.fromEntries(
         tenantGroups
           .filter((group) => group.shippingFee > 0)
@@ -1054,18 +1137,25 @@ export function CheckoutScreen() {
                   const reference = references[group.key];
                   const verifyState = verifyStates[group.key];
                   const hardFailed = !!verifyState && HARD_FAILURES.includes(verifyState);
+                  const formBlocked = !!verifyState && FORM_BLOCKED.includes(verifyState);
                   const canVerify =
                     !!reference?.provider &&
                     reference.reference.trim().length > 0 &&
                     (verifyState === 'unverified' ||
                       verifyState === 'not_found' ||
+                      verifyState === 'not_receipt' ||
                       verifyState === 'unavailable');
                   const paidAmount = verifyPaidAmounts[group.key];
                   const chip = verifyState ? VERIFY_CHIP_LABELS[verifyState] : undefined;
+                  // In the not_receipt escape hatch a not_found/unavailable
+                  // verdict blocks (verified-only), so it renders red.
+                  const escapeBlocked =
+                    !!verifiedOnly[group.key] &&
+                    (verifyState === 'not_found' || verifyState === 'unavailable');
                   const chipColor =
                     verifyState === 'verified'
                       ? colors.success
-                      : hardFailed
+                      : hardFailed || escapeBlocked
                         ? colors.danger
                         : colors.textSecondary;
                   return (
@@ -1179,9 +1269,23 @@ export function CheckoutScreen() {
                                   the reference manually.
                                 </Text>
                               )}
-                              {verifyState === 'not_found' && (
+                              {verifyState === 'not_found' &&
+                                (verifiedOnly[group.key] ? (
+                                  <Text style={styles.verifyError}>
+                                    We couldn't confirm this reference. Check it and tap Verify
+                                    payment again, or upload the receipt image.
+                                  </Text>
+                                ) : (
+                                  <Text style={[styles.verifyWarning, { color: warningTextColor }]}>
+                                    We couldn't confirm this payment. You can place your order and
+                                    the shop will check your receipt.
+                                  </Text>
+                                ))}
+                              {verifyState === 'not_receipt' && (
                                 <Text style={styles.verifyError}>
-                                  We couldn't find this transaction — check the reference and retry.
+                                  This doesn't look like a payment receipt. Upload the
+                                  screenshot/photo of your payment confirmation, or type the
+                                  transaction reference below and tap Verify payment.
                                 </Text>
                               )}
                               {verifyState === 'wrong_recipient' && (
@@ -1202,19 +1306,26 @@ export function CheckoutScreen() {
                                   This transaction was already used for another order.
                                 </Text>
                               )}
-                              {verifyState === 'unavailable' && (
-                                <Text style={styles.verifyHint}>
-                                  Verification service is temporarily unavailable — please try again
-                                  in a moment.
-                                </Text>
-                              )}
+                              {verifyState === 'unavailable' &&
+                                (verifiedOnly[group.key] ? (
+                                  <Text style={styles.verifyError}>
+                                    We couldn't confirm this reference right now. Tap Verify
+                                    payment to try again, or upload the receipt image.
+                                  </Text>
+                                ) : (
+                                  <Text style={[styles.verifyWarning, { color: warningTextColor }]}>
+                                    We couldn't confirm this payment. You can place your order and
+                                    the shop will check your receipt.
+                                  </Text>
+                                ))}
                               {verifyDetails[group.key] && verifyState !== 'verified' && (
                                 <Text style={styles.verifyDetail}>{verifyDetails[group.key]}</Text>
                               )}
 
-                              {/* Hard failures stay blocked until a new proof is
-                                  picked, so the reference form hides for them. */}
-                              {!hardFailed && (
+                              {/* verify.et hard rejects stay blocked until a new
+                                  proof is picked, so the reference form hides for
+                                  them; not_receipt keeps it as the escape hatch. */}
+                              {!formBlocked && (
                                 <>
                                   <View style={styles.providerRow}>
                                     <Text style={styles.verifyLabel}>Paid via</Text>
@@ -1622,6 +1733,11 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
   verifyHint: {
     fontSize: fontSizes.sm,
     color: colors.textSecondary,
+  },
+  verifyWarning: {
+    fontSize: fontSizes.sm,
+    // Color comes from the component — the amber foreground differs between
+    // the light and dark palettes.
   },
   verifyError: {
     fontSize: fontSizes.sm,

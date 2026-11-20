@@ -188,6 +188,14 @@ export function AdminDashboardScreen() {
               style={styles.actionButton}
             />
           </View>
+          <View style={styles.actionButtonWrapper}>
+            <Button
+              title="Reports"
+              onPress={() => navigation.navigate('AdminReports')}
+              variant="outline"
+              style={styles.actionButton}
+            />
+          </View>
         </View>
 
         <View style={[styles.twoColumn, isDesktop && styles.twoColumnDesktop]}>

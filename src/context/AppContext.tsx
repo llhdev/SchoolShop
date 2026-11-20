@@ -24,11 +24,13 @@ import {
   attachOrderTelegramId,
   createOrder,
   fetchOrders,
+  fetchOrdersByIds,
   fetchOrdersByTelegramId,
   getItemKey,
   loadOrdersFromCache,
   saveOrdersToCache,
   subscribeToOrders,
+  subscribeToOrdersByIds,
   subscribeToShopperOrders,
   updateOrderItemStatus,
 } from '../services/orders';
@@ -610,6 +612,61 @@ export function AppProvider({ children }: { children: ReactNode }) {
       unsubscribe?.();
     };
   }, [isHydrated, shopper, state.role]);
+
+  // Guest live-status sync: a guest (no Telegram identity) has no server-side
+  // history — only the orders this device placed — but their statuses must
+  // still track the admin side (auto-paid on verified payments, admin status
+  // changes). Refetch exactly those orders by id and keep them live via
+  // realtime; server rows replace local rows by id, while local rows the
+  // server does not return are kept (optimistic adds whose insert is still in
+  // flight). The merged list is re-cached because a guest's history IS the
+  // cache — statuses must survive a restart. Skipped while a shopper exists
+  // (the effect above owns the list for Mini App users) or an admin is
+  // signed in (the admin effect owns it).
+  const guestOrdersKey = state.orders.map((o) => o.id).join(' ');
+  useEffect(() => {
+    if (!isHydrated) return;
+    if (state.role === 'admin' || state.role === 'super_admin') return;
+    if (shopper) return;
+    if (!guestOrdersKey) return;
+    const ids = guestOrdersKey.split(' ');
+    let cancelled = false;
+    let unsubscribe: (() => void) | undefined;
+
+    const mergeAndApply = async (serverOrders: Order[]) => {
+      const serverIds = new Set(serverOrders.map((o) => o.id));
+      const localOnly = state.orders.filter((o) => !serverIds.has(o.id));
+      const merged = [...serverOrders, ...localOnly].sort(
+        (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
+      );
+      dispatch({ type: 'SET_ORDERS', payload: merged });
+      await saveOrdersToCache(merged);
+    };
+
+    (async () => {
+      try {
+        const orders = await fetchOrdersByIds(ids);
+        if (!cancelled) await mergeAndApply(orders);
+      } catch {
+        // Keep whatever is already displayed/cached.
+      }
+      if (!cancelled) {
+        unsubscribe = subscribeToOrdersByIds(ids, (orders) => {
+          void mergeAndApply(orders);
+        });
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      unsubscribe?.();
+    };
+    // The id set is fixed for the lifetime of one run (any order add/remove
+    // changes guestOrdersKey and re-runs the effect), so the state.orders
+    // closure inside mergeAndApply only ever sees local-only rows whose
+    // content cannot change mid-run. Dep is the key, not the array.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [isHydrated, state.role, shopper, guestOrdersKey]);
 
   // Backfill: orders placed before initData validation finished have no
   // telegram_id, and the server-side fetch above replaces local state — so

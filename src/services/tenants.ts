@@ -271,11 +271,14 @@ export async function createTenant(
 
   const signupClient = createSignupClient();
 
+  // NOTE: signup metadata must never carry shop_name — since migration 058
+  // the signup trigger ignores it, because client-controlled metadata must
+  // not grant roles. Promotion happens via RPC below.
   const { data, error } = await signupClient.auth.signUp({
     email: finalEmail,
     password,
     options: {
-      data: { username: cleanUsername, shop_name: cleanShopName },
+      data: { username: cleanUsername },
     },
   });
 
@@ -289,6 +292,17 @@ export async function createTenant(
 
   if (!data.user) {
     throw new Error('Failed to create tenant. No user was returned.');
+  }
+
+  // The signup trigger always creates role='user' (058). Promote the account
+  // to tenant admin through the super-admin-only RPC.
+  const { error: promoteError } = await supabase.rpc('admin_promote_to_tenant', {
+    p_user_id: data.user.id,
+    p_username: cleanUsername,
+    p_shop_name: cleanShopName,
+  });
+  if (promoteError) {
+    throw new Error(promoteError.message || 'Failed to promote tenant.');
   }
 
   // The profile row is created synchronously by the on_auth_user_created
