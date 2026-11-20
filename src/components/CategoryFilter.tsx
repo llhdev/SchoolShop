@@ -9,9 +9,8 @@ import {
   TouchableWithoutFeedback,
   View,
 } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
-import { Chip } from './Chip';
 import { useApp } from '../context/AppContext';
+import { useResponsive } from '../hooks/useResponsive';
 import { Category } from '../types';
 import { useThemeColors, spacing, borderRadius, fontSizes, ColorPalette } from '../constants/theme';
 
@@ -31,18 +30,13 @@ interface CategoryFilterProps {
 /** Product listing sorts. `featured` is the session-stable random scramble. */
 export type SortOption = 'featured' | 'latest' | 'popular' | 'price_asc' | 'price_desc';
 
-type IconName = React.ComponentProps<typeof Ionicons>['name'];
-
-const SORT_OPTIONS: { value: SortOption; label: string; icon?: IconName }[] = [
+const SORT_OPTIONS: { value: SortOption; label: string }[] = [
   { value: 'featured', label: 'Featured' },
   { value: 'latest', label: 'Latest' },
   { value: 'popular', label: 'Popular' },
-  { value: 'price_asc', label: 'Price', icon: 'arrow-up' },
-  { value: 'price_desc', label: 'Price', icon: 'arrow-down' },
+  { value: 'price_asc', label: 'Price ↑' },
+  { value: 'price_desc', label: 'Price ↓' },
 ];
-
-/** Shop names can be long; the store chip truncates so the row stays one line. */
-const STORE_LABEL_MAX = 18;
 
 interface MeasuredWidths {
   all: number;
@@ -56,6 +50,7 @@ export function CategoryFilter({
   onSelect,
   storeLabel,
   storeActive = false,
+  storePanelOpen = false,
   onStorePress,
   sort,
   onSortChange,
@@ -63,6 +58,7 @@ export function CategoryFilter({
   const colors = useThemeColors();
   const styles = makeStyles(colors);
   const { categories } = useApp();
+  const { isPhone } = useResponsive();
   const hasStore = Boolean(onStorePress);
   const [dropdownVisible, setDropdownVisible] = useState(false);
   const [moreLayout, setMoreLayout] = useState<{
@@ -78,15 +74,8 @@ export function CategoryFilter({
   });
   const moreButtonRef = useRef<View>(null);
 
-  // Matches the rendered row gap — the fit math must use the same value or
-  // the last visible chip overflows on narrow screens.
-  const gap = spacing.sm;
+  const gap = isPhone ? 2 : spacing.sm;
   const categoriesKey = categories.join('\n');
-
-  const displayStoreLabel =
-    storeLabel && storeLabel.length > STORE_LABEL_MAX
-      ? `${storeLabel.slice(0, STORE_LABEL_MAX - 1)}…`
-      : (storeLabel ?? 'Store');
 
   // Categories (and the store chip label) can change at runtime; re-measure
   // when the inputs change.
@@ -150,53 +139,100 @@ export function CategoryFilter({
     }
   }
 
+  function renderChipContent(
+    label: string,
+    active: boolean,
+    more: boolean,
+  ) {
+    return (
+      <Text
+        style={[
+          styles.text,
+          isPhone && styles.textCompact,
+          active && styles.activeText,
+          more && styles.moreText,
+        ]}
+        numberOfLines={1}
+      >
+        {label}
+      </Text>
+    );
+  }
+
   return (
     <View style={styles.wrapper}>
       <View
-        style={styles.container}
+        style={[styles.container, isPhone && styles.containerCompact]}
         onLayout={(e) => setContainerWidth(e.nativeEvent.layout.width)}
       >
-        <Chip label="All" active={selected === null} onPress={() => onSelect(null)} />
+        <TouchableOpacity
+          style={[
+            styles.chip,
+            
+            selected === null && styles.activeChip,
+          ]}
+          onPress={() => onSelect(null)}
+        >
+          {renderChipContent('All', selected === null, false)}
+        </TouchableOpacity>
 
         {hasStore && (
-          <Chip label={displayStoreLabel} active={storeActive} onPress={onStorePress} />
+          <TouchableOpacity
+            style={[
+              styles.chip,
+              styles.storeChip,
+              storeActive && styles.activeChip,
+            ]}
+            onPress={onStorePress}
+          >
+            {renderChipContent(storeLabel ?? 'Store', storeActive, false)}
+          </TouchableOpacity>
         )}
 
         {visibleCategories.map((category) => (
-          <Chip
+          <TouchableOpacity
             key={category}
-            label={category}
-            active={selected === category}
+            style={[
+              styles.chip,
+              selected === category && styles.activeChip,
+            ]}
             onPress={() => onSelect(category)}
-          />
+          >
+            {renderChipContent(category, selected === category, false)}
+          </TouchableOpacity>
         ))}
 
         {hiddenCategories.length > 0 && (
           <View ref={moreButtonRef} collapsable={false}>
-            <Chip
-              label="More"
-              icon={dropdownVisible ? 'chevron-up' : 'chevron-down'}
+            <TouchableOpacity
+              style={styles.chip}
               onPress={() => {
                 moreButtonRef.current?.measure((x, y, width, height, pageX, pageY) => {
                   setMoreLayout({ x: pageX, y: pageY, width, height });
                   setDropdownVisible(true);
                 });
               }}
-            />
+            >
+              {renderChipContent('More ▼', false, true)}
+            </TouchableOpacity>
           </View>
         )}
       </View>
 
-      {/* Second row: listing sort. */}
-      <View style={[styles.container, styles.sortRow]}>
-        {SORT_OPTIONS.map(({ value, label, icon }) => (
-          <Chip
+      {/* Second row: listing sort. Compact chips so both rows together take
+          roughly the space the single category row used to occupy. */}
+      <View style={[styles.container, styles.sortRow, isPhone && styles.containerCompact]}>
+        {SORT_OPTIONS.map(({ value, label }) => (
+          <TouchableOpacity
             key={value}
-            label={label}
-            icon={icon}
-            active={sort === value}
+            style={[
+              styles.chip,
+              sort === value && styles.activeChip,
+            ]}
             onPress={() => onSortChange(value)}
-          />
+          >
+            {renderChipContent(label, sort === value, false)}
+          </TouchableOpacity>
         ))}
       </View>
 
@@ -204,20 +240,28 @@ export function CategoryFilter({
       {!measured && (
         <View style={styles.measureRow} pointerEvents="none">
           <View onLayout={(e) => recordMeasurement('all', e)}>
-            <Chip label="All" />
+            <View style={[styles.chip]}>
+              {renderChipContent('All', false, false)}
+            </View>
           </View>
           {hasStore && (
             <View onLayout={(e) => recordMeasurement('store', e)}>
-              <Chip label={displayStoreLabel} />
+              <View style={[styles.chip, styles.storeChip]}>
+                {renderChipContent(storeLabel ?? 'Store', false, false)}
+              </View>
             </View>
           )}
           {categories.map((category) => (
             <View key={category} onLayout={(e) => recordMeasurement(category, e)}>
-              <Chip label={category} />
+              <View style={[styles.chip]}>
+                {renderChipContent(category, false, false)}
+              </View>
             </View>
           ))}
           <View onLayout={(e) => recordMeasurement('more', e)}>
-            <Chip label="More" icon="chevron-down" />
+            <View style={styles.chip}>
+              {renderChipContent('More ▼', false, true)}
+            </View>
           </View>
         </View>
       )}
@@ -258,12 +302,7 @@ export function CategoryFilter({
                     {category}
                   </Text>
                   {selected === category && (
-                    <Ionicons
-                      name="checkmark"
-                      size={16}
-                      color={colors.primary}
-                      style={styles.checkIcon}
-                    />
+                    <Text style={styles.checkmark}>✓</Text>
                   )}
                 </TouchableOpacity>
               ))}
@@ -285,6 +324,9 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
     gap: spacing.sm,
     alignItems: 'center',
   },
+  containerCompact: {
+    gap: spacing.sm,
+  },
   sortRow: {
     marginTop: spacing.xs,
   },
@@ -294,6 +336,38 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
     left: 0,
     flexDirection: 'row',
     opacity: 0,
+  },
+  // Plain-text filter: no pill box or border, just the label with enough
+  // padding that neighbouring filters read as separate items. The active
+  // state is shown on the text itself (brand color + underline via
+  // activeText), so the chip wrapper only centers its label for the width
+  // measurement pass.
+  chip: {
+    justifyContent: 'center',
+    paddingHorizontal: spacing.sm,
+    paddingVertical: 4,
+  },
+  // Active-state marker lives on the text (see activeText); kept as an empty
+  // style so existing conditional style arrays keep working.
+  activeChip: {},
+  storeChip: {
+    maxWidth: 160,
+  },
+  text: {
+    fontSize: fontSizes.sm,
+    color: colors.text,
+  },
+  textCompact: {
+    fontSize: fontSizes.xs,
+  },
+  activeText: {
+    color: colors.primary,
+    fontWeight: '700',
+    textDecorationLine: 'underline',
+  },
+  moreText: {
+    color: colors.primary,
+    fontWeight: '600',
   },
   dropdownOverlay: {
     flex: 1,
@@ -328,7 +402,10 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
     color: colors.primary,
     fontWeight: '600',
   },
-  checkIcon: {
+  checkmark: {
+    color: colors.primary,
+    fontWeight: '700',
+    fontSize: fontSizes.md,
     marginLeft: spacing.sm,
   },
 });
