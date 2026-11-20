@@ -1,4 +1,4 @@
-import { ActivityIndicator, Platform, ScrollView, StyleSheet, Text, TouchableOpacity, View, Image, Modal, Linking } from 'react-native';
+import { ActivityIndicator, Platform, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View, Image, Modal, Linking } from 'react-native';
 import { useEffect, useState } from 'react';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -17,6 +17,7 @@ import {
   approvePaymentVerification,
   fetchVerificationsForOrders,
   retryPaymentVerification,
+  setOrderPaymentReference,
   subscribeToVerifications,
 } from '../../services/paymentVerifications';
 import { getPaymentProofUrls } from '../../services/images';
@@ -58,6 +59,13 @@ export function OrderDetailScreen() {
   const [verifications, setVerifications] = useState<PaymentVerification[]>([]);
   const [verifyBusy, setVerifyBusy] = useState(false);
   const [verifyError, setVerifyError] = useState('');
+  // Manual reference entry (migration 067), keyed by tenant id: for warning
+  // orders the financial admin types the transaction reference off the
+  // receipt image. The server duplicate-checks it on save.
+  const [manualRefs, setManualRefs] = useState<Record<string, string>>({});
+  const [manualProviders, setManualProviders] = useState<Record<string, 'cbe' | 'telebirr'>>({});
+  const [manualBusy, setManualBusy] = useState(false);
+  const [manualMessage, setManualMessage] = useState('');
 
   const order = orders.find((o) => o.id === orderId);
   // Orders hydrate from cache first and (for Telegram shoppers) re-sync from
@@ -256,6 +264,30 @@ export function OrderDetailScreen() {
         }
       }
     );
+  };
+
+  const saveManualReference = async (verification: PaymentVerification) => {
+    if (!order) return;
+    const reference = (manualRefs[verification.tenantId] ?? '').trim();
+    const provider =
+      manualProviders[verification.tenantId] ??
+      (verification.provider === 'telebirr' ? 'telebirr' : 'cbe');
+    if (!reference) {
+      setVerifyError('Enter the transaction reference from the receipt.');
+      return;
+    }
+    setManualBusy(true);
+    setVerifyError('');
+    setManualMessage('');
+    try {
+      await setOrderPaymentReference(order.id, verification.tenantId, provider, reference);
+      setManualRefs((prev) => ({ ...prev, [verification.tenantId]: '' }));
+      setManualMessage('Reference saved — this receipt is now marked as used.');
+    } catch (error) {
+      setVerifyError(error instanceof Error ? error.message : 'Could not save the reference.');
+    } finally {
+      setManualBusy(false);
+    }
   };
 
   // Admins drive the status of each line item individually (per-item action
@@ -610,9 +642,78 @@ export function OrderDetailScreen() {
                       )}
                     </View>
                   )}
+                  {/* Manual reference entry (migration 067): only while this
+                      shop's payment is still unconfirmed (warning showing) and
+                      not already verified. Saved references are claimed
+                      server-side — a receipt already used by another order is
+                      rejected here and again when marking paid. */}
+                  {hasPaymentWarning(order, verification.tenantId) &&
+                    verification.status !== 'verified' && (
+                      <View style={styles.manualRefBlock}>
+                        <Text style={styles.manualRefTitle}>
+                          Record reference manually
+                        </Text>
+                        {order.paymentReferences?.[verification.tenantId] && (
+                          <Text style={styles.verificationMeta}>
+                            Recorded: {order.paymentReferences[verification.tenantId].reference}
+                            {' '}({order.paymentReferences[verification.tenantId].provider === 'telebirr'
+                              ? 'Telebirr'
+                              : 'CBE'})
+                          </Text>
+                        )}
+                        <View style={styles.manualRefProviderRow}>
+                          {(['cbe', 'telebirr'] as const).map((p) => {
+                            const active =
+                              (manualProviders[verification.tenantId] ??
+                                (verification.provider === 'telebirr' ? 'telebirr' : 'cbe')) === p;
+                            return (
+                              <TouchableOpacity
+                                key={p}
+                                style={[styles.statusChip, active && styles.manualRefChipActive]}
+                                onPress={() =>
+                                  setManualProviders((prev) => ({
+                                    ...prev,
+                                    [verification.tenantId]: p,
+                                  }))
+                                }
+                              >
+                                <Text
+                                  style={[
+                                    styles.statusChipText,
+                                    active && styles.manualRefChipTextActive,
+                                  ]}
+                                >
+                                  {p === 'cbe' ? 'CBE' : 'Telebirr'}
+                                </Text>
+                              </TouchableOpacity>
+                            );
+                          })}
+                        </View>
+                        <TextInput
+                          style={styles.manualRefInput}
+                          placeholder="Transaction reference from the receipt"
+                          placeholderTextColor={colors.textSecondary}
+                          autoCapitalize="characters"
+                          autoCorrect={false}
+                          value={manualRefs[verification.tenantId] ?? ''}
+                          onChangeText={(text) =>
+                            setManualRefs((prev) => ({ ...prev, [verification.tenantId]: text }))
+                          }
+                        />
+                        <View style={styles.verificationActions}>
+                          <Button
+                            title="Save reference"
+                            variant="outline"
+                            loading={manualBusy}
+                            onPress={() => saveManualReference(verification)}
+                          />
+                        </View>
+                      </View>
+                    )}
                 </View>
               ))}
               {!!verifyError && <Text style={styles.statusError}>{verifyError}</Text>}
+              {!!manualMessage && <Text style={styles.manualRefSuccess}>{manualMessage}</Text>}
             </View>
           )}
         </View>
@@ -944,5 +1045,43 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
     gap: spacing.sm,
     marginTop: spacing.md,
     flexWrap: 'wrap',
+  },
+  manualRefBlock: {
+    borderTopWidth: 1,
+    borderTopColor: colors.border,
+    paddingTop: spacing.md,
+    marginTop: spacing.md,
+    gap: spacing.sm,
+  },
+  manualRefTitle: {
+    fontSize: fontSizes.sm,
+    fontWeight: '600',
+    color: colors.text,
+  },
+  manualRefProviderRow: {
+    flexDirection: 'row',
+    gap: spacing.sm,
+  },
+  manualRefChipActive: {
+    borderColor: colors.primary,
+    backgroundColor: colors.primary,
+  },
+  manualRefChipTextActive: {
+    color: colors.surface,
+  },
+  manualRefInput: {
+    borderWidth: 1,
+    borderColor: colors.border,
+    borderRadius: borderRadius.md,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.sm,
+    fontSize: fontSizes.md,
+    color: colors.text,
+    backgroundColor: colors.background,
+  },
+  manualRefSuccess: {
+    marginTop: spacing.md,
+    fontSize: fontSizes.sm,
+    color: colors.success,
   },
 });

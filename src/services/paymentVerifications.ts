@@ -89,3 +89,23 @@ export async function approvePaymentVerification(orderId: string, tenantId: stri
   });
   if (error) throw new Error(error.message);
 }
+
+/** Record a transaction reference manually (migration 067) — for orders whose
+ *  proof couldn't be verified automatically (payment warning), so the
+ *  financial admin types the reference off the receipt image. The server
+ *  validates the provider/format, stores it on the order, and claims it
+ *  atomically — a reference already used by another order is rejected. */
+export async function setOrderPaymentReference(
+  orderId: string,
+  tenantId: string,
+  provider: 'cbe' | 'telebirr',
+  reference: string
+): Promise<void> {
+  const { error } = await supabase.rpc('set_order_payment_reference', {
+    p_order_id: orderId,
+    p_tenant_id: tenantId,
+    p_provider: provider,
+    p_reference: reference,
+  });
+  if (error) throw new Error(error.message);
+}
