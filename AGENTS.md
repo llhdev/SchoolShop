@@ -81,7 +81,9 @@ Key facts:
 │                                    # clean-database.js, test-reference-verification.js,
 │                                    # prod-health-check.ps1, test-telegram-media.mjs,
 │                                    # query-logs.ps1 / rest-query.ps1 (read-only prod
-│                                    # diagnostics), resend-order-notifications.js
+│                                    # diagnostics), resend-order-notifications.js,
+│                                    # test-receipt-ocr.mjs + receipt-fixtures/
+│                                    # (PII-redacted receipt corpus + OCR regression test)
 └── src/
     ├── components/                  # shared UI (Screen, Button, EmptyState, ProductCard,
     │                                # ProductImage, SearchBar, WebHeader, AdminHeader,
@@ -91,7 +93,10 @@ Key facts:
     ├── context/AppContext.tsx       # global state, reducer, actions, persistence
     ├── data/seedProducts.ts
     ├── hooks/useResponsive.ts
-    ├── lib/                         # debounce, image-web, ocr (Tesseract.js receipts),
+    ├── lib/                         # debounce, image-web, ocr (receipt reference
+    │                                # extraction: jsQR QR decode first, then
+    │                                # Tesseract.js full-page + word/line-crop
+    │                                # refinement passes — web-only, lazy),
     │                                # supabase client, telegram SDK wrapper
     ├── navigation/                  # AppNavigator (root, role routing, lazy splitting),
     │                                # AdminStackNavigator, UserTabNavigator
@@ -235,6 +240,7 @@ npx tsc --noEmit
 Two targeted guards exist outside a framework:
 
 - `node scripts/test-telegram-media.mjs` — regression tests for the Telegram proof-routing logic (imports the real `supabase/functions/telegram-order-notify/media.ts`; run after touching that function).
+- `node scripts/test-receipt-ocr.mjs` — regression tests for the receipt reference extractor (compiles the real `src/lib/ocr.ts` and runs QR + OCR over the redacted fixture corpus in `scripts/receipt-fixtures/`, asserting every fixture's provider + reference from its `manifest.json`; run after touching ocr.ts). Fixtures are PII-redacted screenshots — keep names/accounts/amounts blacked out when adding new ones.
 - `powershell -NoProfile -File scripts/prod-health-check.ps1 [-WindowHours N]` — read-only prod checks: realtime publication membership, Telegram failure lines, order→notify coverage, deployed function version. Run after every migration/deploy.
 
 No ESLint or Prettier config exists; if you add one, keep rules aligned with the existing style.

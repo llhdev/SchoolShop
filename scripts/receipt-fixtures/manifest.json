@@ -1,0 +1,269 @@
+[
+ {
+  "file": "cbe/format-one/01.jpg",
+  "provider": "cbe",
+  "format": "format-one",
+  "reference": "FT26325DKGB7",
+  "altReferences": [
+   "hfHCxOa0ih42ZO28i72P"
+  ]
+ },
+ {
+  "file": "cbe/format-one/02.jpg",
+  "provider": "cbe",
+  "format": "format-one",
+  "reference": "FT263144JXD6",
+  "altReferences": [
+   "hfHCxNWq2xXdOI0gH8Rq"
+  ]
+ },
+ {
+  "file": "cbe/format-one/03.jpg",
+  "provider": "cbe",
+  "format": "format-one",
+  "reference": "FT26290Q9KTK",
+  "altReferences": [
+   "hfHCxHM3NMJAgn14hDuy"
+  ]
+ },
+ {
+  "file": "cbe/format-one/04.jpg",
+  "provider": "cbe",
+  "format": "format-one",
+  "reference": "FT2629170KDZ",
+  "altReferences": [
+   "hfHCxHMen4mGjWZAx1Jy"
+  ]
+ },
+ {
+  "file": "cbe/format-one/05.jpg",
+  "provider": "cbe",
+  "format": "format-one",
+  "reference": "FT26288ZGSD3"
+ },
+ {
+  "file": "cbe/format-two/01.jpg",
+  "provider": "cbe",
+  "format": "format-two",
+  "reference": "FT26325Z5GX0",
+  "altReferences": [
+   "hfHCxOad9dxXBu5CJA2w"
+  ]
+ },
+ {
+  "file": "cbe/format-two/02.jpg",
+  "provider": "cbe",
+  "format": "format-two",
+  "reference": "FT26325D8HXC",
+  "altReferences": [
+   "hfHCxOa06lFjOGMI2cPe"
+  ]
+ },
+ {
+  "file": "cbe/format-two/03.jpg",
+  "provider": "cbe",
+  "format": "format-two",
+  "reference": "FT26325DKGB7"
+ },
+ {
+  "file": "cbe/format-two/04.jpg",
+  "provider": "cbe",
+  "format": "format-two",
+  "reference": "FT26325RQC5S",
+  "altReferences": [
+   "hfHCxOa8INRjDUklaLtN"
+  ]
+ },
+ {
+  "file": "cbe/format-two/05.jpg",
+  "provider": "cbe",
+  "format": "format-two",
+  "reference": "FT2632510VZ5",
+  "altReferences": [
+   "hfHCxO9SPTQbLIEdQE2l"
+  ]
+ },
+ {
+  "file": "telebirr/format-five/01.jpg",
+  "provider": "telebirr",
+  "format": "format-five",
+  "reference": "DKK1G02FRL"
+ },
+ {
+  "file": "telebirr/format-five/02.jpg",
+  "provider": "telebirr",
+  "format": "format-five",
+  "reference": "DKJ9EJGOHD"
+ },
+ {
+  "file": "telebirr/format-five/03.jpg",
+  "provider": "telebirr",
+  "format": "format-five",
+  "reference": "DJM86WQM7U"
+ },
+ {
+  "file": "telebirr/format-five/04.jpg",
+  "provider": "telebirr",
+  "format": "format-five",
+  "reference": "DKK6F8DR94"
+ },
+ {
+  "file": "telebirr/format-five/05.jpg",
+  "provider": "telebirr",
+  "format": "format-five",
+  "reference": "DK94W641WE"
+ },
+ {
+  "file": "telebirr/format-four/01.jpg",
+  "provider": "telebirr",
+  "format": "format-four",
+  "reference": "DJK044915K"
+ },
+ {
+  "file": "telebirr/format-four/02.jpg",
+  "provider": "telebirr",
+  "format": "format-four",
+  "reference": "DKK6G35FK2"
+ },
+ {
+  "file": "telebirr/format-four/03.jpg",
+  "provider": "telebirr",
+  "format": "format-four",
+  "reference": "DKK9GOHMQN"
+ },
+ {
+  "file": "telebirr/format-four/04.jpg",
+  "provider": "telebirr",
+  "format": "format-four",
+  "reference": "DKK9FL4GLH"
+ },
+ {
+  "file": "telebirr/format-four/05.jpg",
+  "provider": "telebirr",
+  "format": "format-four",
+  "reference": "DKK6FJCZVO"
+ },
+ {
+  "file": "telebirr/format-one/01.jpg",
+  "provider": "telebirr",
+  "format": "format-one",
+  "reference": "DKL7GHG44Z"
+ },
+ {
+  "file": "telebirr/format-one/02.jpg",
+  "provider": "telebirr",
+  "format": "format-one",
+  "reference": "DKK3G7DVUV"
+ },
+ {
+  "file": "telebirr/format-one/03.jpg",
+  "provider": "telebirr",
+  "format": "format-one",
+  "reference": "DKK1G7C425"
+ },
+ {
+  "file": "telebirr/format-one/04.jpg",
+  "provider": "telebirr",
+  "format": "format-one",
+  "reference": "DKK3G0XGJT",
+  "altReferences": [
+   "DKK3GOXGJT"
+  ]
+ },
+ {
+  "file": "telebirr/format-one/05.jpg",
+  "provider": "telebirr",
+  "format": "format-one",
+  "reference": "DKK8FVN248"
+ },
+ {
+  "file": "telebirr/format-six/01.jpg",
+  "provider": "telebirr",
+  "format": "format-six",
+  "reference": "DKK7GB80IT"
+ },
+ {
+  "file": "telebirr/format-six/02.jpg",
+  "provider": "telebirr",
+  "format": "format-six",
+  "reference": "DKI2C4JQFQ"
+ },
+ {
+  "file": "telebirr/format-six/03.jpg",
+  "provider": "telebirr",
+  "format": "format-six",
+  "reference": "DK48P7213A"
+ },
+ {
+  "file": "telebirr/format-six/04.jpg",
+  "provider": "telebirr",
+  "format": "format-six",
+  "reference": "DKH7AU6B41"
+ },
+ {
+  "file": "telebirr/format-six/05.jpg",
+  "provider": "telebirr",
+  "format": "format-six",
+  "reference": "DK46P74EJC"
+ },
+ {
+  "file": "telebirr/format-three/01.jpg",
+  "provider": "telebirr",
+  "format": "format-three",
+  "reference": "DKL3GEO8CT"
+ },
+ {
+  "file": "telebirr/format-three/02.jpg",
+  "provider": "telebirr",
+  "format": "format-three",
+  "reference": "DKKOG8HPM2"
+ },
+ {
+  "file": "telebirr/format-three/03.jpg",
+  "provider": "telebirr",
+  "format": "format-three",
+  "reference": "DKK1G1WR5P"
+ },
+ {
+  "file": "telebirr/format-three/04.jpg",
+  "provider": "telebirr",
+  "format": "format-three",
+  "reference": "DK44P11T94"
+ },
+ {
+  "file": "telebirr/format-three/05.jpg",
+  "provider": "telebirr",
+  "format": "format-three",
+  "reference": "DK45P0ZHN5"
+ },
+ {
+  "file": "telebirr/format-two/01.jpg",
+  "provider": "telebirr",
+  "format": "format-two",
+  "reference": "DKK8GABD3K"
+ },
+ {
+  "file": "telebirr/format-two/02.jpg",
+  "provider": "telebirr",
+  "format": "format-two",
+  "reference": "DKK7G942DN"
+ },
+ {
+  "file": "telebirr/format-two/03.jpg",
+  "provider": "telebirr",
+  "format": "format-two",
+  "reference": "DKK9FTGWBB"
+ },
+ {
+  "file": "telebirr/format-two/04.jpg",
+  "provider": "telebirr",
+  "format": "format-two",
+  "reference": "DKK4FM1XHG"
+ },
+ {
+  "file": "telebirr/format-two/05.jpg",
+  "provider": "telebirr",
+  "format": "format-two",
+  "reference": "DKK9FLVG6F"
+ }
+]
