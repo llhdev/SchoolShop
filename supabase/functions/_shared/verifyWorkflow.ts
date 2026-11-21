@@ -24,6 +24,8 @@ export interface TenantProfile {
   telegram_chat_id: string | null;
   bank_accounts: unknown;
   shipping_fee?: number | null;
+  /** 069: receipts dated before this hard-fail (pre-verification era). */
+  payment_verification_started_at?: string | null;
 }
 
 /** Exact inline lines of the per-shop order message (also produced by
@@ -307,6 +309,7 @@ export async function completeAttempt(input: CompleteAttemptInput): Promise<stri
     expectedAmount: attempt.expected_amount ?? 0,
     orderCreatedAt: order.created_at,
     maxAgeHours,
+    verificationStartedAt: profile.payment_verification_started_at ?? null,
   };
 
   // Claims are attempted only when the three hard checks pass on their own.

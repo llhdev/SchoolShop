@@ -137,6 +137,12 @@ export interface EvaluationInput {
   orderCreatedAt: string;
   claimOutcome: ClaimOutcome;
   maxAgeHours: number;
+  /** When the shop's payment verification era started
+   *  (profiles.payment_verification_started_at, 069 — already stamped with
+   *  the 30-minute grace). Receipts dated before it hard-fail: the claims
+   *  ledger has no record of that era, so reuse is undetectable. Null/ absent
+   *  = no cutoff. */
+  verificationStartedAt?: string | null;
 }
 
 export interface Evaluation {
@@ -167,6 +173,7 @@ export function matchMaskedAccounts(mask: string, merchantNorms: string[]): stri
 export function evaluateChecks(input: EvaluationInput): Evaluation {
   const { receipt, merchantAccounts, expectedAmount, orderCreatedAt, claimOutcome, maxAgeHours } =
     input;
+  const verificationStartedAt = input.verificationStartedAt ?? null;
   const checks: Record<string, CheckResult> = {};
   const merchantNorms = merchantAccounts.map(normalizeAccount).filter(Boolean);
 
@@ -332,6 +339,24 @@ export function evaluateChecks(input: EvaluationInput): Evaluation {
       checks.receiptOwnership = {
         result: 'pass',
         reason: receipt.payer ? `recent receipt · payer: ${receipt.payer}` : 'recent receipt',
+      };
+    }
+  }
+
+  // 6. Verification era (069) ---------------------------------------------------
+  // A receipt dated before the shop started verifying payments hard-fails:
+  // the claims ledger has no record of that era, so reuse of an old
+  // transaction is undetectable. Only a positively dated receipt can fail
+  // this — missing/unreadable dates stay a soft 'review' in receiptOwnership
+  // above (we don't know they're old). In-era receipts keep the recency
+  // rules unchanged.
+  if (verificationStartedAt && receipt.transactionDate) {
+    const txn = new Date(receipt.transactionDate);
+    const eraStart = new Date(verificationStartedAt);
+    if (!Number.isNaN(txn.getTime()) && !Number.isNaN(eraStart.getTime()) && txn < eraStart) {
+      checks.verificationEra = {
+        result: 'fail',
+        reason: "transfer predates the shop's payment verification start",
       };
     }
   }

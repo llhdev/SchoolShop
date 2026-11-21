@@ -11,6 +11,7 @@ export type ReferenceVerdict =
   | 'wrong_recipient'
   | 'wrong_amount'
   | 'already_claimed'
+  | 'too_old'
   | 'unavailable';
 
 export interface VerificationItem {
@@ -52,6 +53,7 @@ const VALID_VERDICTS: ReferenceVerdict[] = [
   'wrong_recipient',
   'wrong_amount',
   'already_claimed',
+  'too_old',
   'unavailable',
 ];
 

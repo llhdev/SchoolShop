@@ -170,7 +170,7 @@ Deno.serve(async (req) => {
     .maybeSingle();
   const { data: profile } = await supabase
     .from('profiles')
-    .select('id, shop_name, telegram_chat_id, bank_accounts, payment_verification_enabled')
+    .select('id, shop_name, telegram_chat_id, bank_accounts, payment_verification_enabled, payment_verification_started_at')
     .eq('id', attempt.tenant_id)
     .maybeSingle();
   if (!order || !profile) {

@@ -85,6 +85,7 @@ type ShopVerifyState =
   | 'wrong_recipient'
   | 'wrong_amount'
   | 'already_claimed'
+  | 'too_old'
   | 'unavailable';
 
 interface ShopReference {
@@ -105,6 +106,7 @@ const HARD_FAILURES: ShopVerifyState[] = [
   'wrong_recipient',
   'wrong_amount',
   'already_claimed',
+  'too_old',
 ];
 
 /** States that hide the manual reference form entirely — the only way out
@@ -115,6 +117,7 @@ const FORM_BLOCKED: ShopVerifyState[] = [
   'wrong_recipient',
   'wrong_amount',
   'already_claimed',
+  'too_old',
 ];
 
 /** Soft-launch warning passes (migration 056): the payment could not be
@@ -135,6 +138,7 @@ const VERIFY_CHIP_LABELS: Record<ShopVerifyState, string> = {
   wrong_recipient: 'Wrong recipient',
   wrong_amount: 'Wrong amount',
   already_claimed: 'Already used',
+  too_old: 'Too old',
   unavailable: 'Try again later',
 };
 
@@ -1326,6 +1330,13 @@ export function CheckoutScreen() {
                               {verifyState === 'already_claimed' && (
                                 <Text style={styles.verifyError}>
                                   This transaction was already used for another order.
+                                </Text>
+                              )}
+                              {verifyState === 'too_old' && (
+                                <Text style={styles.verifyError}>
+                                  This transfer was made before this shop started verifying
+                                  payments, so it can't be accepted. Please make a new transfer
+                                  and upload the new receipt.
                                 </Text>
                               )}
                               {verifyState === 'unavailable' &&

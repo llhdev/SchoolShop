@@ -79,6 +79,7 @@ type Verdict =
   | 'wrong_recipient'
   | 'wrong_amount'
   | 'already_claimed'
+  | 'too_old'
   | 'unavailable';
 
 interface PrecheckPayload {
@@ -371,7 +372,7 @@ Deno.serve(async (req) => {
   }
   const { data: profile } = await supabase
     .from('profiles')
-    .select('id, bank_accounts, shipping_fee')
+    .select('id, bank_accounts, shipping_fee, payment_verification_started_at')
     .eq('id', tenantId)
     .maybeSingle();
   if (!profile) return json({ error: 'shop not found' }, 400);
@@ -486,10 +487,16 @@ Deno.serve(async (req) => {
     // authoritative claim happens post-order in verify-order-payment.
     claimOutcome: { kind: 'not_attempted' },
     maxAgeHours: MAX_AGE_HOURS,
+    verificationStartedAt: profile.payment_verification_started_at ?? null,
   });
   const checks = evaluation.checks;
   let verdict: Verdict;
-  if (checks.recipientMatch?.result === 'fail') {
+  if (checks.verificationEra?.result === 'fail') {
+    // Pre-verification-era transfer (069): can never be accepted, so it
+    // outranks the other failures — the shopper needs "make a new transfer",
+    // not a confusing amount/recipient message on an old receipt.
+    verdict = 'too_old';
+  } else if (checks.recipientMatch?.result === 'fail') {
     verdict = 'wrong_recipient';
   } else if (checks.amountMatch?.result === 'fail') {
     verdict = 'wrong_amount';
