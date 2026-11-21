@@ -57,16 +57,19 @@ Key facts:
 ├── assets/                          # icons, splash, favicon
 ├── supabase/
 │   ├── functions/
-│   │   ├── telegram-auth/           # validates Telegram initData, upserts shoppers
-│   │   ├── telegram-order-notify/   # one message per order to each shop's group; verification state rides inline
+│   │   ├── telegram-auth/           # validates Telegram initData, upserts shoppers (1h replay window)
+│   │   ├── telegram-order-notify/   # one message per order to each shop's group; verification state rides inline;
+│   │   │                            # rate-limited (10/order/hr + 300/IP/hr) since its key ships in the bundle
 │   │   ├── verify-order-payment/    # DB-triggered verify.et check of payment proofs
 │   │   ├── verify-payment-reference/ # pre-order read-only reference check (checkout calls it)
 │   │   ├── r2-upload-sign/          # presigned R2 access: tenant-namespaced, capability-gated
 │   │   │                            # PUT/delete (061 — keys are <prefix>/<tenantId>/<name>, legacy
-│   │   │                            # deletes need ownership proof) + proof GET (052); anon proof PUT
-│   │   │                            # (20/hr/IP, 061) + book GET (order id + phone, 062)
+│   │   │                            # deletes need ownership proof) + proof GET (052; scoped to proofs
+│   │   │                            # the caller's own shop's orders reference, 068); anon proof PUT
+│   │   │                            # (20/hr/IP, 061; no overwrites, 068) + book GET (order id + phone,
+│   │   │                            # 062; 30/hr/IP, 068)
 │   │   └── verify-et-webhook/       # completes queued verifications (signed, idempotent)
-│   └── migrations/                  # 001–067, in order; header comments document each
+│   └── migrations/                  # 001–068, in order; header comments document each
 ├── docs/
 │   ├── architecture.md              # images + checkout/payment-verification deep-dive
 │   ├── staging-setup.md             # staging env runbook (dev branch → preview → staging Supabase)
@@ -146,8 +149,8 @@ All shared state lives in `src/context/AppContext.tsx`:
 - A single `useReducer` manages `role`, `products`, `cart`, `orders`, `categories`.
 - On mount the app loads the AsyncStorage cache so the UI renders offline, then a background sync fetches from Supabase.
 - Mutations are optimistic: reducer → cache → Supabase; failures roll back.
-- Realtime subscriptions refresh state + cache on product/order/category changes (refetches debounced).
-- Orders are admin-only: the table has no public read policy (062 — the 016 world-readable policy was dropped; 065 also dropped the 002-era `is_admin()`-only read that bypassed tenant scoping). Guests re-fetch the orders their device placed via `get_order_for_shopper(order_id, phone)` — phone is required at checkout since 063, so the id+phone pair is the capability. Super admin fetches all; staff fetch via capability routing (064): financial staff (and super admin) read the table directly (tenant-scoped), non-financial staff go through `get_scoped_orders()` which strips money server-side (total, per-item prices, shipping fees, payment references, telegram_notifications; proofs only for branch staff) and applies branch scoping — and lose realtime order updates (realtime needs SELECT via the table policy), so their lists refresh on fetch. Tenant staff see only their line items in mixed orders. Sign-out clears orders from memory and cache.
+- Realtime subscriptions refresh state + cache on product/order/category changes (refetches debounced). Exception: anonymous shoppers get no order realtime (062 needs SELECT to deliver events), so guest and Mini App order lists poll every 15s instead (`subscribeToOrdersByIds` / `subscribeToShopperOrders` in `src/services/orders.ts`).
+- Orders are admin-only: the table has no public read policy (062 — the 016 world-readable policy was dropped; 065 also dropped the 002-era `is_admin()`-only read that bypassed tenant scoping). Guests re-fetch the orders their device placed via `get_order_for_shopper(order_id, phone)` — phone is required at checkout since 063, so the id+phone pair is the capability; since 068 both shopper RPCs (`get_order_for_shopper`, `get_orders_by_telegram_id`) return a safe column projection (no `payment_proofs`/`payment_references`/`payment_warnings`/`telegram_notifications` — the shopper UI never renders those). Super admin fetches all; staff fetch via capability routing (064): financial staff (and super admin) read the table directly (tenant-scoped), non-financial staff go through `get_scoped_orders()` which strips money server-side (total, per-item prices, shipping fees, payment references, telegram_notifications; proofs only for branch staff) and applies branch scoping — and lose realtime order updates (realtime needs SELECT via the table policy), so their lists refresh on fetch. Tenant staff see only their line items in mixed orders. Sign-out clears orders from memory and cache.
 - Shopper Analysis (`AdminAnalysisScreen`): tenant-scoped orders, one row per line item (order code, date, phone, Telegram name from the public-read `shoppers` table, student name, product, qty, status, one column per checkout-question label, location last). Revenue card is super-admin-only. Rows open `OrderDetail`; web exports `.xlsx` (`src/utils/exportAnalysis.ts`, SheetJS lazy — installed from the SheetJS CDN tarball, not npm; the npm registry version is unmaintained and carries known CVEs).
 - Reports (`AdminReportsScreen`): client-side shop analytics over the same scoped lines (`src/utils/reports.ts` flattens orders once per render) — sales snapshot with previous-period deltas, trend chart, hot sellers, units per product, slow movers, status counts, repeat-customer rate, locations, peak times. Same scoping as Analysis; revenue hidden without the financial capability. Bar charts are plain RN views (no chart dependency).
 - In the Mini App, a validated `shopper` (from `telegram-auth`, cached at `@schoolshop_shopper`) gives server-side order history by `telegram_id` across devices via `get_orders_by_telegram_id(telegram_id, token)` — the token is an HMAC of the telegram id keyed by the vault secret, issued by `telegram-auth` only after initData validation (062). Skipped while an admin is signed in.

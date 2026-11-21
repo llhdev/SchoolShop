@@ -436,14 +436,18 @@ Deno.serve(async (req) => {
     // 400/422: verify.et rejected the reference itself (wrong format for the
     // bank) — the shopper can correct it, so surface it as not_found.
     // Everything else (5xx, network, timeout) is a temporary failure:
-    // retryable, never a fraud verdict. Either way, pass verify.et's own
-    // message through so the failure is diagnosable.
+    // retryable, never a fraud verdict. The client gets a generic detail —
+    // verify.et's raw message stays in the function logs, not in responses
+    // to anonymous callers.
     const badReference = submission.status === 400 || submission.status === 422;
+    console.error('verify.et submission failed:', submission.error);
     return finish(
       badReference ? 'not_found' : 'unavailable',
       null,
       submission.requestId,
-      submission.error ?? undefined
+      badReference
+        ? 'the bank rejected this reference — check it and try again'
+        : 'payment verification is temporarily unavailable'
     );
   }
 

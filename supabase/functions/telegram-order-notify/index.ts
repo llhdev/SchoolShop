@@ -637,6 +637,41 @@ async function sendToTenant(
   return { ok: false, error: errors.join(' | ') };
 }
 
+// --- rate limiting ------------------------------------------------------------
+
+/** Fixed-window rate limit via the service-role check_rate_limit RPC (061).
+ *  The IP (first x-forwarded-for entry) is SHA-256 hashed so no raw addresses
+ *  are stored; non-IP keys (per-order) pass through unchanged. FAILS OPEN on
+ *  error — availability over strictness — and logs the failure. */
+async function withinRateLimit(
+  supabase: SupabaseClient,
+  key: string,
+  limit: number,
+  windowSeconds: number
+): Promise<boolean> {
+  try {
+    const { data, error } = await supabase.rpc('check_rate_limit', {
+      p_key: key,
+      p_limit: limit,
+      p_window_seconds: windowSeconds,
+    });
+    if (error) throw error;
+    return data === true;
+  } catch (error) {
+    console.error(`rate limit check failed (${key.split(':')[0]}), allowing request:`, error);
+    return true;
+  }
+}
+
+async function hashedIpKey(req: Request, scope: string): Promise<string> {
+  const ip = (req.headers.get('x-forwarded-for') ?? '').split(',')[0].trim() || 'unknown';
+  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(ip));
+  const hash = Array.from(new Uint8Array(digest))
+    .map((b) => b.toString(16).padStart(2, '0'))
+    .join('');
+  return `${scope}:${hash}`;
+}
+
 Deno.serve(async (req) => {
   if (req.method === 'OPTIONS') {
     return new Response(null, { status: 204, headers: CORS_HEADERS });
@@ -687,6 +722,18 @@ Deno.serve(async (req) => {
   const supabase = createClient(SUPABASE_URL, SERVICE_ROLE_KEY, {
     auth: { persistSession: false, autoRefreshToken: false },
   });
+
+  // The bearer gate above uses a key that ships in the public bundle, so it
+  // is not the security boundary — these limits are what stop a copied key
+  // from spamming re-sends or amplifying fetches: at most 10 sends per order
+  // per hour and 300 notify calls per IP per hour. (The ops resend scripts
+  // send each order once; batches over 300/hr just get 429s and can rerun.)
+  if (!(await withinRateLimit(supabase, await hashedIpKey(req, 'notify-ip'), 300, 3600))) {
+    return json({ error: 'too many requests, try again later' }, 429);
+  }
+  if (!(await withinRateLimit(supabase, `notify-order:${orderId}`, 10, 3600))) {
+    return json({ error: 'too many notifications for this order, try again later' }, 429);
+  }
 
   // Re-read the order row — this is the ONLY source of truth for what gets
   // sent. A payload id that matches no row is rejected, which kills forged

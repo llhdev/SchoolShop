@@ -626,8 +626,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // history — only the orders this device placed — but their statuses must
   // still track the admin side (auto-paid on verified payments, admin status
   // changes). Refetch exactly those orders (062: by id + the phone typed at
-  // checkout, which the local cache carries) and keep them live via realtime;
-  // server rows replace local rows by id, while local rows the server does
+  // checkout, which the local cache carries); since 062 realtime no longer
+  // reaches anonymous clients, subscribeToOrdersByIds keeps them fresh by
+  // polling (15s). Server rows replace local rows by id, while local rows the server does
   // not return are kept (optimistic adds whose insert is still in flight, or
   // legacy orders with no phone the server can no longer match). The merged
   // list is re-cached because a guest's history IS the cache — statuses must

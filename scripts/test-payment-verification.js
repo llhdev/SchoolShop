@@ -26,8 +26,9 @@ const anonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
 const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
 const TENANT = '81025cf5-1087-4acb-8f34-8c23708a122b';
-const LEGACY_PROOF_URL =
-  'https://mzdprnvazllhfaxteeyk.supabase.co/storage/v1/object/public/payment-proofs/1792000871058-kd7w19y.jpg';
+// Never commit a real proof URL — pass one at run time. The test only
+// exercises the private-bucket upload, so any reachable image URL works.
+const LEGACY_PROOF_URL = process.env.LEGACY_PROOF_URL || '';
 const TEST_ORDER_ID = process.env.TEST_ORDER_ID || 'TEST-VFY1';
 const TEST_PROOF_PATH = `test-vfy1-proof-${Date.now()}.jpg`;
 
@@ -50,7 +51,10 @@ async function main() {
   const key = serviceKey || anonKey;
   const supabase = createClient(url, key, { auth: { persistSession: false, autoRefreshToken: false } });
 
-  // 1. Copy the real proof into the private bucket.
+  // 1. Copy the source proof image into the private bucket.
+  if (!LEGACY_PROOF_URL) {
+    throw new Error('set LEGACY_PROOF_URL to any reachable image URL (the test just needs bytes to upload)');
+  }
   const imgRes = await fetch(LEGACY_PROOF_URL);
   if (!imgRes.ok) throw new Error(`proof download failed: ${imgRes.status}`);
   const bytes = new Uint8Array(await imgRes.arrayBuffer());

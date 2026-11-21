@@ -8,8 +8,9 @@
 //   - sign-proof-upload: anonymous (shoppers aren't signed in), presigned
 //     PUT, flat <name>.jpg keys only, max 4 per request.
 //   - sign-proof-get:    presigned GET for the super admin or an active shop
-//     account with the financial or branch capability. Falls back to a
-//     Supabase signed URL for proofs not yet migrated off
+//     account with the financial or branch capability — scoped to proofs the
+//     caller's own shop's orders reference (cross-shop keys get null). Falls
+//     back to a Supabase signed URL for proofs not yet migrated off
 //     payment-proofs-private.
 //
 // Digital-book PDFs (migration 044) live in the PUBLIC bucket under books/:
@@ -245,6 +246,28 @@ function canReadProofs(profile: AdminProfile): boolean {
   );
 }
 
+/** Proof ownership: the key must be referenced by the caller's own effective
+ *  tenant in some order's payment_proofs map (exact bare key, or a legacy
+ *  full URL ending in it). Capability alone proved nothing about ownership —
+ *  without this, any financial/branch staff of shop A could presign shop B's
+ *  proofs (the bucket is shared and keys surface in scoped order payloads).
+ *  Fails CLOSED on query error. Keys are charset-restricted, so the filter
+ *  interpolation cannot break the PostgREST or-syntax. */
+async function ownsProofKey(tenantId: string, key: string): Promise<boolean> {
+  const path = `payment_proofs->>${tenantId}`;
+  const { data, error } = await supabase
+    .from('orders')
+    .select('id')
+    .contains('tenant_ids', [tenantId])
+    .or(`${path}.eq.${key},${path}.like.%${key}`)
+    .limit(1);
+  if (error) {
+    console.error('proof ownership check failed:', error.message ?? error);
+    return false;
+  }
+  return (data?.length ?? 0) > 0;
+}
+
 // --- actions ---------------------------------------------------------------------
 
 async function handleSignUploads(
@@ -349,7 +372,11 @@ async function withinRateLimit(
  *  insert Supabase bucket this replaces, but tighter: pattern-restricted
  *  keys, at most 4 per request, 20 presign requests per IP per hour (061),
  *  URLs expire in 10 minutes, and the bucket is private so junk uploads are
- *  invisible to everyone. */
+ *  invisible to everyone. Existing objects are never overwritten: a presign
+ *  for a key that already exists is refused, so an attacker who learns a
+ *  victim's proof key cannot replace the bytes before verification reads
+ *  them (a same-instant race is still possible — clients generate
+ *  `${Date.now()}-<random>` keys, so collisions don't occur in practice). */
 async function handleSignProofUpload(req: Request, body: Record<string, unknown>): Promise<Response> {
   if (!(await withinRateLimit(req, 'proof-upload', 20, 3600))) {
     return json({ error: 'too many uploads, try again later' }, 429);
@@ -365,6 +392,10 @@ async function handleSignProofUpload(req: Request, body: Record<string, unknown>
       return json({ error: 'each file needs a valid flat <name>.jpg key' }, 400);
     }
     keys.push(key);
+  }
+  for (const key of keys) {
+    const head = await signedRequest('HEAD', R2_PROOFS_BUCKET, key);
+    if (head.ok) return json({ error: 'proof key already exists' }, 409);
   }
   const uploads = await Promise.all(
     keys.map(async (key) => ({
@@ -398,6 +429,15 @@ async function handleSignProofGet(
   }
   const proofs = await Promise.all(
     keys.map(async (key) => {
+      // Tenant scoping: staff only get URLs for proofs their own shop's
+      // orders reference; anything else is indistinguishable from a proof
+      // that exists in neither store (no cross-shop existence oracle).
+      if (
+        profile.role !== 'super_admin' &&
+        !(await ownsProofKey(effectiveTenantId(profile), key))
+      ) {
+        return { key, url: null };
+      }
       const head = await signedRequest('HEAD', R2_PROOFS_BUCKET, key);
       if (head.ok) {
         return { key, url: await presign('GET', R2_PROOFS_BUCKET, key, PRESIGN_EXPIRY_SECONDS) };
@@ -422,8 +462,13 @@ const DOWNLOAD_UNLOCKED_STATUSES = new Set(['paid', 'on_the_way', 'completed']);
  *  of price-0 products) and revealing them here only after the buyer's order
  *  item reached 'paid'. Since 062 the caller must also present the order's
  *  phone number (trimmed compare) — order id + product id alone no longer
- *  unlock anything. Returns public URLs — no presigning needed. */
-async function handleSignBookGet(body: Record<string, unknown>): Promise<Response> {
+ *  unlock anything. Rate-limited per IP (30/hour) so the id+phone capability
+ *  cannot be brute-forced at scale; the uniform 'not unlocked' refusal leaks
+ *  nothing. Returns public URLs — no presigning needed. */
+async function handleSignBookGet(req: Request, body: Record<string, unknown>): Promise<Response> {
+  if (!(await withinRateLimit(req, 'book-get', 30, 3600))) {
+    return json({ error: 'too many requests, try again later' }, 429);
+  }
   const orderId = typeof body.orderId === 'string' ? body.orderId : '';
   const productId = typeof body.productId === 'string' ? body.productId : '';
   const phone = typeof body.phone === 'string' ? body.phone : '';
@@ -516,7 +561,7 @@ Deno.serve(async (req) => {
     case 'sign-proof-get':
       return handleSignProofGet(body, profile!);
     case 'sign-book-get':
-      return handleSignBookGet(body);
+      return handleSignBookGet(req, body);
     default:
       return json({ error: 'unknown action' }, 400);
   }

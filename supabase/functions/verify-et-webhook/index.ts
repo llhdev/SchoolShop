@@ -108,12 +108,15 @@ function findRequestId(payload: Record<string, unknown>): string | null {
 Deno.serve(async (req) => {
   if (req.method !== 'POST') return json({ error: 'Method not allowed' }, 405);
 
-  if (!(await isVerificationEnabled(supabase))) return json({ skipped: 'verification disabled' });
-
+  // Signature first: the kill-switch response differs from the 401, so
+  // checking it before auth would let unauthenticated callers probe whether
+  // verification is enabled.
   const rawBody = await req.text();
   if (!(await isSignatureValid(req, rawBody))) {
     return json({ error: 'Invalid signature' }, 401);
   }
+
+  if (!(await isVerificationEnabled(supabase))) return json({ skipped: 'verification disabled' });
 
   // Dashboard test pings only prove the endpoint is reachable and the
   // signature checks out — acknowledge without touching any attempt.

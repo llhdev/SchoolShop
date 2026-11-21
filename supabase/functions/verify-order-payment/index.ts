@@ -340,6 +340,18 @@ async function verifyTenantSlice(
   }
 }
 
+/** Constant-time token compare: both sides are hashed to fixed-length
+ *  SHA-256 digests first, so comparison time leaks neither length nor the
+ *  matching-prefix length of the expected token. */
+async function internalTokenMatches(presented: string, expected: string): Promise<boolean> {
+  const hash = async (s: string) =>
+    new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(s)));
+  const [a, b] = await Promise.all([hash(presented), hash(expected)]);
+  let diff = 0;
+  for (let i = 0; i < a.length; i++) diff |= a[i] ^ b[i];
+  return diff === 0;
+}
+
 // --- entry point ------------------------------------------------------------------
 
 Deno.serve(async (req) => {
@@ -348,7 +360,9 @@ Deno.serve(async (req) => {
   if (!(await isVerificationEnabled(supabase))) return json({ skipped: 'verification disabled' });
 
   // Internal callers only (DB trigger / retry RPC). No publishable-key path.
-  if (!INTERNAL_TOKEN || req.headers.get('x-internal-token') !== INTERNAL_TOKEN) {
+  // Constant-time compare over SHA-256 digests (fixed-length inputs, so the
+  // comparison time doesn't leak token length or prefix).
+  if (!INTERNAL_TOKEN || !(await internalTokenMatches(req.headers.get('x-internal-token') ?? '', INTERNAL_TOKEN))) {
     return json({ error: 'Unauthorized' }, 401);
   }
   if (!VERIFY_ET_API_KEY) {

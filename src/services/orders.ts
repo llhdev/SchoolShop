@@ -7,6 +7,13 @@ import { CACHE_KEYS, getCached, setCached } from './cache';
 
 const REFETCH_DEBOUNCE_MS = 500;
 
+/** Shopper status polling cadence. Realtime order events no longer reach
+ *  anonymous clients (062 — the public SELECT policy was dropped), so guest
+ *  and Mini App order lists poll on this interval instead; 15s is quick
+ *  enough that a payment verified right after checkout shows up while the
+ *  shopper is still looking at the screen. */
+const SHOPPER_POLL_MS = 15000;
+
 interface DbOrder {
   id: string;
   items: unknown;
@@ -320,9 +327,11 @@ export async function fetchOrdersByIds(
   return all;
 }
 
-/** Realtime for one shopper's orders (Telegram Mini App sessions). Since
- *  migration 062 anonymous clients no longer receive order row events, so
- *  this rarely fires; the launch-time fetch is the reliable refresh. */
+/** Live status for one shopper's orders (Telegram Mini App sessions). Since
+ *  migration 062 anonymous clients receive no order row events, so the
+ *  realtime subscription below almost never fires — the actual mechanism is
+ *  the SHOPPER_POLL_MS interval, which refetches via get_orders_by_telegram_id
+ *  (the HMAC token is the capability). */
 export function subscribeToShopperOrders(
   telegramId: number,
   ordersToken: string | undefined,
@@ -337,6 +346,7 @@ export function subscribeToShopperOrders(
     }
   }, REFETCH_DEBOUNCE_MS);
 
+  const poller = setInterval(refetch, SHOPPER_POLL_MS);
   const subscription = supabase
     .channel(`orders_shopper_${telegramId}`)
     .on(
@@ -346,13 +356,15 @@ export function subscribeToShopperOrders(
     )
     .subscribe();
   return () => {
+    clearInterval(poller);
     supabase.removeChannel(subscription);
   };
 }
 
-/** Realtime for a guest shopper: refetch exactly the orders this device
- *  knows about whenever any order row changes. Same realtime caveat as
- *  subscribeToShopperOrders (062): anonymous order events no longer arrive. */
+/** Live status for a guest shopper: refetch exactly the orders this device
+ *  knows about (id + the phone typed at checkout, via get_order_for_shopper).
+ *  Same 062 caveat as subscribeToShopperOrders — polling, not realtime, is
+ *  what keeps guest statuses in sync with the admin side. */
 export function subscribeToOrdersByIds(
   refs: { id: string; phone: string }[],
   onChange: (orders: Order[]) => void
@@ -366,6 +378,7 @@ export function subscribeToOrdersByIds(
     }
   }, REFETCH_DEBOUNCE_MS);
 
+  const poller = setInterval(refetch, SHOPPER_POLL_MS);
   const subscription = supabase
     .channel('orders_guest')
     .on(
@@ -375,6 +388,7 @@ export function subscribeToOrdersByIds(
     )
     .subscribe();
   return () => {
+    clearInterval(poller);
     supabase.removeChannel(subscription);
   };
 }

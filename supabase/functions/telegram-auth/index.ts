@@ -84,10 +84,12 @@ async function validateInitData(
 
   if (!timingSafeEqualHex(toHex(signature), hash)) return null;
 
-  // Replay protection: reject captured initData older than 24 hours.
+  // Replay protection: reject captured initData older than 1 hour. Clients
+  // get fresh initData from Telegram on every Mini App launch, so a tight
+  // window costs nothing and bounds how long a leaked initData replays.
   // auth_date is part of the signed payload, so it cannot be forged once the
   // hash checks out.
-  const MAX_AGE_SECONDS = 24 * 60 * 60;
+  const MAX_AGE_SECONDS = 60 * 60;
   const authDate = Number(params.get('auth_date'));
   if (!Number.isFinite(authDate) || Math.abs(Date.now() / 1000 - authDate) > MAX_AGE_SECONDS) {
     return null;
