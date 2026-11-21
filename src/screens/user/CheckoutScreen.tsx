@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Platform } from 'react-native';
-import { useFocusEffect, useNavigation } from '@react-navigation/native';
+import { useFocusEffect, useNavigation, useRoute, RouteProp } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import {
   Image,
@@ -140,10 +140,19 @@ const VERIFY_CHIP_LABELS: Record<ShopVerifyState, string> = {
 
 export function CheckoutScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
-  const { cart, cartTotal, cartCount, clearCart, addOrder, shopper, products, theme } = useApp();
+  const route = useRoute<RouteProp<RootStackParamList, 'Checkout'>>();
+  const { cart, clearCart, addOrder, shopper, products, theme } = useApp();
   const { isDesktop, isPhone } = useResponsive();
   const colors = useThemeColors();
   const styles = makeStyles(colors);
+  /** Buy Now mode (ProductDetail's Buy button): check out this one item
+   *  directly — the cart is neither read nor cleared. Absent = normal cart
+   *  checkout. */
+  const buyNowItem = route.params?.buyNowItem;
+  const checkoutItems = useMemo<CartItem[]>(
+    () => (buyNowItem ? [buyNowItem] : cart),
+    [buyNowItem, cart]
+  );
   // Toned amber for warning-pass notes — raw colors.warning is unreadable
   // on the light theme (same convention as PaymentWarningBadge).
   const warningTextColor = theme === 'dark' ? colors.warning : '#8A6D03';
@@ -239,7 +248,7 @@ export function CheckoutScreen() {
   const catalog = freshProducts ?? products;
   const tenantGroups = useMemo<TenantPaymentGroup[]>(() => {
     const map = new Map<string, TenantPaymentGroup>();
-    for (const item of cart) {
+    for (const item of checkoutItems) {
       const current: Product =
         catalog.find((p) => p.id === item.product.id) ?? item.product;
       const key = current.ownerId ?? item.product.ownerId ?? UNKNOWN_TENANT_KEY;
@@ -269,7 +278,7 @@ export function CheckoutScreen() {
       group.total = group.subtotal + group.shippingFee;
     }
     return [...map.values()];
-  }, [cart, catalog]);
+  }, [checkoutItems, catalog]);
 
   // Load the branches of every shop in the cart (migration 045). Re-runs when
   // the tenant set changes — including when the fresh catalog resolves an
@@ -319,13 +328,18 @@ export function CheckoutScreen() {
 
   // Each shop in the cart charges its flat shipping fee once per order.
   const shippingTotal = tenantGroups.reduce((sum, group) => sum + group.shippingFee, 0);
-  const orderTotal = cartTotal + shippingTotal;
+  // Buy Now mode has exactly one item; cart mode sums the whole cart.
+  const itemsTotal = checkoutItems.reduce(
+    (sum, item) => sum + getUnitPrice(item) * item.quantity,
+    0
+  );
+  const orderTotal = itemsTotal + shippingTotal;
 
   // Cart lines whose product defines tenant checkout questions (migration 036).
   // Field definitions come from the freshest catalog row, like bank details.
   const questionLines = useMemo(
     () =>
-      cart
+      checkoutItems
         .map((item) => {
           const current: Product =
             catalog.find((p) => p.id === item.product.id) ?? item.product;
@@ -333,7 +347,7 @@ export function CheckoutScreen() {
           return fields.length > 0 ? { lineId: getCartItemLineId(item), item, fields } : null;
         })
         .filter((line): line is NonNullable<typeof line> => line !== null),
-    [cart, catalog]
+    [checkoutItems, catalog]
   );
 
   const unansweredRequired = questionLines.flatMap((line) =>
@@ -370,7 +384,7 @@ export function CheckoutScreen() {
   // Exception: the not_receipt escape hatch (verifiedOnly) has no receipt on
   // file to review, so ONLY 'verified' unblocks it.
   const canPlaceOrder =
-    cart.length > 0 &&
+    checkoutItems.length > 0 &&
     phoneValid &&
     unansweredRequired.length === 0 &&
     !placingOrder &&
@@ -398,7 +412,7 @@ export function CheckoutScreen() {
   useFocusEffect(
     useCallback(() => {
       if (!isTMA) return;
-      if (cart.length === 0) {
+      if (checkoutItems.length === 0) {
         configureTelegramMainButton(null);
         return;
       }
@@ -413,7 +427,7 @@ export function CheckoutScreen() {
       });
       return () => configureTelegramMainButton(null);
       // eslint-disable-next-line react-hooks/exhaustive-deps
-    }, [isTMA, canPlaceOrder, orderTotal, cart.length, colors.primary, colors.border])
+    }, [isTMA, canPlaceOrder, orderTotal, checkoutItems.length, colors.primary, colors.border])
   );
 
   /** Pick one payment proof photo for a shop and upload it right away, so the
@@ -641,7 +655,7 @@ export function CheckoutScreen() {
   }
 
   async function handlePlaceOrder() {
-    if (cart.length === 0 || placingOrder) return;
+    if (checkoutItems.length === 0 || placingOrder) return;
     if (!canPlaceOrder) {
       // Required info missing: mark the empty fields in red and tell the
       // shopper what's needed. The button stays tappable precisely so this
@@ -702,7 +716,7 @@ export function CheckoutScreen() {
       // Snapshot each line with the buyer's answers to the shop's questions
       // and the branch chosen for its shop (re-validated server-side by
       // stamp_order_tenants).
-      items: cart.map((item) => {
+      items: checkoutItems.map((item) => {
         const answers = answersByLine[getCartItemLineId(item)];
         const fieldAnswers = Object.entries(answers ?? {})
           .map(([label, value]) => {
@@ -751,7 +765,8 @@ export function CheckoutScreen() {
     setTelegramMainButtonProgress(true);
     try {
       await addOrder(order);
-      clearCart();
+      // Buy Now never touched the cart — only a real cart checkout empties it.
+      if (!buyNowItem) clearCart();
       // Leave Checkout so it isn't kept in the stack over Home/Orders.
       navigation.popToTop();
       navigation.navigate('UserTabs', { screen: 'Orders' });
@@ -764,8 +779,9 @@ export function CheckoutScreen() {
     }
   }
 
-  // Nothing to check out: don't render the form at all.
-  if (cart.length === 0) {
+  // Nothing to check out: don't render the form at all. (Buy Now always has
+  // exactly one item, so this is only reachable in cart mode.)
+  if (checkoutItems.length === 0) {
     return (
       <>
         {isWeb && <WebHeader showSearch={false} />}
@@ -806,7 +822,7 @@ export function CheckoutScreen() {
             <View style={[styles.column, isDesktop && styles.columnDesktop]}>
               <View style={styles.section}>
                 <Text style={styles.sectionTitle}>Order Summary</Text>
-                {cart.map((item) => (
+                {checkoutItems.map((item) => (
                   <View key={getCartItemLineId(item)} style={styles.summaryRow}>
                     <Text style={styles.summaryText}>
                       {item.quantity} × {item.product.name}
@@ -1428,7 +1444,8 @@ export function CheckoutScreen() {
           <View style={styles.footerInner}>
             <View style={styles.footerTotals}>
               <Text style={styles.footerCount}>
-                {cartCount} item{cartCount === 1 ? '' : 's'}
+                {checkoutItems.reduce((sum, item) => sum + item.quantity, 0)} item
+                {checkoutItems.reduce((sum, item) => sum + item.quantity, 0) === 1 ? '' : 's'}
               </Text>
               <Text style={styles.footerTotal}>{formatPrice(orderTotal)}</Text>
             </View>

@@ -1,5 +1,7 @@
 import { NavigatorScreenParams } from '@react-navigation/native';
 
+import { CartItem } from './index';
+
 export type UserTabParamList = {
   Home: undefined;
   Cart: undefined;
@@ -26,6 +28,9 @@ export type RootStackParamList = {
    *  owner plus its staff accounts (migration 045). The password picks one. */
   AdminLogin: { username: string; emails: string[] };
   ProductDetail: { productId: string };
-  Checkout: undefined;
+  /** buyNowItem: Amazon-style Buy Now (a direct checkout of this one item;
+   *  the cart is left untouched and NOT cleared after the order). Absent =
+   *  normal cart checkout. */
+  Checkout: { buyNowItem?: CartItem } | undefined;
   OrderDetail: { orderId: string };
 };

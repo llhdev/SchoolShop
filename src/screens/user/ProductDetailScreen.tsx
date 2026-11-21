@@ -227,8 +227,19 @@ export function ProductDetailScreen() {
     if (!product) return;
     const selection = buildSelection();
     if (variantGroups.length > 0 && !selection) return;
-    addToCart(product, activeIndex, selection?.selectedOptions, selection?.unitPrice);
-    navigation.navigate('Checkout');
+    // Buy Now: a direct checkout of this one item — it does NOT go through
+    // the cart, so items the shopper left in the cart earlier don't join the
+    // order and the cart survives the purchase untouched.
+    navigation.navigate('Checkout', {
+      buyNowItem: {
+        product,
+        quantity: 1,
+        selectedImageIndex: activeIndex,
+        ...(selection
+          ? { selectedOptions: selection.selectedOptions, unitPrice: selection.unitPrice }
+          : {}),
+      },
+    });
   }
 
   const phoneImageHeight = windowWidth * PHONE_IMAGE_HEIGHT_RATIO;
