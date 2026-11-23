@@ -3,6 +3,7 @@ import { Platform } from 'react-native';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import {
+  ActivityIndicator,
   Dimensions,
   FlatList,
   Linking,
@@ -82,7 +83,7 @@ export function ProductDetailScreen() {
   const route = useRoute();
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const { productId } = route.params as { productId: string };
-  const { products, addToCart, role } = useApp();
+  const { products, addToCart, role, isHydrated } = useApp();
   const { isDesktop } = useResponsive();
   const { width: windowWidth } = useWindowDimensions();
   const colors = useThemeColors();
@@ -147,7 +148,14 @@ export function ProductDetailScreen() {
         {isWeb && webHeader}
         <Screen>
           {webBackLink}
-          <EmptyState message="Product not found." icon="alert-circle-outline" />
+          {!isHydrated ? (
+            <View style={styles.loadingWrap}>
+              <ActivityIndicator size="large" color={colors.primary} />
+              <Text style={styles.loadingText}>Loading product…</Text>
+            </View>
+          ) : (
+            <EmptyState message="Product not found." icon="alert-circle-outline" />
+          )}
         </Screen>
       </>
     );
@@ -1009,5 +1017,15 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
     fontSize: fontSizes.sm,
     color: colors.danger,
     marginTop: spacing.xs,
+  },
+  loadingWrap: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: spacing.xxl,
+    gap: spacing.md,
+  },
+  loadingText: {
+    fontSize: fontSizes.md,
+    color: colors.textSecondary,
   },
 });

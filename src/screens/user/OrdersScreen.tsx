@@ -1,7 +1,7 @@
 import { Platform } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Screen } from '../../components/Screen';
 import { EmptyState } from '../../components/EmptyState';
@@ -19,7 +19,7 @@ import { useThemeColors, spacing, borderRadius, fontSizes, pageWidth, ColorPalet
 
 export function OrdersScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
-  const { orders, shopper } = useApp();
+  const { orders, shopper, isHydrated, ordersLoading } = useApp();
   const { isPhone } = useResponsive();
   const colors = useThemeColors();
   const styles = makeStyles(colors);
@@ -32,6 +32,23 @@ export function OrdersScreen() {
 
   const isWeb = Platform.OS === 'web';
   const goHome = () => navigation.navigate('UserTabs', { screen: 'Home' });
+
+  if (orders.length === 0 && (!isHydrated || ordersLoading)) {
+    return (
+      <>
+        {isWeb && <WebHeader showSearch={false} />}
+        <Screen>
+          <View style={styles.container}>
+            {accountBadge}
+            <View style={styles.loadingWrap}>
+              <ActivityIndicator size="large" color={colors.primary} />
+              <Text style={styles.loadingText}>Loading orders…</Text>
+            </View>
+          </View>
+        </Screen>
+      </>
+    );
+  }
 
   if (orders.length === 0) {
     return (
@@ -163,6 +180,16 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
   },
   badgeWrap: {
     marginBottom: spacing.md,
+  },
+  loadingWrap: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: spacing.xxl,
+    gap: spacing.md,
+  },
+  loadingText: {
+    fontSize: fontSizes.md,
+    color: colors.textSecondary,
   },
   card: {
     backgroundColor: colors.surface,

@@ -1,7 +1,7 @@
 import { Platform } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
 import { Screen } from '../../components/Screen';
 import { CartItemRow } from '../../components/CartItemRow';
@@ -17,12 +17,26 @@ import { useThemeColors, spacing, borderRadius, fontSizes, pageWidth, ColorPalet
 
 export function CartScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
-  const { cart, cartTotal, cartCount, updateCartQuantity, removeFromCart } = useApp();
+  const { cart, cartTotal, cartCount, updateCartQuantity, removeFromCart, isHydrated } = useApp();
   const { isPhone } = useResponsive();
   const colors = useThemeColors();
   const styles = makeStyles(colors);
 
   const isWeb = Platform.OS === 'web';
+
+  if (cart.length === 0 && !isHydrated) {
+    return (
+      <>
+        {isWeb && <WebHeader showSearch={false} />}
+        <Screen>
+          <View style={styles.loadingWrap}>
+            <ActivityIndicator size="large" color={colors.primary} />
+            <Text style={styles.loadingText}>Loading cart…</Text>
+          </View>
+        </Screen>
+      </>
+    );
+  }
 
   if (cart.length === 0) {
     return (
@@ -203,5 +217,15 @@ const makeStyles = (colors: ColorPalette) =>
     },
     checkoutButton: {
       marginTop: 8,
+    },
+    loadingWrap: {
+      alignItems: 'center',
+      justifyContent: 'center',
+      paddingVertical: spacing.xxl,
+      gap: spacing.md,
+    },
+    loadingText: {
+      fontSize: fontSizes.md,
+      color: colors.textSecondary,
     },
   });

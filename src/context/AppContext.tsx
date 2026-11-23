@@ -225,6 +225,16 @@ interface AppContextValue extends AppState {
   /** Tenant id used for all shop scoping (orders, products, analysis):
    *  staffSession.tenantId for shop accounts, NULL for super admin/shopper. */
   effectiveTenantId: string | null;
+  /** True once the AsyncStorage cache has been loaded into state; before that
+   *  products/cart/orders are still empty. Screens use it to show a spinner
+   *  instead of a misleading empty state on first launch. */
+  isHydrated: boolean;
+  /** True until the first applicable order fetch for the current role/shopper
+   *  completes: the admin list, the Telegram shopper's history, or the
+   *  guest's device-placed refs (a guest with no refs resolves immediately).
+   *  Reset on sign-out so the next viewer sees loading, not the previous
+   *  account's empty state. */
+  ordersLoading: boolean;
   setRole: (role: Role) => void;
   setStaffSession: (session: StaffSession | null) => void;
   /** Refetch the signed-in shop account's profile and rebuild staffSession
@@ -263,6 +273,7 @@ const AppContext = createContext<AppContextValue | undefined>(undefined);
 export function AppProvider({ children }: { children: ReactNode }) {
   const [state, dispatch] = useReducer(reducer, initialState);
   const [isHydrated, setIsHydrated] = useState(false);
+  const [ordersLoading, setOrdersLoading] = useState(true);
   const [currentUserId, setCurrentUserId] = useState<string | null>(null);
   const [shopper, setShopper] = useState<Shopper | null>(null);
   const [staffSession, setStaffSession] = useState<StaffSession | null>(null);
@@ -407,6 +418,9 @@ export function AppProvider({ children }: { children: ReactNode }) {
     // Drop the admin order list so it does not leak into shopper mode.
     dispatch({ type: 'SET_ORDERS', payload: [] });
     await saveOrdersToCache([]);
+    // The next viewer's first order fetch hasn't run yet — show loading
+    // rather than the cleared list's empty state until it resolves.
+    setOrdersLoading(true);
   }
 
   // Live kick: if the super admin switches this shop off while a staff
@@ -518,6 +532,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (!isHydrated) return;
     const isAdmin = state.role === 'admin' || state.role === 'super_admin';
     if (!isAdmin) return;
+    // A fresh role/scope means the displayed list is stale until this fetch
+    // lands — keep the loading flag up so screens show a spinner, not the
+    // previous viewer's empty state.
+    setOrdersLoading(true);
     const tenantFilter = state.role === 'admin' ? staffTenantId : undefined;
     // A tenant admin's id comes from the auth session; wait for it so the
     // first fetch is already scoped rather than briefly leaking all orders.
@@ -537,6 +555,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         // Keep cached data if the fetch fails.
       }
       if (!cancelled) {
+        setOrdersLoading(false);
         unsubscribeOrders = subscribeToOrders(async (orders) => {
           dispatch({ type: 'SET_ORDERS', payload: orders });
           await saveOrdersToCache(orders);
@@ -599,6 +618,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (!isHydrated || !shopper) return;
     if (state.role === 'admin' || state.role === 'super_admin') return;
     if (!shopper.ordersToken) return;
+    setOrdersLoading(true);
     let cancelled = false;
     let unsubscribe: (() => void) | undefined;
 
@@ -610,6 +630,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         // Keep whatever is already displayed.
       }
       if (!cancelled) {
+        setOrdersLoading(false);
         unsubscribe = subscribeToShopperOrders(shopper.telegramId, shopper.ordersToken, (orders) => {
           dispatch({ type: 'SET_ORDERS', payload: orders });
         });
@@ -640,7 +661,13 @@ export function AppProvider({ children }: { children: ReactNode }) {
     if (!isHydrated) return;
     if (state.role === 'admin' || state.role === 'super_admin') return;
     if (shopper) return;
-    if (!guestOrdersKey) return;
+    if (!guestOrdersKey) {
+      // No device-placed orders to sync — nothing is loading, so the empty
+      // state is honest.
+      setOrdersLoading(false);
+      return;
+    }
+    setOrdersLoading(true);
     const ids = new Set(guestOrdersKey.split(' '));
     const refs = state.orders
       .filter((o) => ids.has(o.id))
@@ -666,6 +693,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         // Keep whatever is already displayed/cached.
       }
       if (!cancelled) {
+        setOrdersLoading(false);
         unsubscribe = subscribeToOrdersByIds(refs, (orders) => {
           void mergeAndApply(orders);
         });
@@ -753,6 +781,8 @@ export function AppProvider({ children }: { children: ReactNode }) {
     shopper,
     staffSession,
     effectiveTenantId: state.role === 'admin' ? staffTenantId : null,
+    isHydrated,
+    ordersLoading,
     setRole: (role) => dispatch({ type: 'SET_ROLE', payload: role }),
     setStaffSession,
     refreshStaffSession,

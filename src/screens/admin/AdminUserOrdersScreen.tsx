@@ -2,7 +2,7 @@ import { Platform } from 'react-native';
 import { useEffect, useState } from 'react';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { ActivityIndicator, FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Screen } from '../../components/Screen';
 import { EmptyState } from '../../components/EmptyState';
 import { AdminHeader } from '../../components/AdminHeader';
@@ -25,7 +25,7 @@ export function AdminUserOrdersScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
   const route = useRoute();
   const { phoneNumber, tenantId } = route.params as { phoneNumber: string; tenantId?: string };
-  const { orders, role, staffSession, effectiveTenantId } = useApp();
+  const { orders, role, staffSession, effectiveTenantId, isHydrated, ordersLoading } = useApp();
   const { isPhone } = useResponsive();
   const colors = useThemeColors();
   const styles = makeStyles(colors);
@@ -94,6 +94,20 @@ export function AdminUserOrdersScreen() {
   };
 
   const isWeb = Platform.OS === 'web';
+
+  if (userOrders.length === 0 && (!isHydrated || ordersLoading)) {
+    return (
+      <>
+        {isWeb && <AdminHeader />}
+        <Screen>
+          <View style={styles.loadingWrap}>
+            <ActivityIndicator size="large" color={colors.primary} />
+            <Text style={styles.loadingText}>Loading orders…</Text>
+          </View>
+        </Screen>
+      </>
+    );
+  }
 
   if (userOrders.length === 0) {
     return (
@@ -273,5 +287,15 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
     alignItems: 'flex-end',
     gap: spacing.xs,
     marginLeft: spacing.sm,
+  },
+  loadingWrap: {
+    alignItems: 'center',
+    justifyContent: 'center',
+    paddingVertical: spacing.xxl,
+    gap: spacing.md,
+  },
+  loadingText: {
+    fontSize: fontSizes.md,
+    color: colors.textSecondary,
   },
 });

@@ -3,6 +3,7 @@ import { Platform } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import {
+  ActivityIndicator,
   StyleSheet,
   Text,
   TextInput,
@@ -70,7 +71,7 @@ const headerRightStyles = StyleSheet.create({
 
 export function AdminDashboardScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<AdminStackParamList>>();
-  const { products, categories, deleteProduct, addCategory, removeCategory, role, staffSession, effectiveTenantId } = useApp();
+  const { products, categories, deleteProduct, addCategory, removeCategory, role, staffSession, effectiveTenantId, isHydrated } = useApp();
   const isSuperAdmin = role === 'super_admin';
   // Staff roles (migration 045): only shop-capable accounts may add/edit/delete
   // items; the super admin and other staff see the catalog read-only.
@@ -226,7 +227,12 @@ export function AdminDashboardScreen() {
 
           <View style={[styles.column, styles.productsColumn, !isSuperAdmin && styles.productsColumnFullWidth]}>
             <Text style={styles.sectionTitle}>Manage Items</Text>
-            {visibleProducts.length === 0 ? (
+            {!isHydrated ? (
+              <View style={styles.loadingWrap}>
+                <ActivityIndicator size="large" color={colors.primary} />
+                <Text style={styles.loadingText}>Loading products…</Text>
+              </View>
+            ) : visibleProducts.length === 0 ? (
               <EmptyState
                 message={isSuperAdmin ? 'No products yet.' : 'No products yet. Add your first item.'}
               />
@@ -613,5 +619,15 @@ const makeStyles = (colors: ColorPalette) =>
     colActions: {
       flex: 1.5,
       justifyContent: 'flex-end',
+    },
+    loadingWrap: {
+      alignItems: 'center',
+      justifyContent: 'center',
+      paddingVertical: spacing.xxl,
+      gap: spacing.md,
+    },
+    loadingText: {
+      fontSize: fontSizes.md,
+      color: colors.textSecondary,
     },
   });
