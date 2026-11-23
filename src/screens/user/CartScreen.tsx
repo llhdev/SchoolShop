@@ -10,6 +10,7 @@ import { Button } from '../../components/Button';
 import { WebHeader } from '../../components/WebHeader';
 import { useApp } from '../../context/AppContext';
 import { useResponsive } from '../../hooks/useResponsive';
+import { useDelayedLoading } from '../../hooks/useDelayedLoading';
 import { formatPrice } from '../../utils/format';
 import { getCartItemLineId, variantKeyOf } from '../../utils/variants';
 import { RootStackParamList } from '../../types/navigation';
@@ -24,7 +25,10 @@ export function CartScreen() {
 
   const isWeb = Platform.OS === 'web';
 
-  if (cart.length === 0 && !isHydrated) {
+  // Spinner only on a genuinely slow first load (delayed + one-way).
+  const showLoading = useDelayedLoading(cart.length === 0 && !isHydrated);
+
+  if (cart.length === 0 && showLoading) {
     return (
       <>
         {isWeb && <WebHeader showSearch={false} />}

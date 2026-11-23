@@ -27,6 +27,7 @@ import { WebHeader } from '../../components/WebHeader';
 import { AdminHeader } from '../../components/AdminHeader';
 import { useApp } from '../../context/AppContext';
 import { useResponsive } from '../../hooks/useResponsive';
+import { useDelayedLoading } from '../../hooks/useDelayedLoading';
 import { getProductGalleryImages } from '../../utils/images';
 import { hasUnselectedGroups, resolveVariantPrice } from '../../utils/variants';
 import { ProductFile, VariantGroup, VariantOption } from '../../types';
@@ -142,13 +143,17 @@ export function ProductDetailScreen() {
     </View>
   ) : null;
 
+  // Spinner only on a genuinely slow first load (delayed + one-way); once
+  // hydrated, a missing product is the honest "not found" state.
+  const showLoading = useDelayedLoading(!isHydrated);
+
   if (!product) {
     return (
       <>
         {isWeb && webHeader}
         <Screen>
           {webBackLink}
-          {!isHydrated ? (
+          {showLoading ? (
             <View style={styles.loadingWrap}>
               <ActivityIndicator size="large" color={colors.primary} />
               <Text style={styles.loadingText}>Loading product…</Text>

@@ -12,6 +12,7 @@ import { VerificationBadge } from '../../components/VerificationBadge';
 import { PaymentWarningBadge } from '../../components/PaymentWarningBadge';
 import { useApp } from '../../context/AppContext';
 import { useResponsive } from '../../hooks/useResponsive';
+import { useDelayedLoading } from '../../hooks/useDelayedLoading';
 import { formatPrice } from '../../utils/format';
 import { formatVariantLabel, getUnitPrice } from '../../utils/variants';
 import { getOrderItemsForScope, getOrderItemsForTenant, hasPaymentWarning } from '../../services/orders';
@@ -95,7 +96,10 @@ export function AdminUserOrdersScreen() {
 
   const isWeb = Platform.OS === 'web';
 
-  if (userOrders.length === 0 && (!isHydrated || ordersLoading)) {
+  // Spinner only on a genuinely slow first load (delayed + one-way).
+  const showLoading = useDelayedLoading(userOrders.length === 0 && (!isHydrated || ordersLoading));
+
+  if (userOrders.length === 0 && showLoading) {
     return (
       <>
         {isWeb && <AdminHeader />}

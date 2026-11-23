@@ -11,6 +11,7 @@ import { TelegramAccountBadge } from '../../components/TelegramAccountBadge';
 import { ProductImage } from '../../components/ProductImage';
 import { useApp } from '../../context/AppContext';
 import { useResponsive } from '../../hooks/useResponsive';
+import { useDelayedLoading } from '../../hooks/useDelayedLoading';
 import { formatPrice } from '../../utils/format';
 import { formatVariantLabel, getUnitPrice } from '../../utils/variants';
 import { getProductCoverImage } from '../../utils/images';
@@ -33,7 +34,11 @@ export function OrdersScreen() {
   const isWeb = Platform.OS === 'web';
   const goHome = () => navigation.navigate('UserTabs', { screen: 'Home' });
 
-  if (orders.length === 0 && (!isHydrated || ordersLoading)) {
+  // Spinner only on a genuinely slow first load — delayed and one-way, so
+  // background order re-syncs never flash it (src/hooks/useDelayedLoading).
+  const showLoading = useDelayedLoading(orders.length === 0 && (!isHydrated || ordersLoading));
+
+  if (orders.length === 0 && showLoading) {
     return (
       <>
         {isWeb && <WebHeader showSearch={false} />}

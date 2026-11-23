@@ -20,6 +20,7 @@ import { ProductImage } from '../../components/ProductImage';
 import { StatCard } from '../../components/StatCard';
 import { useApp } from '../../context/AppContext';
 import { useResponsive } from '../../hooks/useResponsive';
+import { useDelayedLoading } from '../../hooks/useDelayedLoading';
 import { AdminStackParamList } from '../../types/navigation';
 import { getProductCoverImage } from '../../utils/images';
 import { confirmAction } from '../../utils/confirm';
@@ -84,6 +85,9 @@ export function AdminDashboardScreen() {
   const styles = makeStyles(colors);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [newCategory, setNewCategory] = useState('');
+
+  // Spinner only on a genuinely slow first load (delayed + one-way).
+  const showProductsLoading = useDelayedLoading(!isHydrated);
 
   useLayoutEffect(() => {
     if (Platform.OS === 'web') return;
@@ -227,7 +231,7 @@ export function AdminDashboardScreen() {
 
           <View style={[styles.column, styles.productsColumn, !isSuperAdmin && styles.productsColumnFullWidth]}>
             <Text style={styles.sectionTitle}>Manage Items</Text>
-            {!isHydrated ? (
+            {showProductsLoading ? (
               <View style={styles.loadingWrap}>
                 <ActivityIndicator size="large" color={colors.primary} />
                 <Text style={styles.loadingText}>Loading products…</Text>
