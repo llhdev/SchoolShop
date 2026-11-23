@@ -17,6 +17,7 @@ import { fetchScopedOrder } from '../../services/orderLines';
 import {
   approvePaymentVerification,
   fetchVerificationsForOrders,
+  manualVerifyReference,
   retryPaymentVerification,
   setOrderPaymentReference,
   subscribeToVerifications,
@@ -27,6 +28,7 @@ import { useResponsive } from '../../hooks/useResponsive';
 import { formatFileSize, formatPrice } from '../../utils/format';
 import { formatVariantLabel, getUnitPrice } from '../../utils/variants';
 import { confirmAction } from '../../utils/confirm';
+import { notify } from '../../utils/notify';
 import { ORDER_STATUS_LABELS } from '../../constants/orderStatus';
 import { Order, OrderStatus, PaymentVerification, PaymentWarning } from '../../types';
 import { RootStackParamList } from '../../types/navigation';
@@ -67,6 +69,13 @@ export function OrderDetailScreen() {
   const [manualProviders, setManualProviders] = useState<Record<string, 'cbe' | 'telebirr'>>({});
   const [manualBusy, setManualBusy] = useState(false);
   const [manualMessage, setManualMessage] = useState('');
+  // Manual verify tool: typed reference checked live against verify.et + the
+  // claims ledger (financial staff / super admin). Reasons of a failed run
+  // render once, inside the card.
+  const [manualVerifyProvider, setManualVerifyProvider] = useState<'cbe' | 'telebirr'>('telebirr');
+  const [manualVerifyRef, setManualVerifyRef] = useState('');
+  const [manualVerifyBusy, setManualVerifyBusy] = useState(false);
+  const [manualVerifyReasons, setManualVerifyReasons] = useState<string[]>([]);
 
   const contextOrder = orders.find((o) => o.id === orderId);
   // Fallback when an admin viewer's order isn't in context (deep link, or a
@@ -110,6 +119,34 @@ export function OrderDetailScreen() {
   const canSeeProofs = isSuperAdmin || !!capabilities?.financial || !!capabilities?.branch;
   // verify.et payment verification: super admin and financial staff only.
   const canSeeVerification = isSuperAdmin || !!capabilities?.financial;
+
+  // Manual verify tool: which tenant slice it operates on. Staff act for
+  // their own shop; the super admin only when the order has exactly one shop
+  // — multi-shop orders are verified per shop by each shop's financial staff.
+  const orderTenantIds = Array.from(
+    new Set(
+      (order?.tenantIds && order.tenantIds.length > 0
+        ? order.tenantIds
+        : (order?.items ?? []).map((i) => {
+            const p = i.product as { owner_id?: string; ownerId?: string };
+            return p.owner_id ?? p.ownerId ?? '';
+          })
+      ).filter((id): id is string => !!id)
+    )
+  );
+  const manualVerifyTenantId =
+    order && canSeeVerification
+      ? isSuperAdmin
+        ? orderTenantIds.length === 1
+          ? orderTenantIds[0]
+          : null
+        : effectiveTenantId && orderTenantIds.includes(effectiveTenantId)
+          ? effectiveTenantId
+          : null
+      : null;
+  const manualVerifyVerification = manualVerifyTenantId
+    ? verifications.find((v) => v.tenantId === manualVerifyTenantId)
+    : undefined;
 
   // Single-order fallback fetch (see the fetchedOrder state above): direct
   // table read where the 064 SELECT policy allows it, the 070 scoped RPC
@@ -323,6 +360,57 @@ export function OrderDetailScreen() {
       setVerifyError(error instanceof Error ? error.message : 'Could not save the reference.');
     } finally {
       setManualBusy(false);
+    }
+  };
+
+  // Verify a manually typed reference against verify.et + the claims ledger
+  // (financial staff / super admin). On success the server has already
+  // recorded the reference, claimed it, cleared the warning and auto-paid the
+  // shop's items — here we only refresh what the screen shows.
+  const handleManualVerify = async () => {
+    if (!order || !manualVerifyTenantId) return;
+    const reference = manualVerifyRef.trim();
+    if (!reference) {
+      setManualVerifyReasons(['Enter the transaction reference from the receipt.']);
+      return;
+    }
+    setManualVerifyBusy(true);
+    setManualVerifyReasons([]);
+    try {
+      const result = await manualVerifyReference(
+        order.id,
+        manualVerifyTenantId,
+        manualVerifyProvider,
+        reference
+      );
+      if (!result.ok) {
+        setManualVerifyReasons(result.reasons);
+        return;
+      }
+      setManualVerifyRef('');
+      notify(
+        result.alreadyVerified
+          ? 'This payment was already verified.'
+          : "Payment verified — the shop's items are marked paid.",
+        'success'
+      );
+      // Refresh the verification chips immediately (the realtime subscription
+      // also catches it); a fallback-loaded order refetches so the paid
+      // status renders, context orders refresh via the orders subscription.
+      fetchVerificationsForOrders([order.id]).then(setVerifications).catch(() => {});
+      if (!contextOrder) {
+        try {
+          setFetchedOrder(await loadFallbackOrder());
+        } catch {
+          // The update landed; the stale copy refreshes on the next visit.
+        }
+      }
+    } catch (error) {
+      setManualVerifyReasons([
+        error instanceof Error ? error.message : 'Verification failed. Please try again.',
+      ]);
+    } finally {
+      setManualVerifyBusy(false);
     }
   };
 
@@ -600,6 +688,54 @@ export function OrderDetailScreen() {
               </View>
             )}
           </View>
+
+          {manualVerifyTenantId && manualVerifyVerification?.status !== 'verified' && (
+            <View style={styles.section}>
+              <Text style={styles.sectionTitle}>Verify payment manually</Text>
+              <Text style={styles.verificationHint}>
+                Type the transaction reference from the receipt — it is checked with the
+                bank, and the shop's items are marked paid when everything matches.
+              </Text>
+              <View style={styles.manualRefProviderRow}>
+                {(['cbe', 'telebirr'] as const).map((p) => {
+                  const active = manualVerifyProvider === p;
+                  return (
+                    <TouchableOpacity
+                      key={p}
+                      style={[styles.statusChip, active && styles.manualRefChipActive]}
+                      onPress={() => setManualVerifyProvider(p)}
+                    >
+                      <Text
+                        style={[
+                          styles.statusChipText,
+                          active && styles.manualRefChipTextActive,
+                        ]}
+                      >
+                        {p === 'cbe' ? 'CBE' : 'Telebirr'}
+                      </Text>
+                    </TouchableOpacity>
+                  );
+                })}
+              </View>
+              <TextInput
+                style={styles.manualRefInput}
+                placeholder="Transaction reference from the receipt"
+                placeholderTextColor={colors.textSecondary}
+                autoCapitalize="characters"
+                autoCorrect={false}
+                value={manualVerifyRef}
+                onChangeText={setManualVerifyRef}
+              />
+              <View style={styles.verificationActions}>
+                <Button title="Verify" loading={manualVerifyBusy} onPress={handleManualVerify} />
+              </View>
+              {manualVerifyReasons.map((reason, index) => (
+                <Text key={index} style={styles.statusError}>
+                  {reason}
+                </Text>
+              ))}
+            </View>
+          )}
 
           {canSeeVerification && verifications.length > 0 && (
             <View style={styles.section}>

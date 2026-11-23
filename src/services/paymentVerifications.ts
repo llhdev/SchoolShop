@@ -109,3 +109,50 @@ export async function setOrderPaymentReference(
   });
   if (error) throw new Error(error.message);
 }
+
+export type ManualVerifyResult =
+  | { ok: true; alreadyVerified: boolean }
+  | { ok: false; reasons: string[] };
+
+/** Verify a manually typed transaction reference via the
+ *  manual-verify-reference Edge Function (financial staff / super admin only —
+ *  the function authorizes the caller's profile and capability). On success
+ *  the server records the reference (key 'manual'), marks the current attempt
+ *  verified, claims the transaction, clears the shop's payment warning, and
+ *  auto-pays its pending/received items. Failed checks come back as
+ *  plain-language reasons (nothing is persisted); transport/server errors
+ *  throw. */
+export async function manualVerifyReference(
+  orderId: string,
+  tenantId: string,
+  provider: 'cbe' | 'telebirr',
+  reference: string
+): Promise<ManualVerifyResult> {
+  const supabaseUrl = process.env.EXPO_PUBLIC_SUPABASE_URL;
+  const anonKey = process.env.EXPO_PUBLIC_SUPABASE_ANON_KEY;
+  const { data: sessionData } = await supabase.auth.getSession();
+  const token = sessionData.session?.access_token;
+  if (!supabaseUrl || !anonKey || !token) {
+    throw new Error('Sign in as an admin to verify payments.');
+  }
+  const response = await fetch(`${supabaseUrl}/functions/v1/manual-verify-reference`, {
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      apikey: anonKey,
+      Authorization: `Bearer ${token}`,
+    },
+    body: JSON.stringify({ orderId, tenantId, provider, reference }),
+  });
+  const body = (await response.json().catch(() => null)) as
+    | { ok?: boolean; alreadyVerified?: boolean; reasons?: unknown; error?: string }
+    | null;
+  if (!response.ok) {
+    throw new Error(body?.error ?? `Could not verify the payment (HTTP ${response.status}).`);
+  }
+  if (body?.ok === true) return { ok: true, alreadyVerified: body.alreadyVerified === true };
+  const reasons = Array.isArray(body?.reasons)
+    ? body.reasons.filter((r): r is string => typeof r === 'string')
+    : [];
+  return { ok: false, reasons: reasons.length > 0 ? reasons : ['The transaction could not be confirmed.'] };
+}

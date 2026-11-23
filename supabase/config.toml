@@ -442,3 +442,10 @@ verify_jwt = false
 # platform JWT check stays off (and browsers need OPTIONS handled anyway).
 [functions.r2-upload-sign]
 verify_jwt = false
+
+# Called by signed-in financial staff (or the super admin) from the order
+# screen to verify a manually typed transaction reference. Staff-only, so the
+# platform JWT check stays ON; the function additionally authorizes the
+# caller's profile and Financial capability itself.
+[functions.manual-verify-reference]
+verify_jwt = true

@@ -241,8 +241,9 @@ function lineItemKey(item: OrderLineItem): string | null {
  *  further along (on_the_way/completed/cancelled) and other tenants' items
  *  are left alone, and the order-level status is recomputed the same way
  *  update_order_item_status does. Warned/inconclusive verdicts never reach
- *  here — those orders follow the manual staff flow. */
-async function autoPayVerifiedItems(
+ *  here — those orders follow the manual staff flow. Exported for
+ *  manual-verify-reference: a staff-confirmed reference takes the same path. */
+export async function autoPayVerifiedItems(
   supabase: SupabaseClient,
   orderId: string,
   tenantId: string
