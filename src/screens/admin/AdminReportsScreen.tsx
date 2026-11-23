@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { ActivityIndicator, Platform, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -102,6 +102,7 @@ export function AdminReportsScreen() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [reloadKey, setReloadKey] = useState(0);
+  const scrollRef = useRef<ScrollView>(null);
 
   // Same money gating as the orders page; the server also NULLs the revenue
   // fields, so treat null as hidden everywhere (both checks stay).
@@ -228,65 +229,82 @@ export function AdminReportsScreen() {
     <>
       {isWeb && <AdminHeader />}
       <Screen noPadding edges={['left', 'right', 'bottom']}>
-        <View style={styles.container}>
-          <Text style={[styles.title, isPhone && styles.titleCompact]}>Reports</Text>
-          <Text style={styles.subtitle}>
-            {role === 'super_admin'
-              ? 'Sales analytics across every shop.'
-              : "Sales analytics for your shop's orders."}
-          </Text>
-
-          {/* Sticky period selector: rendered OUTSIDE the ScrollView below, so
-              the bar stays visible while the reports scroll beneath it. */}
-          <View style={styles.filterRow}>
-            {PERIODS.map((p) => (
-              <TouchableOpacity
-                key={p.key}
-                style={[styles.chip, period === p.key && styles.chipActive]}
-                onPress={() => setPeriod(p.key)}
-              >
-                <Text style={[styles.chipText, period === p.key && styles.chipTextActive]}>
-                  {p.label}
-                </Text>
-              </TouchableOpacity>
-            ))}
-            {loading && !!stats && (
-              <ActivityIndicator size="small" color={colors.primary} style={styles.refetchSpinner} />
-            )}
+        {/* Only the period chip bar sticks (stickyHeaderIndices index 1):
+            title, subtitle and the custom-range inputs scroll away. The child
+            order/count must stay fixed, so the custom-range wrapper always
+            renders (empty unless a custom range is being edited). */}
+        <ScrollView
+          ref={scrollRef}
+          style={styles.contentScroll}
+          contentContainerStyle={styles.contentScrollContent}
+          stickyHeaderIndices={[1]}
+        >
+          <View style={[styles.container, styles.headerBlock]}>
+            <Text style={[styles.title, isPhone && styles.titleCompact]}>Reports</Text>
+            <Text style={styles.subtitle}>
+              {role === 'super_admin'
+                ? 'Sales analytics across every shop.'
+                : "Sales analytics for your shop's orders."}
+            </Text>
           </View>
-          {period === 'custom' && (
-            <View style={styles.customRow}>
-              <TextInput
-                style={styles.dateInput}
-                value={customStart}
-                onChangeText={setCustomStart}
-                placeholder="From YYYY-MM-DD"
-                placeholderTextColor={colors.textSecondary}
-                autoCapitalize="none"
-                autoCorrect={false}
-              />
-              <Text style={styles.customSep}>to</Text>
-              <TextInput
-                style={styles.dateInput}
-                value={customEnd}
-                onChangeText={setCustomEnd}
-                placeholder="To YYYY-MM-DD"
-                placeholderTextColor={colors.textSecondary}
-                autoCapitalize="none"
-                autoCorrect={false}
-              />
-              {customInvalid && (
-                <Text style={styles.dateError}>
-                  Use YYYY-MM-DD for both dates, from before to.
-                </Text>
+
+          <View style={[styles.container, styles.stickyBar]}>
+            <View style={styles.filterRow}>
+              {PERIODS.map((p) => (
+                <TouchableOpacity
+                  key={p.key}
+                  style={[styles.chip, period === p.key && styles.chipActive]}
+                  onPress={() => {
+                    setPeriod(p.key);
+                    // Bring the custom-range inputs back into view.
+                    if (p.key === 'custom') {
+                      scrollRef.current?.scrollTo({ y: 0, animated: true });
+                    }
+                  }}
+                >
+                  <Text style={[styles.chipText, period === p.key && styles.chipTextActive]}>
+                    {p.label}
+                  </Text>
+                </TouchableOpacity>
+              ))}
+              {loading && !!stats && (
+                <ActivityIndicator size="small" color={colors.primary} style={styles.refetchSpinner} />
               )}
             </View>
-          )}
+          </View>
 
-          <ScrollView
-            style={styles.contentScroll}
-            contentContainerStyle={styles.contentScrollContent}
-          >
+          <View style={styles.container}>
+            {period === 'custom' && (
+              <View style={styles.customRow}>
+                <TextInput
+                  style={styles.dateInput}
+                  value={customStart}
+                  onChangeText={setCustomStart}
+                  placeholder="From YYYY-MM-DD"
+                  placeholderTextColor={colors.textSecondary}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+                <Text style={styles.customSep}>to</Text>
+                <TextInput
+                  style={styles.dateInput}
+                  value={customEnd}
+                  onChangeText={setCustomEnd}
+                  placeholder="To YYYY-MM-DD"
+                  placeholderTextColor={colors.textSecondary}
+                  autoCapitalize="none"
+                  autoCorrect={false}
+                />
+                {customInvalid && (
+                  <Text style={styles.dateError}>
+                    Use YYYY-MM-DD for both dates, from before to.
+                  </Text>
+                )}
+              </View>
+            )}
+          </View>
+
+          <View style={styles.container}>
             {loading && !stats ? (
               <View style={styles.loadingWrap}>
                 <ActivityIndicator size="large" color={colors.primary} />
@@ -583,8 +601,8 @@ export function AdminReportsScreen() {
               </View>
             </>
             )}
-          </ScrollView>
-        </View>
+          </View>
+        </ScrollView>
       </Screen>
     </>
   );
@@ -593,12 +611,18 @@ export function AdminReportsScreen() {
 const makeStyles = (colors: ColorPalette) =>
   StyleSheet.create({
     container: {
-      flex: 1,
       maxWidth: pageWidth.data,
       width: '100%',
       alignSelf: 'center',
       paddingHorizontal: spacing.lg,
+    },
+    headerBlock: {
       paddingTop: spacing.md,
+    },
+    // Opaque so the scrolling reports don't bleed through the pinned bar.
+    stickyBar: {
+      backgroundColor: colors.background,
+      paddingBottom: spacing.md,
     },
     contentScroll: {
       flex: 1,
@@ -625,7 +649,6 @@ const makeStyles = (colors: ColorPalette) =>
       flexWrap: 'wrap',
       alignItems: 'center',
       gap: spacing.sm,
-      marginBottom: spacing.md,
     },
     refetchSpinner: {
       marginLeft: spacing.xs,
