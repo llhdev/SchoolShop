@@ -1,5 +1,5 @@
-import { useMemo, useState } from 'react';
-import { Platform, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
+import { useEffect, useMemo, useState } from 'react';
+import { ActivityIndicator, Platform, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View } from 'react-native';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Screen } from '../../components/Screen';
@@ -11,25 +11,15 @@ import { useApp } from '../../context/AppContext';
 import { useResponsive } from '../../hooks/useResponsive';
 import { formatPrice } from '../../utils/format';
 import {
-  buildReportLines,
-  countByStatus,
-  filterLines,
-  groupByLocation,
-  monthlyRepeatRates,
-  ordersByHour,
-  ordersByWeekday,
+  customRange,
   percentChange,
   periodRange,
   previousPeriodRange,
-  rankProducts,
-  repeatRate,
-  sumLines,
-  trendBuckets,
   PeriodKey,
   PERIODS,
   PREVIOUS_PERIOD_LABELS,
-  ProductRank,
 } from '../../utils/reports';
+import { fetchReportStats, ReportProductRank, ReportStats } from '../../services/reportStats';
 import { ALL_ORDER_STATUSES } from '../../constants/orderStatus';
 import { AdminStackParamList } from '../../types/navigation';
 import { useThemeColors, spacing, borderRadius, fontSizes, pageWidth, ColorPalette } from '../../constants/theme';
@@ -39,7 +29,6 @@ type Navigation = NativeStackNavigationProp<AdminStackParamList>;
 type TrendMetric = 'revenue' | 'orders';
 
 const WEEKDAY_LABELS = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-const HOT_SELLER_COUNT = 10;
 const LOCATION_COUNT = 10;
 
 /** Signed % delta under a snapshot stat; null hides it (no previous base). */
@@ -93,56 +82,80 @@ function BarChart({
   );
 }
 
+/**
+ * Server-aggregated reports (migration 071): every number comes from the
+ * get_scoped_order_stats RPC — the client no longer downloads the order
+ * history. Scoping and money stripping happen in SQL exactly like the merged
+ * orders page; revenue arrives NULL for money-blind staff.
+ */
 export function AdminReportsScreen() {
   const navigation = useNavigation<Navigation>();
-  const { orders, products, role, staffSession, effectiveTenantId } = useApp();
+  const { products, role, staffSession, effectiveTenantId } = useApp();
   const { isDesktop, isPhone } = useResponsive();
   const colors = useThemeColors();
   const styles = makeStyles(colors);
   const [period, setPeriod] = useState<PeriodKey>('month');
+  const [customStart, setCustomStart] = useState('');
+  const [customEnd, setCustomEnd] = useState('');
   const [trendMetric, setTrendMetric] = useState<TrendMetric>('orders');
+  const [stats, setStats] = useState<ReportStats | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState('');
+  const [reloadKey, setReloadKey] = useState(0);
 
-  // Same scoping and money gating as the analysis screen: shop accounts see
-  // their own (branch-narrowed) items; revenue only for super admin and
-  // financial staff.
+  // Same money gating as the orders page; the server also NULLs the revenue
+  // fields, so treat null as hidden everywhere (both checks stay).
   const canSeeMoney = role === 'super_admin' || !!staffSession?.capabilities.financial;
 
-  const lines = useMemo(
+  const custom = useMemo(() => customRange(customStart, customEnd), [customStart, customEnd]);
+  const customInvalid = period === 'custom' && custom.invalid;
+  // One date typed, the other still empty: no fetch yet, no error.
+  const waitingForCustomInput = period === 'custom' && !custom.invalid && !custom.range;
+
+  const range = useMemo(
+    () => (period === 'custom' ? custom.range : periodRange(period)),
+    [period, custom]
+  );
+  const prevRange = useMemo(
     () =>
-      buildReportLines(
-        orders,
-        effectiveTenantId,
-        staffSession?.branchId ?? null,
-        staffSession?.branchSelectionEnabled !== false
-      ),
-    [orders, effectiveTenantId, staffSession]
+      period === 'custom'
+        ? previousPeriodRange('custom', new Date(), custom.range)
+        : previousPeriodRange(period),
+    [period, custom]
   );
-
-  const periodLines = useMemo(() => filterLines(lines, periodRange(period)), [lines, period]);
-  const previousLines = useMemo(
-    () => filterLines(lines, previousPeriodRange(period)),
-    [lines, period]
-  );
-
-  const summary = useMemo(() => sumLines(periodLines), [periodLines]);
-  const previousSummary = useMemo(() => sumLines(previousLines), [previousLines]);
   const previousLabel = PREVIOUS_PERIOD_LABELS[period];
 
-  const trend = useMemo(() => trendBuckets(lines, period), [lines, period]);
-
-  const ranked = useMemo(() => rankProducts(periodLines), [periodLines]);
-
-  const hotWeek = useMemo(
-    () => rankProducts(filterLines(lines, periodRange('week'))).slice(0, HOT_SELLER_COUNT),
-    [lines]
-  );
-  const hotMonth = useMemo(
-    () => rankProducts(filterLines(lines, periodRange('month'))).slice(0, HOT_SELLER_COUNT),
-    [lines]
-  );
+  useEffect(() => {
+    if (customInvalid || waitingForCustomInput) return;
+    let cancelled = false;
+    setLoading(true);
+    setError('');
+    fetchReportStats({
+      tenantId: effectiveTenantId,
+      from: range ? new Date(range[0]).toISOString() : null,
+      to: range ? new Date(range[1]).toISOString() : null,
+      prevFrom: prevRange ? new Date(prevRange[0]).toISOString() : null,
+      prevTo: prevRange ? new Date(prevRange[1]).toISOString() : null,
+      tzOffsetMinutes: new Date().getTimezoneOffset(),
+      trendMode: period,
+    })
+      .then((result) => {
+        if (!cancelled) setStats(result);
+      })
+      .catch(() => {
+        if (!cancelled) setError('Failed to load reports. Please try again.');
+      })
+      .finally(() => {
+        if (!cancelled) setLoading(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [range, prevRange, period, effectiveTenantId, reloadKey, customInvalid, waitingForCustomInput]);
 
   // Dead stock reads the live catalog (scoped to the shop), not the sales
-  // lines — a product that never sold leaves no trace in orders.
+  // lines — a product that never sold leaves no trace in orders. Sold units
+  // come from the RPC's product_ranks (current period).
   const scopedProducts = useMemo(
     () =>
       role === 'super_admin'
@@ -152,11 +165,11 @@ export function AdminReportsScreen() {
   );
   const soldUnitsByProduct = useMemo(() => {
     const map = new Map<string, number>();
-    for (const line of periodLines) {
-      map.set(line.productId, (map.get(line.productId) ?? 0) + line.quantity);
+    for (const rank of stats?.productRanks ?? []) {
+      map.set(rank.productId, (map.get(rank.productId) ?? 0) + rank.units);
     }
     return map;
-  }, [periodLines]);
+  }, [stats]);
   const deadProducts = useMemo(
     () => scopedProducts.filter((p) => !soldUnitsByProduct.has(p.id)),
     [scopedProducts, soldUnitsByProduct]
@@ -173,25 +186,22 @@ export function AdminReportsScreen() {
     [scopedProducts, soldUnitsByProduct]
   );
 
-  // Status counts reflect the CURRENT state of every in-scope item, so they
-  // ignore the period filter (pending doubling as the to-do list).
-  const statusCounts = useMemo(() => countByStatus(lines), [lines]);
-
-  const repeat = useMemo(() => repeatRate(periodLines), [periodLines]);
-  const repeatTrend = useMemo(() => monthlyRepeatRates(lines), [lines]);
-
-  const locations = useMemo(
-    () => groupByLocation(periodLines).slice(0, LOCATION_COUNT),
-    [periodLines]
-  );
-
-  const weekdayCounts = useMemo(() => ordersByWeekday(lines), [lines]);
-  const hourCounts = useMemo(() => ordersByHour(lines), [lines]);
+  const summary = stats?.current ?? null;
+  const previousSummary = stats?.previous ?? null;
+  // Status counts reflect the CURRENT state of every in-scope item (all time),
+  // so they ignore the period filter (pending doubling as the to-do list).
+  const statusCounts = stats?.statusCounts ?? null;
+  const isEmpty =
+    !!statusCounts && ALL_ORDER_STATUSES.every((s) => (statusCounts[s] ?? 0) === 0);
+  const repeatRatePct =
+    summary && summary.customers > 0
+      ? Math.round((summary.repeatCustomers / summary.customers) * 100)
+      : 0;
+  const locations = (stats?.locations ?? []).slice(0, LOCATION_COUNT);
 
   const isWeb = Platform.OS === 'web';
-  const isEmpty = lines.length === 0;
 
-  function renderHotList(title: string, items: ProductRank[]) {
+  function renderHotList(title: string, items: ReportProductRank[]) {
     return (
       <View style={[styles.halfCard, isDesktop && styles.halfCardDesktop]}>
         <Text style={styles.cardTitle}>{title}</Text>
@@ -205,7 +215,7 @@ export function AdminReportsScreen() {
                 {item.label}
               </Text>
               <Text style={styles.rankValue}>
-                {item.units} sold{canSeeMoney ? ` · ${formatPrice(item.revenue)}` : ''}
+                {item.units} sold{canSeeMoney && item.revenue != null ? ` · ${formatPrice(item.revenue)}` : ''}
               </Text>
             </View>
           ))
@@ -217,7 +227,7 @@ export function AdminReportsScreen() {
   return (
     <>
       {isWeb && <AdminHeader />}
-      <Screen scroll noPadding edges={['left', 'right', 'bottom']}>
+      <Screen noPadding edges={['left', 'right', 'bottom']}>
         <View style={styles.container}>
           <Text style={[styles.title, isPhone && styles.titleCompact]}>Reports</Text>
           <Text style={styles.subtitle}>
@@ -226,6 +236,8 @@ export function AdminReportsScreen() {
               : "Sales analytics for your shop's orders."}
           </Text>
 
+          {/* Sticky period selector: rendered OUTSIDE the ScrollView below, so
+              the bar stays visible while the reports scroll beneath it. */}
           <View style={styles.filterRow}>
             {PERIODS.map((p) => (
               <TouchableOpacity
@@ -238,14 +250,61 @@ export function AdminReportsScreen() {
                 </Text>
               </TouchableOpacity>
             ))}
+            {loading && !!stats && (
+              <ActivityIndicator size="small" color={colors.primary} style={styles.refetchSpinner} />
+            )}
           </View>
+          {period === 'custom' && (
+            <View style={styles.customRow}>
+              <TextInput
+                style={styles.dateInput}
+                value={customStart}
+                onChangeText={setCustomStart}
+                placeholder="From YYYY-MM-DD"
+                placeholderTextColor={colors.textSecondary}
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
+              <Text style={styles.customSep}>to</Text>
+              <TextInput
+                style={styles.dateInput}
+                value={customEnd}
+                onChangeText={setCustomEnd}
+                placeholder="To YYYY-MM-DD"
+                placeholderTextColor={colors.textSecondary}
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
+              {customInvalid && (
+                <Text style={styles.dateError}>
+                  Use YYYY-MM-DD for both dates, from before to.
+                </Text>
+              )}
+            </View>
+          )}
 
-          {isEmpty ? (
-            <EmptyState
-              message="No orders yet — reports appear once customers buy something."
-              icon="bar-chart-outline"
-            />
-          ) : (
+          <ScrollView
+            style={styles.contentScroll}
+            contentContainerStyle={styles.contentScrollContent}
+          >
+            {loading && !stats ? (
+              <View style={styles.loadingWrap}>
+                <ActivityIndicator size="large" color={colors.primary} />
+                <Text style={styles.loadingText}>Loading reports…</Text>
+              </View>
+            ) : error && !stats ? (
+              <EmptyState
+                message={error}
+                icon="alert-circle-outline"
+                actionLabel="Try again"
+                onAction={() => setReloadKey((k) => k + 1)}
+              />
+            ) : !stats || !summary || !statusCounts || isEmpty ? (
+              <EmptyState
+                message="No orders yet — reports appear once customers buy something."
+                icon="bar-chart-outline"
+              />
+            ) : (
             <>
               {/* 1. Sales snapshot */}
               <View style={styles.statsRow}>
@@ -253,7 +312,7 @@ export function AdminReportsScreen() {
                   <StatCard value={summary.units} label="Units sold" />
                   <DeltaText
                     value={
-                      previousLabel
+                      previousLabel && previousSummary?.units != null
                         ? percentChange(summary.units, previousSummary.units)
                         : null
                     }
@@ -265,7 +324,7 @@ export function AdminReportsScreen() {
                   <StatCard value={summary.orders} label="Orders" />
                   <DeltaText
                     value={
-                      previousLabel
+                      previousLabel && previousSummary?.orders != null
                         ? percentChange(summary.orders, previousSummary.orders)
                         : null
                     }
@@ -277,7 +336,7 @@ export function AdminReportsScreen() {
                   <StatCard value={summary.customers} label="Customers" />
                   <DeltaText
                     value={
-                      previousLabel
+                      previousLabel && previousSummary?.customers != null
                         ? percentChange(summary.customers, previousSummary.customers)
                         : null
                     }
@@ -285,12 +344,12 @@ export function AdminReportsScreen() {
                     colors={colors}
                   />
                 </View>
-                {canSeeMoney && (
+                {canSeeMoney && summary.revenue != null && (
                   <View style={styles.statWrap}>
                     <StatCard value={formatPrice(summary.revenue)} label="Revenue" />
                     <DeltaText
                       value={
-                        previousLabel
+                        previousLabel && previousSummary?.revenue != null
                           ? percentChange(summary.revenue, previousSummary.revenue)
                           : null
                       }
@@ -305,7 +364,7 @@ export function AdminReportsScreen() {
               <View style={styles.card}>
                 <View style={styles.cardHeader}>
                   <Text style={styles.cardTitle}>Sales trend</Text>
-                  <View style={styles.filterRow}>
+                  <View style={styles.trendToggle}>
                     {canSeeMoney && (
                       <TouchableOpacity
                         style={[styles.chip, trendMetric === 'revenue' && styles.chipActive]}
@@ -336,13 +395,13 @@ export function AdminReportsScreen() {
                     </TouchableOpacity>
                   </View>
                 </View>
-                {trend.length === 0 ? (
+                {stats.trend.length === 0 ? (
                   <Text style={styles.mutedText}>No sales yet.</Text>
                 ) : (
                   <BarChart
-                    data={trend.map((b) => ({
+                    data={stats.trend.map((b) => ({
                       label: b.label,
-                      value: trendMetric === 'revenue' && canSeeMoney ? b.revenue : b.orders,
+                      value: trendMetric === 'revenue' && canSeeMoney ? (b.revenue ?? 0) : b.orders,
                     }))}
                     formatValue={(v) =>
                       trendMetric === 'revenue' && canSeeMoney ? formatPrice(v) : String(v)
@@ -356,24 +415,24 @@ export function AdminReportsScreen() {
               {/* 3. Hot sellers */}
               <Text style={styles.sectionTitle}>Hot sellers</Text>
               <View style={[styles.row, isDesktop && styles.rowDesktop]}>
-                {renderHotList('Top 10 this week', hotWeek)}
-                {renderHotList('Top 10 this month', hotMonth)}
+                {renderHotList('Top 10 this week', stats.hotWeek)}
+                {renderHotList('Top 10 this month', stats.hotMonth)}
               </View>
 
               {/* 4. Units per product */}
               <View style={styles.card}>
                 <Text style={styles.cardTitle}>Units sold per product</Text>
-                {ranked.length === 0 ? (
+                {stats.productRanks.length === 0 ? (
                   <Text style={styles.mutedText}>No sales in this period.</Text>
                 ) : (
-                  ranked.map((item, index) => (
+                  stats.productRanks.map((item, index) => (
                     <View key={item.productId} style={styles.rankRow}>
                       <Text style={styles.rankNumber}>{index + 1}</Text>
                       <Text style={styles.rankLabel} numberOfLines={1}>
                         {item.label}
                       </Text>
                       <Text style={styles.rankValue}>
-                        {item.units} sold{canSeeMoney ? ` · ${formatPrice(item.revenue)}` : ''}
+                        {item.units} sold{canSeeMoney && item.revenue != null ? ` · ${formatPrice(item.revenue)}` : ''}
                       </Text>
                     </View>
                   ))
@@ -435,7 +494,7 @@ export function AdminReportsScreen() {
                     const row = (
                       <>
                         <OrderStatusBadge status={status} small />
-                        <Text style={styles.statusCount}>{statusCounts[status]}</Text>
+                        <Text style={styles.statusCount}>{statusCounts[status] ?? 0}</Text>
                       </>
                     );
                     return status === 'pending' ? (
@@ -461,8 +520,8 @@ export function AdminReportsScreen() {
                 <View style={styles.statsRow}>
                   <StatCard value={summary.customers} label="Unique customers" />
                   <StatCard
-                    value={`${repeat.rate}%`}
-                    label={`Repeat (${repeat.repeatCustomers} of ${repeat.totalCustomers})`}
+                    value={`${repeatRatePct}%`}
+                    label={`Repeat (${summary.repeatCustomers} of ${summary.customers})`}
                   />
                 </View>
                 <Text style={[styles.cardSubtitle, styles.cardSubtitleSpaced]}>
@@ -470,7 +529,7 @@ export function AdminReportsScreen() {
                   month-end.
                 </Text>
                 <View style={styles.repeatRow}>
-                  {repeatTrend.map((month, i) => (
+                  {stats.monthlyRepeat.map((month, i) => (
                     <View key={`${month.label}-${i}`} style={styles.repeatCell}>
                       <Text style={styles.repeatValue}>
                         {month.rate === null ? '—' : `${month.rate}%`}
@@ -502,7 +561,7 @@ export function AdminReportsScreen() {
                 <View style={[styles.halfCard, isDesktop && styles.halfCardDesktop]}>
                   <Text style={styles.cardTitle}>By weekday</Text>
                   <BarChart
-                    data={weekdayCounts.map((count, i) => ({
+                    data={stats.weekdayCounts.map((count, i) => ({
                       label: WEEKDAY_LABELS[i],
                       value: count,
                     }))}
@@ -514,7 +573,7 @@ export function AdminReportsScreen() {
                 <View style={[styles.halfCard, isDesktop && styles.halfCardDesktop]}>
                   <Text style={styles.cardTitle}>By hour</Text>
                   <BarChart
-                    data={hourCounts.map((count, i) => ({ label: `${i}`, value: count }))}
+                    data={stats.hourCounts.map((count, i) => ({ label: `${i}`, value: count }))}
                     formatValue={(v) => String(v)}
                     colors={colors}
                     styles={styles}
@@ -523,7 +582,8 @@ export function AdminReportsScreen() {
                 </View>
               </View>
             </>
-          )}
+            )}
+          </ScrollView>
         </View>
       </Screen>
     </>
@@ -538,7 +598,12 @@ const makeStyles = (colors: ColorPalette) =>
       width: '100%',
       alignSelf: 'center',
       paddingHorizontal: spacing.lg,
-      paddingVertical: spacing.md,
+      paddingTop: spacing.md,
+    },
+    contentScroll: {
+      flex: 1,
+    },
+    contentScrollContent: {
       paddingBottom: spacing.xxl,
     },
     title: {
@@ -558,8 +623,52 @@ const makeStyles = (colors: ColorPalette) =>
     filterRow: {
       flexDirection: 'row',
       flexWrap: 'wrap',
+      alignItems: 'center',
       gap: spacing.sm,
       marginBottom: spacing.md,
+    },
+    refetchSpinner: {
+      marginLeft: spacing.xs,
+    },
+    customRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      flexWrap: 'wrap',
+      gap: spacing.sm,
+      marginBottom: spacing.md,
+    },
+    dateInput: {
+      width: 150,
+      borderWidth: 1,
+      borderColor: colors.border,
+      borderRadius: borderRadius.sm,
+      backgroundColor: colors.surface,
+      paddingHorizontal: spacing.sm,
+      paddingVertical: spacing.xs,
+      fontSize: fontSizes.sm,
+      color: colors.text,
+      ...(Platform.OS === 'web'
+        ? ({ outlineStyle: 'none', boxShadow: 'none' } as any)
+        : {}),
+    },
+    customSep: {
+      fontSize: fontSizes.sm,
+      color: colors.textSecondary,
+    },
+    dateError: {
+      fontSize: fontSizes.xs,
+      color: colors.danger,
+      fontWeight: '600',
+    },
+    loadingWrap: {
+      alignItems: 'center',
+      justifyContent: 'center',
+      paddingVertical: spacing.xxl,
+      gap: spacing.md,
+    },
+    loadingText: {
+      fontSize: fontSizes.md,
+      color: colors.textSecondary,
     },
     chip: {
       flexDirection: 'row',
@@ -632,6 +741,11 @@ const makeStyles = (colors: ColorPalette) =>
       flexDirection: 'row',
       alignItems: 'center',
       justifyContent: 'space-between',
+      flexWrap: 'wrap',
+      gap: spacing.sm,
+    },
+    trendToggle: {
+      flexDirection: 'row',
       flexWrap: 'wrap',
       gap: spacing.sm,
     },
