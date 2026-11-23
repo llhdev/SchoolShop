@@ -1,5 +1,5 @@
 import { ActivityIndicator, Platform, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View, Image, Modal, Linking } from 'react-native';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Ionicons } from '@expo/vector-icons';
@@ -113,16 +113,18 @@ export function OrderDetailScreen() {
 
   // Single-order fallback fetch (see the fetchedOrder state above): direct
   // table read where the 064 SELECT policy allows it, the 070 scoped RPC
-  // otherwise.
+  // otherwise. Callable so changeItemStatus can re-run it after a status
+  // update — the context optimistic update can't see a fallback-loaded order.
   const canReadOrdersTable = isSuperAdmin || !!capabilities?.financial;
+  const loadFallbackOrder = useCallback(
+    () => (canReadOrdersTable ? fetchOrderById(orderId) : fetchScopedOrder(orderId)),
+    [canReadOrdersTable, orderId]
+  );
   useEffect(() => {
     if (contextOrder || role === 'user') return;
     let cancelled = false;
     setFetchSettled(false);
-    const load = canReadOrdersTable
-      ? fetchOrderById(orderId)
-      : fetchScopedOrder(orderId);
-    load
+    loadFallbackOrder()
       .then((result) => {
         if (!cancelled) setFetchedOrder(result);
       })
@@ -133,7 +135,7 @@ export function OrderDetailScreen() {
     return () => {
       cancelled = true;
     };
-  }, [orderId, contextOrder, role, canReadOrdersTable]);
+  }, [contextOrder, role, loadFallbackOrder]);
 
   // Staff see only their shop's line items inside a mixed order, narrowed to
   // their branch when branch-scoped.
@@ -332,6 +334,15 @@ export function OrderDetailScreen() {
     setStatusError('');
     try {
       await updateOrderItemStatus(order.id, itemKey, status);
+      // Fallback-loaded order (not in context): refetch so the new status
+      // renders immediately — the context update can't see this copy.
+      if (!contextOrder) {
+        try {
+          setFetchedOrder(await loadFallbackOrder());
+        } catch {
+          // The update landed; the stale copy refreshes on the next visit.
+        }
+      }
     } catch {
       setStatusError('Failed to update the item status. Please try again.');
     } finally {

@@ -525,9 +525,10 @@ export function AppProvider({ children }: { children: ReactNode }) {
   // (tenant_ids, filled by the stamp_order_tenants trigger); staff accounts
   // use their parent shop's id (migration 045); the super admin sees all.
   // Since migration 064 the direct table read requires the Financial
-  // capability: money-blind staff fetch through the get_scoped_orders RPC
-  // (money stripped server-side) and get no realtime order events — their
-  // list refreshes on fetch, not live.
+  // capability — and money-blind staff no longer get a context order cache
+  // at all: the 064 get_scoped_orders loop times out on large shops, and
+  // every screen they use reads through the set-based 070/071 RPCs or the
+  // OrderDetail fallback instead.
   useEffect(() => {
     if (!isHydrated) return;
     const isAdmin = state.role === 'admin' || state.role === 'super_admin';
@@ -541,13 +542,24 @@ export function AppProvider({ children }: { children: ReactNode }) {
     // first fetch is already scoped rather than briefly leaking all orders.
     if (state.role === 'admin' && !tenantFilter) return;
     const moneyBlind = state.role === 'admin' && !staffSession?.capabilities.financial;
+    // Money-blind staff (branch/shop, 064) get NO context order cache: their
+    // old fetch path (get_scoped_orders) times out on large shops, and their
+    // Orders page (070), Reports (071), and OrderDetail (scoped fallback +
+    // server-side status RPC) all work without it. Clear any stale cache a
+    // previous viewer left behind and resolve loading immediately.
+    if (moneyBlind) {
+      dispatch({ type: 'SET_ORDERS', payload: [] });
+      void saveOrdersToCache([]);
+      setOrdersLoading(false);
+      return;
+    }
 
     let unsubscribeOrders: (() => void) | undefined;
     let cancelled = false;
 
     (async () => {
       try {
-        const orders = await fetchOrders(tenantFilter ?? undefined, moneyBlind);
+        const orders = await fetchOrders(tenantFilter ?? undefined);
         if (cancelled) return;
         dispatch({ type: 'SET_ORDERS', payload: orders });
         await saveOrdersToCache(orders);
@@ -559,7 +571,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
         unsubscribeOrders = subscribeToOrders(async (orders) => {
           dispatch({ type: 'SET_ORDERS', payload: orders });
           await saveOrdersToCache(orders);
-        }, tenantFilter ?? undefined, moneyBlind);
+        }, tenantFilter ?? undefined);
       }
     })();
 
@@ -908,7 +920,18 @@ export function AppProvider({ children }: { children: ReactNode }) {
     updateOrderItemStatus: async (orderId, itemKey, status) => {
       const previous = state.orders;
       const target = previous.find((o) => o.id === orderId);
-      if (!target) return;
+      if (!target) {
+        // The order isn't in context — money-blind staff get no context order
+        // cache, so OrderDetail loaded it via the scoped fallback fetch. The
+        // server RPC enforces every permission and transition rule; returning
+        // here used to make the status button a silent no-op.
+        try {
+          await updateOrderItemStatus(orderId, itemKey, status);
+        } catch {
+          throw new Error('Failed to update item status');
+        }
+        return;
+      }
       const itemStatuses = { ...(target.itemStatuses ?? {}), [itemKey]: status };
       // Mirror the server-side rule (053): the order-level status is the
       // least-advanced non-cancelled item status, cancelled when every item

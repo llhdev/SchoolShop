@@ -105,11 +105,11 @@ async function fetchAllOrderPages(
 
 /** Tenant admins only see orders containing their own products.
  *  tenant_ids is filled server-side by the stamp_order_tenants trigger.
- *  The direct table read is super-admin/financial-only (migration 064):
- *  pass moneyBlind for staff without the Financial capability — they are
- *  served by the get_scoped_orders RPC instead (money stripped server-side). */
-export async function fetchOrders(tenantId?: string, moneyBlind = false): Promise<Order[]> {
-  if (moneyBlind) return fetchScopedOrders();
+ *  The direct table read is super-admin/financial-only (migration 064);
+ *  staff without the Financial capability get no context order cache at all
+ *  (their screens use the set-based 070/071 RPCs — the 064 get_scoped_orders
+ *  loop times out on large shops). */
+export async function fetchOrders(tenantId?: string): Promise<Order[]> {
   return fetchAllOrderPages(() => {
     let query = supabase
       .from('orders')
@@ -132,18 +132,6 @@ export async function fetchOrderById(orderId: string): Promise<Order | null> {
     .maybeSingle();
   if (error) throw error;
   return data ? toOrder(data as unknown as DbOrder) : null;
-}
-
-/** Order list for staff WITHOUT the Financial capability (migration 064).
- *  get_scoped_orders returns the caller's tenant-scoped orders with the money
- *  stripped server-side: total and per-item prices are 0, shipping fees and
- *  payment references are emptied, payment proofs survive only for branch
- *  staff, and branch scoping is applied. The row shape matches the table
- *  read, so the same mapping applies. */
-export async function fetchScopedOrders(): Promise<Order[]> {
-  const { data, error } = await supabase.rpc('get_scoped_orders');
-  if (error) throw error;
-  return ((data ?? []) as unknown as DbOrder[]).map(toOrder);
 }
 
 /** Line items of an order that belong to one tenant. Item snapshots are
@@ -285,15 +273,14 @@ export async function updateOrderItemStatus(
 
 export function subscribeToOrders(
   onChange: (orders: Order[]) => void,
-  tenantId?: string,
-  moneyBlind = false
+  tenantId?: string
 ) {
-  // Debounce so a burst of events triggers one refetch. Money-blind staff
-  // (064) receive no realtime row events at all — the orders SELECT policy
-  // no longer covers them — so for them this is a launch-time fetch only.
+  // Debounce so a burst of events triggers one refetch. Only table readers
+  // (super admin / financial staff) subscribe — money-blind staff have no
+  // context order cache to refresh.
   const refetch = debounce(async () => {
     try {
-      const orders = await fetchOrders(tenantId, moneyBlind);
+      const orders = await fetchOrders(tenantId);
       onChange(orders);
     } catch {
       // Keep cached data if the refresh fails.
