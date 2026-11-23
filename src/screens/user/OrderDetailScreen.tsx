@@ -12,7 +12,8 @@ import { Button } from '../../components/Button';
 import { VerificationBadge } from '../../components/VerificationBadge';
 import { PaymentWarningBadge } from '../../components/PaymentWarningBadge';
 import { useApp } from '../../context/AppContext';
-import { getItemKey, getItemStatus, getOrderItemsForScope, hasPaymentWarning } from '../../services/orders';
+import { fetchOrderById, getItemKey, getItemStatus, getOrderItemsForScope, hasPaymentWarning } from '../../services/orders';
+import { fetchScopedOrder } from '../../services/orderLines';
 import {
   approvePaymentVerification,
   fetchVerificationsForOrders,
@@ -27,7 +28,7 @@ import { formatFileSize, formatPrice } from '../../utils/format';
 import { formatVariantLabel, getUnitPrice } from '../../utils/variants';
 import { confirmAction } from '../../utils/confirm';
 import { ORDER_STATUS_LABELS } from '../../constants/orderStatus';
-import { OrderStatus, PaymentVerification, PaymentWarning } from '../../types';
+import { Order, OrderStatus, PaymentVerification, PaymentWarning } from '../../types';
 import { RootStackParamList } from '../../types/navigation';
 import { OrderStatusBadge } from '../../components/OrderStatusBadge';
 import { useThemeColors, spacing, borderRadius, fontSizes, pageWidth, ColorPalette } from '../../constants/theme';
@@ -67,7 +68,16 @@ export function OrderDetailScreen() {
   const [manualBusy, setManualBusy] = useState(false);
   const [manualMessage, setManualMessage] = useState('');
 
-  const order = orders.find((o) => o.id === orderId);
+  const contextOrder = orders.find((o) => o.id === orderId);
+  // Fallback when an admin viewer's order isn't in context (deep link, or a
+  // sync that hasn't finished): the super admin / financial staff read the
+  // table directly (064 policy), other staff go through get_scoped_order
+  // (070), which applies the same money strip + branch scoping as
+  // get_scoped_orders. Shoppers keep the context-only path — their orders
+  // always arrive via the shopper sync.
+  const [fetchedOrder, setFetchedOrder] = useState<Order | null>(null);
+  const [fetchSettled, setFetchSettled] = useState(false);
+  const order = contextOrder ?? fetchedOrder ?? undefined;
   // Orders hydrate from cache first and (for Telegram shoppers) re-sync from
   // the server shortly after; give that sync a moment before concluding the
   // order is gone instead of flashing "not found".
@@ -100,6 +110,30 @@ export function OrderDetailScreen() {
   const canSeeProofs = isSuperAdmin || !!capabilities?.financial || !!capabilities?.branch;
   // verify.et payment verification: super admin and financial staff only.
   const canSeeVerification = isSuperAdmin || !!capabilities?.financial;
+
+  // Single-order fallback fetch (see the fetchedOrder state above): direct
+  // table read where the 064 SELECT policy allows it, the 070 scoped RPC
+  // otherwise.
+  const canReadOrdersTable = isSuperAdmin || !!capabilities?.financial;
+  useEffect(() => {
+    if (contextOrder || role === 'user') return;
+    let cancelled = false;
+    setFetchSettled(false);
+    const load = canReadOrdersTable
+      ? fetchOrderById(orderId)
+      : fetchScopedOrder(orderId);
+    load
+      .then((result) => {
+        if (!cancelled) setFetchedOrder(result);
+      })
+      .catch(() => {})
+      .finally(() => {
+        if (!cancelled) setFetchSettled(true);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [orderId, contextOrder, role, canReadOrdersTable]);
 
   // Staff see only their shop's line items inside a mixed order, narrowed to
   // their branch when branch-scoped.
@@ -333,7 +367,7 @@ export function OrderDetailScreen() {
       <>
         {isWeb && header}
         <Screen>
-          {notFoundReady ? (
+          {notFoundReady && (role === 'user' || fetchSettled) ? (
             <EmptyState message="Order not found." icon="alert-circle-outline" />
           ) : (
             <View style={styles.loadingWrap}>

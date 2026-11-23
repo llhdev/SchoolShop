@@ -1,68 +1,186 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
-import { Platform } from 'react-native';
+import {
+  ActivityIndicator,
+  Image,
+  Platform,
+  ScrollView,
+  StyleSheet,
+  Text,
+  TextInput,
+  TouchableOpacity,
+  View,
+} from 'react-native';
+import { Ionicons } from '@expo/vector-icons';
 import { useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
-import { FlatList, Image, ScrollView, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
-import { Ionicons } from '@expo/vector-icons';
 import { Screen } from '../../components/Screen';
 import { EmptyState } from '../../components/EmptyState';
 import { AdminHeader } from '../../components/AdminHeader';
 import { Chip } from '../../components/Chip';
+import { SearchBar } from '../../components/SearchBar';
 import { StatCard } from '../../components/StatCard';
+import { Button } from '../../components/Button';
+import { OrderStatusBadge } from '../../components/OrderStatusBadge';
 import { PaymentWarningBadge } from '../../components/PaymentWarningBadge';
 import { useApp } from '../../context/AppContext';
 import { useResponsive } from '../../hooks/useResponsive';
 import { formatPrice } from '../../utils/format';
-import { getUnitPrice } from '../../utils/variants';
-import { getOrderItemsForScope, getOrderItemsForTenant, hasPaymentWarning } from '../../services/orders';
+import { canonicalAnswers, canonicalQuestionLabel, downloadOrderLinesExcel } from '../../utils/exportAnalysis';
+import { notify } from '../../utils/notify';
+import { getOrderItemsForTenant } from '../../services/orders';
+import { fetchScopedOrderLines, OrderLineRow } from '../../services/orderLines';
 import { fetchTenants, Tenant } from '../../services/tenants';
 import { AdminStackParamList, RootStackParamList } from '../../types/navigation';
-import { Order, OrderStatus, PaymentWarning } from '../../types';
-import { ALL_ORDER_STATUSES, ORDER_STATUSES, ORDER_STATUS_LABELS } from '../../constants/orderStatus';
+import { OrderStatus } from '../../types';
+import { ORDER_STATUS_LABELS } from '../../constants/orderStatus';
 import { useThemeColors, spacing, borderRadius, fontSizes, pageWidth, ColorPalette } from '../../constants/theme';
 
 type StatusFilter = OrderStatus | 'all' | 'needs_review';
 
-interface UserOrderGroup {
-  phoneNumber: string;
-  orders: Order[];
-  count: number;
-  total: number;
-  latestDate: Date;
-  latestOrderId: string;
-}
+type DateFilter = 'all' | 'today' | 'week' | 'month' | 'custom';
 
-const FILTERS: { key: StatusFilter; label: string }[] = [
+/** Page sizes are ORDERS (not lines) per page — the RPC paginates BY ORDER
+ *  and expands each page order into its visible line rows, so one page's
+ *  lines stay together. */
+const PAGE_SIZES = [25, 50, 100];
+const DEFAULT_PAGE_SIZE = 50;
+const SEARCH_DEBOUNCE_MS = 300;
+/** Non-financial staff get no realtime order events (064), so the merged page
+ *  polls the FIRST page on this cadence for every role — one path for all. */
+const POLL_MS = 15000;
+/** Export safety valve: stops chunking far beyond any realistic shop history. */
+const EXPORT_MAX_ROWS = 50000;
+
+const DAY_MS = 24 * 60 * 60 * 1000;
+
+const STATUS_FILTERS: { key: StatusFilter; label: string; financialOnly?: boolean }[] = [
   { key: 'all', label: 'All' },
-  ...ALL_ORDER_STATUSES.map((status) => ({ key: status, label: ORDER_STATUS_LABELS[status] })),
+  { key: 'pending', label: ORDER_STATUS_LABELS.pending },
+  { key: 'received', label: ORDER_STATUS_LABELS.received },
+  { key: 'paid', label: ORDER_STATUS_LABELS.paid, financialOnly: true },
+  { key: 'on_the_way', label: ORDER_STATUS_LABELS.on_the_way },
+  { key: 'completed', label: ORDER_STATUS_LABELS.completed },
+  { key: 'cancelled', label: ORDER_STATUS_LABELS.cancelled },
+  { key: 'needs_review', label: 'Needs review', financialOnly: true },
 ];
 
+const DATE_FILTERS: { key: DateFilter; label: string }[] = [
+  { key: 'all', label: 'All time' },
+  { key: 'today', label: 'Today' },
+  { key: 'week', label: 'This week' },
+  { key: 'month', label: 'This month' },
+  { key: 'custom', label: 'Custom range' },
+];
+
+/** Parse "YYYY-MM-DD" as local midnight (Date.parse would treat it as UTC). */
+function parseDateInput(value: string): number | null {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(value.trim());
+  if (!m) return null;
+  const time = new Date(Number(m[1]), Number(m[2]) - 1, Number(m[3])).getTime();
+  return Number.isNaN(time) ? null : time;
+}
+
+/** [startMs, endMs] inclusive in local time; null = no date filtering.
+ *  An incomplete/invalid custom range also yields null (no filtering). */
+function computeDateRange(
+  filter: DateFilter,
+  customStart: string,
+  customEnd: string
+): [number, number] | null {
+  const now = new Date();
+  const startOfDay = (d: Date) => new Date(d.getFullYear(), d.getMonth(), d.getDate()).getTime();
+  const endOfToday = startOfDay(now) + DAY_MS - 1;
+  switch (filter) {
+    case 'today':
+      return [startOfDay(now), endOfToday];
+    case 'week': {
+      // Week starts on Monday.
+      const sinceMonday = (now.getDay() + 6) % 7;
+      const monday = new Date(now.getFullYear(), now.getMonth(), now.getDate() - sinceMonday);
+      return [startOfDay(monday), endOfToday];
+    }
+    case 'month':
+      return [new Date(now.getFullYear(), now.getMonth(), 1).getTime(), endOfToday];
+    case 'custom': {
+      const start = parseDateInput(customStart);
+      const end = parseDateInput(customEnd);
+      if (start === null || end === null) return null;
+      const lo = Math.min(start, end);
+      const hi = Math.max(start, end);
+      return [lo, hi + DAY_MS - 1];
+    }
+    default:
+      return null;
+  }
+}
+
+function telegramName(row: OrderLineRow): string {
+  const full = [row.telegramFirstName, row.telegramLastName].filter(Boolean).join(' ').trim();
+  if (full) return full;
+  return row.telegramUsername ? `@${row.telegramUsername}` : '—';
+}
+
+/** Checkout-question columns present in a row set: canonical label keys in
+ *  first-seen order plus the first-seen original label for the header. */
+function collectQuestions(rows: OrderLineRow[]): {
+  questionLabels: string[];
+  questionDisplay: Map<string, string>;
+} {
+  const questionLabels: string[] = [];
+  const questionDisplay = new Map<string, string>();
+  for (const row of rows) {
+    for (const answer of row.fieldAnswers) {
+      if (!answer.value.trim()) continue;
+      const key = canonicalQuestionLabel(answer.label);
+      if (!questionDisplay.has(key)) {
+        questionDisplay.set(key, answer.label.trim());
+        questionLabels.push(key);
+      }
+    }
+  }
+  return { questionLabels, questionDisplay };
+}
+
+/**
+ * Merged admin orders page (migration 070): the old operational Orders list
+ * and the Shopper Analysis table in one server-paginated line-item table.
+ * All filtering, search, scoping and money stripping happen in the
+ * get_scoped_order_lines RPC — the client never downloads the full history.
+ */
 export function AdminOrdersScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<AdminStackParamList & RootStackParamList>>();
   const { orders, role, staffSession, effectiveTenantId } = useApp();
   const { isPhone } = useResponsive();
   const colors = useThemeColors();
   const styles = makeStyles(colors);
-  // Accent hue per lifecycle status on the summary cards below — the same
-  // tones OrderStatusBadge uses, so chips and stat cards read consistently.
-  const STAT_ACCENTS: Partial<Record<OrderStatus, string>> = {
-    pending: colors.warning,
-    received: colors.primary,
-    paid: '#0F766E',
-    on_the_way: '#0B5ED7',
-    completed: colors.success,
-  };
-  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
-  // Super admin: orders are separated per tenant — pick a shop first, then
-  // browse that shop's orders (grouped by customer phone as usual).
+
+  const isSuperAdmin = role === 'super_admin';
+  // Money is visible to the super admin and financial staff only (045/064).
+  const canSeeMoney = isSuperAdmin || !!staffSession?.capabilities.financial;
+
+  // Super admin: pick a shop first, then browse that shop's line items.
   const [tenants, setTenants] = useState<Tenant[]>([]);
   const [tenantsFailed, setTenantsFailed] = useState(false);
   const [selectedTenantId, setSelectedTenantId] = useState<string | null>(null);
 
-  const isSuperAdmin = role === 'super_admin';
-  const isTenantAdmin = role === 'admin' && !!effectiveTenantId;
-  // Money is visible to the super admin and financial staff only (045).
-  const canSeeMoney = isSuperAdmin || !!staffSession?.capabilities.financial;
+  const [statusFilter, setStatusFilter] = useState<StatusFilter>('all');
+  const [query, setQuery] = useState('');
+  const [debouncedQuery, setDebouncedQuery] = useState('');
+  const [dateFilter, setDateFilter] = useState<DateFilter>('all');
+  const [dateDropdownOpen, setDateDropdownOpen] = useState(false);
+  const [customStart, setCustomStart] = useState('');
+  const [customEnd, setCustomEnd] = useState('');
+  // Orders per page (the RPC paginates by order); changing this refetches page 1.
+  const [pageSize, setPageSize] = useState(DEFAULT_PAGE_SIZE);
+
+  const [pages, setPages] = useState<OrderLineRow[][]>([]);
+  const [totalCount, setTotalCount] = useState(0);
+  const [totalRevenue, setTotalRevenue] = useState<number | null>(null);
+  const [hasMore, setHasMore] = useState(false);
+  const [loading, setLoading] = useState(false);
+  const [loadingMore, setLoadingMore] = useState(false);
+  const [error, setError] = useState('');
+  const [exporting, setExporting] = useState(false);
 
   const loadShops = useCallback(() => {
     setTenantsFailed(false);
@@ -75,34 +193,137 @@ export function AdminOrdersScreen() {
     if (isSuperAdmin) loadShops();
   }, [isSuperAdmin, loadShops]);
 
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedQuery(query), SEARCH_DEBOUNCE_MS);
+    return () => clearTimeout(timer);
+  }, [query]);
+
   const selectedTenant = isSuperAdmin
     ? tenants.find((t) => t.id === selectedTenantId) ?? null
     : null;
 
-  // Staff only see orders containing their shop's products (already scoped
-  // server-side via tenant_ids); the super admin (inside a picked shop) is
-  // scoped the same way client-side. Branch-scoped staff are further narrowed
-  // to their branch's line items. Totals/counts use only those line items
-  // when an order mixes shops.
-  const activeTenantId = isSuperAdmin
-    ? selectedTenantId
-    : isTenantAdmin
-      ? effectiveTenantId
-      : null;
-  const itemsOf = (order: Order) => {
-    if (!activeTenantId) return order.items;
-    return isSuperAdmin
-      ? getOrderItemsForTenant(order, activeTenantId)
-      : getOrderItemsForScope(
-          order,
-          activeTenantId,
-          staffSession?.branchId,
-          staffSession?.branchSelectionEnabled !== false
-        );
-  };
-  const visibleOrders = activeTenantId
-    ? orders.filter((o) => itemsOf(o).length > 0)
-    : orders;
+  // Staff are scoped to their own shop server-side (p_tenant_id is ignored for
+  // them); the super admin's picked shop is passed through.
+  const activeTenantId = isSuperAdmin ? selectedTenantId : effectiveTenantId;
+
+  const dateRange = useMemo(
+    () => computeDateRange(dateFilter, customStart, customEnd),
+    [dateFilter, customStart, customEnd]
+  );
+  const customRangeInvalid =
+    dateFilter === 'custom' &&
+    (customStart.trim() !== '' || customEnd.trim() !== '') &&
+    dateRange === null;
+
+  const buildQuery = useCallback(
+    (after?: { createdAt: string; id: string }) => ({
+      tenantId: activeTenantId,
+      status: statusFilter === 'all' ? null : statusFilter,
+      from: dateRange ? new Date(dateRange[0]).toISOString() : null,
+      to: dateRange ? new Date(dateRange[1]).toISOString() : null,
+      search: debouncedQuery.trim() || null,
+      afterCreatedAt: after?.createdAt ?? null,
+      afterId: after?.id ?? null,
+      limit: pageSize,
+    }),
+    [activeTenantId, statusFilter, dateRange, debouncedQuery, pageSize]
+  );
+
+  /** mode 'initial' resets the list (filter change / retry); 'poll' silently
+   *  replaces only the first page so appended pages survive the refresh. */
+  const loadFirstPage = useCallback(
+    async (mode: 'initial' | 'poll') => {
+      if (!activeTenantId) return;
+      if (mode === 'initial') {
+        setLoading(true);
+        setError('');
+      }
+      try {
+        const page = await fetchScopedOrderLines(buildQuery());
+        setPages((prev) => (mode === 'initial' ? [page.rows] : [page.rows, ...prev.slice(1)]));
+        setTotalCount(page.totalCount);
+        setTotalRevenue(page.totalRevenue);
+        setHasMore(page.hasMore);
+      } catch {
+        if (mode === 'initial') {
+          setPages([]);
+          setError('Failed to load orders. Please try again.');
+        }
+        // Poll failures keep the current data.
+      } finally {
+        if (mode === 'initial') setLoading(false);
+      }
+    },
+    [activeTenantId, buildQuery]
+  );
+
+  // Refetch page 1 on any filter/search/date/tenant change.
+  useEffect(() => {
+    loadFirstPage('initial');
+  }, [loadFirstPage]);
+
+  // Freshness poll — the first page only (see POLL_MS comment).
+  useEffect(() => {
+    if (!activeTenantId) return;
+    const timer = setInterval(() => {
+      loadFirstPage('poll').catch(() => {});
+    }, POLL_MS);
+    return () => clearInterval(timer);
+  }, [loadFirstPage, activeTenantId]);
+
+  const rows = useMemo(() => pages.flat(), [pages]);
+
+  const loadMore = useCallback(async () => {
+    if (!hasMore || loadingMore || rows.length === 0) return;
+    setLoadingMore(true);
+    try {
+      const last = rows[rows.length - 1];
+      const page = await fetchScopedOrderLines(
+        buildQuery({ createdAt: last.createdAt, id: last.orderId })
+      );
+      setPages((prev) => [...prev, page.rows]);
+      setHasMore(page.hasMore);
+    } catch {
+      notify('Failed to load more orders. Please try again.', 'error');
+    } finally {
+      setLoadingMore(false);
+    }
+  }, [hasMore, loadingMore, rows, buildQuery]);
+
+  const { questionLabels, questionDisplay } = useMemo(() => collectQuestions(rows), [rows]);
+
+  // The Branch column only appears when at least one visible row has one.
+  const hasBranches = useMemo(() => rows.some((r) => !!r.branchName), [rows]);
+
+  /** Web Excel export: fetch EVERY page matching the current filters from the
+   *  RPC in chunks (never the context cache), then hand the rows to SheetJS. */
+  async function handleExport() {
+    if (exporting) return;
+    setExporting(true);
+    try {
+      const all: OrderLineRow[] = [];
+      let after: { createdAt: string; id: string } | undefined;
+      for (;;) {
+        const page = await fetchScopedOrderLines(buildQuery(after));
+        all.push(...page.rows);
+        if (!page.hasMore || page.rows.length === 0 || all.length >= EXPORT_MAX_ROWS) break;
+        const last = page.rows[page.rows.length - 1];
+        after = { createdAt: last.createdAt, id: last.orderId };
+      }
+      const questions = collectQuestions(all);
+      await downloadOrderLinesExcel(
+        all,
+        questions.questionLabels,
+        questions.questionDisplay,
+        canSeeMoney,
+        all.some((r) => !!r.branchName)
+      );
+    } catch {
+      notify('Export failed. Please try again.', 'error');
+    } finally {
+      setExporting(false);
+    }
+  }
 
   const tenantOrderCounts = useMemo(() => {
     const counts = new Map<string, number>();
@@ -116,74 +337,10 @@ export function AdminOrdersScreen() {
     return counts;
   }, [isSuperAdmin, tenants, orders]);
 
-  // Check-and-balance summary over the full order list (not the filter), one
-  // count per lifecycle status (cancelled stays a filter chip only).
-  const counts = useMemo(() => {
-    const result = {} as Record<(typeof ORDER_STATUSES)[number], number>;
-    for (const status of ORDER_STATUSES) {
-      result[status] = visibleOrders.filter((o) => o.status === status).length;
-    }
-    return result;
-  }, [visibleOrders]);
-
-  const filteredOrders =
-    statusFilter === 'all'
-      ? visibleOrders
-      : visibleOrders.filter((order) => order.status === statusFilter);
-
-  // "Needs review" (finance-only filter): flat list of orders whose payment
-  // could not be confirmed automatically (migration 056) and still have items
-  // awaiting payment for this scope.
-  const needsReviewOrders = useMemo(
-    () => visibleOrders.filter((order) => hasPaymentWarning(order, activeTenantId ?? null)),
-    [visibleOrders, activeTenantId]
-  );
-
-  /** Tenants with an active payment warning on this order, within the current
-   *  scope (the picked shop for staff / scoped super admin, every tenant
-   *  otherwise). Used to render one warning badge per warned tenant. */
-  const warnedTenantsOf = (order: Order): { tenantId: string; warning: PaymentWarning }[] => {
-    const warnings = order.paymentWarnings ?? {};
-    const ids = activeTenantId ? [activeTenantId] : Object.keys(warnings);
-    return ids
-      .filter((id) => warnings[id] && hasPaymentWarning(order, id))
-      .map((id) => ({ tenantId: id, warning: warnings[id] }));
-  };
-
-  const grouped = filteredOrders.reduce<Record<string, UserOrderGroup>>((acc, order) => {
-    const phoneNumber = order.phoneNumber?.trim() || 'No phone number';
-    if (!acc[phoneNumber]) {
-      acc[phoneNumber] = {
-        phoneNumber,
-        orders: [],
-        count: 0,
-        total: 0,
-        latestDate: new Date(order.createdAt),
-        latestOrderId: order.id,
-      };
-    }
-    acc[phoneNumber].orders.push(order);
-    acc[phoneNumber].count += 1;
-    acc[phoneNumber].total += itemsOf(order).reduce(
-      (sum, item) => sum + getUnitPrice(item) * item.quantity,
-      0
-    );
-    const orderDate = new Date(order.createdAt);
-    if (orderDate > acc[phoneNumber].latestDate) {
-      acc[phoneNumber].latestDate = orderDate;
-      acc[phoneNumber].latestOrderId = order.id;
-    }
-    return acc;
-  }, {});
-
-  const userGroups = Object.values(grouped).sort(
-    (a, b) => b.latestDate.getTime() - a.latestDate.getTime()
-  );
-
   const isWeb = Platform.OS === 'web';
 
   // Super admin entry point: the list of shops, each leading to that shop's
-  // orders. Tenant admins land directly on their own shop's order list.
+  // orders. Tenant admins land directly on their own shop's line table.
   if (isSuperAdmin && !selectedTenantId) {
     return (
       <>
@@ -237,344 +394,649 @@ export function AdminOrdersScreen() {
     );
   }
 
-  // Only bail out to a bare empty state when there are no orders at all —
-  // when a status filter merely matches nothing, the main screen must still
-  // render (with an inline empty state) so the stats and filter chips stay
-  // visible and the filter can be changed back.
-  if (visibleOrders.length === 0) {
+  function statusCell(row: OrderLineRow) {
     return (
-      <>
-        {isWeb && <AdminHeader />}
-        <Screen noPadding edges={['top', 'left', 'right', 'bottom']}>
-          <View style={styles.container}>
-            {isSuperAdmin && (
-              <TouchableOpacity style={styles.backRow} onPress={() => setSelectedTenantId(null)}>
-                <Ionicons name="chevron-back" size={20} color={colors.primary} />
-                <Text style={styles.backText}>All shops</Text>
-              </TouchableOpacity>
-            )}
-            <EmptyState message="No orders yet." icon="receipt-outline" />
+      <View style={styles.statusCell}>
+        <OrderStatusBadge status={row.lineStatus} small />
+        {canSeeMoney && row.paymentWarning && (
+          <PaymentWarningBadge reason={row.paymentWarning.reason} />
+        )}
+      </View>
+    );
+  }
+
+  function renderCard(row: OrderLineRow) {
+    const answers = canonicalAnswers(row);
+    const fields: [string, string][] = [
+      ['Order #', row.orderId],
+      ['Date & time', new Date(row.createdAt).toLocaleString()],
+      ['Phone', row.phoneNumber],
+      ['Telegram Name', telegramName(row)],
+      ['Product', row.productName],
+      ['Quantity', String(row.quantity)],
+      ...(canSeeMoney
+        ? ([
+            ['Unit price', row.unitPrice != null ? formatPrice(row.unitPrice) : '—'],
+            ['Line total', row.lineTotal != null ? formatPrice(row.lineTotal) : '—'],
+          ] as [string, string][])
+        : []),
+      ...(hasBranches ? ([['Branch', row.branchName || '—']] as [string, string][]) : []),
+      ...questionLabels.map(
+        (label): [string, string] => [questionDisplay.get(label) ?? label, answers[label] ?? '—']
+      ),
+      ['Location', row.location || '—'],
+    ];
+    return (
+      <TouchableOpacity
+        key={`${row.orderId}:${row.itemKey}`}
+        style={styles.card}
+        onPress={() => navigation.navigate('OrderDetail', { orderId: row.orderId })}
+      >
+        <View style={styles.cardStatusRow}>
+          <Text style={styles.cardStatusLabel}>Status</Text>
+          {statusCell(row)}
+        </View>
+        {fields.map(([label, value]) => (
+          <View key={label} style={styles.cardField}>
+            <Text style={styles.cardLabel}>{label}</Text>
+            <Text style={styles.cardValue}>{value}</Text>
           </View>
-        </Screen>
-      </>
+        ))}
+      </TouchableOpacity>
+    );
+  }
+
+  function headerCell(label: string, width: { width: number }, key: string) {
+    return (
+      <Text key={key} style={[styles.cell, styles.headerText, width]} numberOfLines={1}>
+        {label}
+      </Text>
+    );
+  }
+
+  function cell(text: string, width: { width: number }, key: string) {
+    return (
+      <Text key={key} style={[styles.cell, width]} numberOfLines={2}>
+        {text}
+      </Text>
     );
   }
 
   return (
     <>
       {isWeb && <AdminHeader />}
-      <Screen noPadding edges={['top', 'left', 'right', 'bottom']}>
+      <Screen scroll noPadding edges={['left', 'right', 'bottom']}>
         <View style={styles.container}>
-        {isSuperAdmin && (
-          <TouchableOpacity style={styles.backRow} onPress={() => setSelectedTenantId(null)}>
-            <Ionicons name="chevron-back" size={20} color={colors.primary} />
-            <Text style={styles.backText}>All shops</Text>
-          </TouchableOpacity>
-        )}
-        <Text style={[styles.title, isPhone && styles.titleCompact]}>
-          {isSuperAdmin ? (selectedTenant?.shopName ?? 'Orders') : 'Orders by Customer'}
-        </Text>
-
-        <View style={styles.statsRow}>
-          {ORDER_STATUSES.map((status) => (
-            <StatCard
-              key={status}
-              value={counts[status]}
-              label={ORDER_STATUS_LABELS[status]}
-              accentColor={STAT_ACCENTS[status]}
-              style={isPhone && styles.statCardPhone}
-            />
-          ))}
-        </View>
-
-        <View style={styles.filterRow}>
-          {FILTERS.map((filter) => (
-            <Chip
-              key={filter.key}
-              label={filter.label}
-              active={statusFilter === filter.key}
-              onPress={() => setStatusFilter(filter.key)}
-            />
-          ))}
-          {canSeeMoney && (
-            <Chip
-              label="Needs review"
-              active={statusFilter === 'needs_review'}
-              onPress={() => setStatusFilter('needs_review')}
-            />
+          {isSuperAdmin && (
+            <TouchableOpacity style={styles.backRow} onPress={() => setSelectedTenantId(null)}>
+              <Ionicons name="chevron-back" size={20} color={colors.primary} />
+              <Text style={styles.backText}>All shops</Text>
+            </TouchableOpacity>
           )}
-        </View>
+          <Text style={[styles.title, isPhone && styles.titleCompact]}>
+            {isSuperAdmin ? (selectedTenant?.shopName ?? 'Orders') : 'Orders'}
+          </Text>
+          <Text style={styles.subtitle}>
+            Every item ordered from this shop, one row per item.
+          </Text>
 
-        {statusFilter === 'needs_review' ? (
-          needsReviewOrders.length === 0 ? (
-            <EmptyState message="No payments waiting for review." icon="receipt-outline" />
-          ) : (
-          <FlatList
-            data={needsReviewOrders}
-            keyExtractor={(item) => item.id}
-            renderItem={({ item }) => {
-              const scopeItems = itemsOf(item);
-              const scopeTotal = scopeItems.reduce(
-                (sum, orderItem) => sum + getUnitPrice(orderItem) * orderItem.quantity,
-                0
-              );
-              return (
-                <TouchableOpacity
-                  style={styles.card}
-                  onPress={() => navigation.navigate('OrderDetail', { orderId: item.id })}
-                >
-                  <View style={styles.cardHeader}>
-                    <Text style={styles.phoneNumber} numberOfLines={1}>
-                      {item.phoneNumber?.trim() || 'No phone number'}
-                    </Text>
-                    <Text style={styles.orderNumber} numberOfLines={1}>
-                      #{item.id}
-                    </Text>
-                  </View>
+          <View style={styles.statsRow}>
+            <StatCard value={totalCount} label="Line items" />
+            {canSeeMoney && (
+              <StatCard value={formatPrice(totalRevenue ?? 0)} label="Revenue" />
+            )}
+          </View>
 
-                  <View style={styles.badgeRow}>
-                    {warnedTenantsOf(item).map(({ tenantId, warning }) => (
-                      <PaymentWarningBadge key={tenantId} reason={warning.reason} />
-                    ))}
-                  </View>
-
-                  <View style={styles.cardFooter}>
-                    {canSeeMoney ? (
-                      <Text style={styles.total}>{formatPrice(scopeTotal)}</Text>
-                    ) : (
-                      <View />
-                    )}
-                    <Text style={styles.date}>
-                      {scopeItems.length} item{scopeItems.length === 1 ? '' : 's'} ·{' '}
-                      {new Date(item.createdAt).toLocaleDateString()}
-                    </Text>
-                  </View>
-                </TouchableOpacity>
-              );
-            }}
-          />
-          )
-        ) : userGroups.length === 0 ? (
-          <EmptyState
-            message={`No ${FILTERS.find((f) => f.key === statusFilter)?.label.toLowerCase() ?? ''} orders.`}
-            icon="receipt-outline"
-          />
-        ) : (
-        <FlatList
-          data={userGroups}
-          keyExtractor={(item) => item.phoneNumber}
-          renderItem={({ item }) => {
-            // Surface unresolved payment warnings on the group card (one badge
-            // per distinct reason across the group's warned orders) so branch
-            // staff spot them too — no money gating here.
-            const warningReasons = [
-              ...new Set(
-                item.orders.flatMap((o) =>
-                  warnedTenantsOf(o).map(({ warning }) => warning.reason)
-                )
-              ),
-            ];
-            return (
+          <View style={styles.toolbar}>
+            <View style={styles.toolbarSearch}>
+              <SearchBar
+                value={query}
+                onChangeText={setQuery}
+                placeholder="Search orders, phones, products, locations..."
+              />
+            </View>
+            {/* Date filter dropdown — the codebase's inline-expand pattern
+                (see CheckoutScreen); filters the table, stat cards and export. */}
             <TouchableOpacity
-              style={styles.card}
-              onPress={() =>
-                navigation.navigate('AdminUserOrders', {
-                  phoneNumber: item.phoneNumber,
-                  ...(activeTenantId ? { tenantId: activeTenantId } : {}),
-                })
-              }
+              style={styles.dateDropdownField}
+              onPress={() => setDateDropdownOpen((open) => !open)}
+              activeOpacity={0.7}
             >
-              <View style={styles.cardHeader}>
-                <Text style={styles.phoneNumber} numberOfLines={1}>
-                  {item.phoneNumber}
-                </Text>
-                <Text style={styles.orderNumber} numberOfLines={1}>
-                  #{item.latestOrderId}
-                </Text>
-              </View>
+              <Text style={styles.dateDropdownValue} numberOfLines={1}>
+                Date: {DATE_FILTERS.find((f) => f.key === dateFilter)?.label ?? 'All time'}
+              </Text>
+              <Ionicons
+                name={dateDropdownOpen ? 'chevron-up' : 'chevron-down'}
+                size={16}
+                color={colors.textSecondary}
+              />
+            </TouchableOpacity>
+          </View>
+          {dateDropdownOpen && (
+            <View style={styles.dateDropdownList}>
+              {DATE_FILTERS.map((f) => (
+                <TouchableOpacity
+                  key={f.key}
+                  style={[
+                    styles.dateDropdownOption,
+                    dateFilter === f.key && styles.dateDropdownOptionActive,
+                  ]}
+                  onPress={() => {
+                    setDateFilter(f.key);
+                    setDateDropdownOpen(false);
+                  }}
+                  activeOpacity={0.7}
+                >
+                  <Text
+                    style={[
+                      styles.dateDropdownOptionText,
+                      dateFilter === f.key && styles.dateDropdownOptionTextActive,
+                    ]}
+                  >
+                    {f.label}
+                  </Text>
+                  {dateFilter === f.key && (
+                    <Ionicons name="checkmark" size={16} color={colors.primary} />
+                  )}
+                </TouchableOpacity>
+              ))}
+            </View>
+          )}
 
-              {warningReasons.length > 0 && (
-                <View style={styles.badgeRow}>
-                  {warningReasons.map((reason) => (
-                    <PaymentWarningBadge key={reason} reason={reason} />
+          <View style={styles.filterRow}>
+            {STATUS_FILTERS.filter((f) => !f.financialOnly || canSeeMoney).map((filter) => (
+              <Chip
+                key={filter.key}
+                label={filter.label}
+                active={statusFilter === filter.key}
+                onPress={() => setStatusFilter(filter.key)}
+              />
+            ))}
+          </View>
+
+          {dateFilter === 'custom' && (
+            <View style={styles.customRow}>
+              <TextInput
+                style={styles.dateInput}
+                value={customStart}
+                onChangeText={setCustomStart}
+                placeholder="From YYYY-MM-DD"
+                placeholderTextColor={colors.textSecondary}
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
+              <Text style={styles.customSep}>to</Text>
+              <TextInput
+                style={styles.dateInput}
+                value={customEnd}
+                onChangeText={setCustomEnd}
+                placeholder="To YYYY-MM-DD"
+                placeholderTextColor={colors.textSecondary}
+                autoCapitalize="none"
+                autoCorrect={false}
+              />
+              {customRangeInvalid && (
+                <Text style={styles.dateError}>Use YYYY-MM-DD for both dates.</Text>
+              )}
+            </View>
+          )}
+
+          {isWeb && rows.length > 0 && (
+            <TouchableOpacity
+              style={styles.downloadButton}
+              onPress={handleExport}
+              disabled={exporting}
+            >
+              <Ionicons name="download-outline" size={16} color={colors.primary} />
+              <Text style={styles.downloadText}>
+                {exporting ? 'Preparing…' : `Download Excel (${totalCount} rows)`}
+              </Text>
+            </TouchableOpacity>
+          )}
+
+          {loading ? (
+            <View style={styles.loadingWrap}>
+              <ActivityIndicator size="large" color={colors.primary} />
+              <Text style={styles.loadingText}>Loading orders…</Text>
+            </View>
+          ) : error ? (
+            <EmptyState
+              message={error}
+              icon="alert-circle-outline"
+              actionLabel="Try again"
+              onAction={() => loadFirstPage('initial')}
+            />
+          ) : rows.length === 0 ? (
+            <EmptyState
+              message={
+                debouncedQuery || statusFilter !== 'all' || dateRange
+                  ? 'No rows match your filters.'
+                  : 'No orders yet — they appear here once customers buy something.'
+              }
+              icon="receipt-outline"
+            />
+          ) : (
+            <>
+              {isPhone ? (
+                <View style={styles.cardList}>{rows.map(renderCard)}</View>
+              ) : (
+                <ScrollView horizontal style={styles.tableScroll}>
+                  <View style={styles.table}>
+                    <View style={[styles.trow, styles.thead]}>
+                      {headerCell('Order #', styles.wOrder, 'h-order')}
+                      {headerCell('Date & time', styles.wDate, 'h-date')}
+                      {headerCell('Phone', styles.wPhone, 'h-phone')}
+                      {headerCell('Telegram Name', styles.wName, 'h-name')}
+                      {headerCell('Product', styles.wProduct, 'h-product')}
+                      {headerCell('Qty', styles.wQty, 'h-qty')}
+                      {canSeeMoney && headerCell('Unit price', styles.wMoney, 'h-unit')}
+                      {canSeeMoney && headerCell('Line total', styles.wMoney, 'h-total')}
+                      {headerCell('Status', styles.wStatus, 'h-status')}
+                      {hasBranches && headerCell('Branch', styles.wName, 'h-branch')}
+                      {questionLabels.map((label) =>
+                        headerCell(questionDisplay.get(label) ?? label, styles.wQuestion, `h-q-${label}`)
+                      )}
+                      {headerCell('Location', styles.wLocation, 'h-location')}
+                    </View>
+                    {rows.map((row) => {
+                      const answers = canonicalAnswers(row);
+                      const key = `${row.orderId}:${row.itemKey}`;
+                      return (
+                        <TouchableOpacity
+                          key={key}
+                          style={styles.trow}
+                          onPress={() => navigation.navigate('OrderDetail', { orderId: row.orderId })}
+                        >
+                          {cell(row.orderId, styles.wOrder, `${key}-order`)}
+                          {cell(new Date(row.createdAt).toLocaleString(), styles.wDate, `${key}-date`)}
+                          {cell(row.phoneNumber, styles.wPhone, `${key}-phone`)}
+                          {cell(telegramName(row), styles.wName, `${key}-name`)}
+                          {cell(row.productName, styles.wProduct, `${key}-product`)}
+                          {cell(String(row.quantity), styles.wQty, `${key}-qty`)}
+                          {canSeeMoney &&
+                            cell(
+                              row.unitPrice != null ? formatPrice(row.unitPrice) : '—',
+                              styles.wMoney,
+                              `${key}-unit`
+                            )}
+                          {canSeeMoney &&
+                            cell(
+                              row.lineTotal != null ? formatPrice(row.lineTotal) : '—',
+                              styles.wMoney,
+                              `${key}-total`
+                            )}
+                          <View style={[styles.cell, styles.wStatus]}>{statusCell(row)}</View>
+                          {hasBranches && cell(row.branchName || '—', styles.wName, `${key}-branch`)}
+                          {questionLabels.map((label) =>
+                            cell(answers[label] ?? '—', styles.wQuestion, `${key}-${label}`)
+                          )}
+                          {cell(row.location || '—', styles.wLocation, `${key}-location`)}
+                        </TouchableOpacity>
+                      );
+                    })}
+                  </View>
+                </ScrollView>
+              )}
+              <View style={styles.paginationRow}>
+                <Text style={styles.showingText}>
+                  Showing {rows.length} of {totalCount} line items
+                </Text>
+                <View style={styles.pageSizeRow}>
+                  <Text style={styles.pageSizeLabel}>Orders per page</Text>
+                  {PAGE_SIZES.map((size) => (
+                    <Chip
+                      key={size}
+                      label={String(size)}
+                      active={pageSize === size}
+                      onPress={() => setPageSize(size)}
+                    />
                   ))}
                 </View>
-              )}
-
-              <View style={styles.cardFooter}>
-                {canSeeMoney ? (
-                  <Text style={styles.total}>{formatPrice(item.total)}</Text>
-                ) : (
-                  <View />
-                )}
-                <Text style={styles.date}>
-                  Order date: {item.latestDate.toLocaleDateString()}
-                </Text>
               </View>
-              {activeTenantId &&
-                canSeeMoney &&
-                item.orders.some((o) => itemsOf(o).length < o.items.length) && (
-                  <Text style={styles.sharedHint}>
-                    Totals reflect only this shop's items in these orders.
-                  </Text>
-                )}
-            </TouchableOpacity>
-            );
-          }}
-        />
-        )}
-      </View>
-    </Screen>
+              {hasMore && (
+                <View style={styles.loadMoreRow}>
+                  <Button
+                    title="Load more"
+                    variant="outline"
+                    loading={loadingMore}
+                    onPress={() => loadMore().catch(() => {})}
+                    style={styles.loadMoreButton}
+                  />
+                </View>
+              )}
+            </>
+          )}
+        </View>
+      </Screen>
     </>
   );
 }
 
-const makeStyles = (colors: ColorPalette) => StyleSheet.create({
-  container: {
-    flex: 1,
-    maxWidth: pageWidth.data,
-    width: '100%',
-    alignSelf: 'center',
-    paddingHorizontal: spacing.lg,
-    paddingVertical: spacing.md,
-  },
-  shopList: {
-    flex: 1,
-  },
-  title: {
-    fontSize: fontSizes.xxl,
-    fontWeight: '700',
-    color: colors.text,
-    marginBottom: spacing.md,
-  },
-  titleCompact: {
-    fontSize: fontSizes.xl,
-  },
-  backRow: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    alignSelf: 'flex-start',
-    marginBottom: spacing.sm,
-  },
-  backText: {
-    fontSize: fontSizes.md,
-    fontWeight: '600',
-    color: colors.primary,
-  },
-  tenantCard: {
-    flexDirection: 'row',
-    alignItems: 'center',
-    gap: spacing.md,
-    backgroundColor: colors.surface,
-    borderRadius: borderRadius.md,
-    borderWidth: 1,
-    borderColor: colors.border,
-    padding: spacing.md,
-    marginBottom: spacing.sm,
-    ...(Platform.OS === 'web'
-      ? ({
-          cursor: 'pointer',
-        } as any)
-      : {}),
-  },
-  tenantLogo: {
-    width: 44,
-    height: 44,
-    borderRadius: 22,
-  },
-  tenantLogoFallback: {
-    backgroundColor: colors.background,
-    borderWidth: 1,
-    borderColor: colors.border,
-    justifyContent: 'center',
-    alignItems: 'center',
-  },
-  tenantCardText: {
-    flex: 1,
-  },
-  tenantName: {
-    fontSize: fontSizes.md,
-    fontWeight: '600',
-    color: colors.text,
-    marginBottom: 2,
-  },
-  tenantDetail: {
-    fontSize: fontSizes.sm,
-    color: colors.textSecondary,
-  },
-  statsRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: spacing.sm,
-    marginBottom: spacing.md,
-  },
-  // Five cards don't fit one row on a phone — wrap to 3 + 2.
-  statCardPhone: {
-    flexBasis: '30%',
-    flexGrow: 1,
-  },
-  filterRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: spacing.sm,
-    marginBottom: spacing.md,
-  },
-  card: {
-    backgroundColor: colors.surface,
-    borderRadius: borderRadius.md,
-    padding: spacing.md,
-    marginBottom: spacing.md,
-    borderWidth: 1,
-    borderColor: colors.border,
-    ...(Platform.OS === 'web'
-      ? ({
-          cursor: 'pointer',
-          transition: 'box-shadow 0.15s ease',
-        } as any)
-      : {}),
-  },
-  cardHeader: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-    marginBottom: spacing.sm,
-  },
-  badgeRow: {
-    flexDirection: 'row',
-    flexWrap: 'wrap',
-    gap: spacing.xs,
-    marginBottom: spacing.sm,
-  },
-  phoneNumber: {
-    flex: 1,
-    fontSize: fontSizes.lg,
-    fontWeight: '700',
-    color: colors.text,
-    marginRight: spacing.md,
-  },
-  orderNumber: {
-    fontSize: fontSizes.sm,
-    color: colors.textSecondary,
-    fontWeight: '600',
-  },
-  cardFooter: {
-    flexDirection: 'row',
-    justifyContent: 'space-between',
-    alignItems: 'center',
-  },
-  total: {
-    fontSize: fontSizes.md,
-    fontWeight: '700',
-    color: colors.text,
-  },
-  date: {
-    fontSize: fontSizes.sm,
-    color: colors.textSecondary,
-  },
-  sharedHint: {
-    fontSize: fontSizes.xs,
-    color: colors.textSecondary,
-    marginTop: spacing.xs,
-    fontStyle: 'italic',
-  },
-});
+const makeStyles = (colors: ColorPalette) =>
+  StyleSheet.create({
+    container: {
+      flex: 1,
+      maxWidth: pageWidth.data,
+      width: '100%',
+      alignSelf: 'center',
+      paddingHorizontal: spacing.lg,
+      paddingVertical: spacing.md,
+      paddingBottom: spacing.xxl,
+    },
+    shopList: {
+      flex: 1,
+    },
+    title: {
+      fontSize: fontSizes.xxl,
+      fontWeight: '700',
+      color: colors.text,
+      marginBottom: spacing.xs,
+    },
+    titleCompact: {
+      fontSize: fontSizes.xl,
+    },
+    subtitle: {
+      fontSize: fontSizes.sm,
+      color: colors.textSecondary,
+      marginBottom: spacing.md,
+    },
+    backRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      alignSelf: 'flex-start',
+      marginBottom: spacing.sm,
+    },
+    backText: {
+      fontSize: fontSizes.md,
+      fontWeight: '600',
+      color: colors.primary,
+    },
+    tenantCard: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: spacing.md,
+      backgroundColor: colors.surface,
+      borderRadius: borderRadius.md,
+      borderWidth: 1,
+      borderColor: colors.border,
+      padding: spacing.md,
+      marginBottom: spacing.sm,
+      ...(Platform.OS === 'web'
+        ? ({
+            cursor: 'pointer',
+          } as any)
+        : {}),
+    },
+    tenantLogo: {
+      width: 44,
+      height: 44,
+      borderRadius: 22,
+    },
+    tenantLogoFallback: {
+      backgroundColor: colors.background,
+      borderWidth: 1,
+      borderColor: colors.border,
+      justifyContent: 'center',
+      alignItems: 'center',
+    },
+    tenantCardText: {
+      flex: 1,
+    },
+    tenantName: {
+      fontSize: fontSizes.md,
+      fontWeight: '600',
+      color: colors.text,
+      marginBottom: 2,
+    },
+    tenantDetail: {
+      fontSize: fontSizes.sm,
+      color: colors.textSecondary,
+    },
+    statsRow: {
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      gap: spacing.md,
+      marginBottom: spacing.md,
+    },
+    toolbar: {
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      alignItems: 'center',
+      gap: spacing.sm,
+    },
+    toolbarSearch: {
+      flex: 1,
+      minWidth: 220,
+    },
+    // Compact date-filter dropdown, the codebase's inline-expand pattern
+    // (CheckoutScreen's branch/question dropdowns, shrunk to toolbar size).
+    dateDropdownField: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: spacing.xs,
+      backgroundColor: colors.surface,
+      borderWidth: 1,
+      borderColor: colors.border,
+      borderRadius: borderRadius.sm,
+      paddingHorizontal: spacing.md,
+      paddingVertical: spacing.sm,
+      ...(Platform.OS === 'web' ? ({ cursor: 'pointer' } as any) : {}),
+    },
+    dateDropdownValue: {
+      fontSize: fontSizes.sm,
+      fontWeight: '600',
+      color: colors.text,
+    },
+    dateDropdownList: {
+      alignSelf: 'flex-start',
+      minWidth: 180,
+      marginTop: spacing.xs,
+      backgroundColor: colors.surface,
+      borderWidth: 1,
+      borderColor: colors.border,
+      borderRadius: borderRadius.sm,
+      overflow: 'hidden',
+    },
+    dateDropdownOption: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      gap: spacing.sm,
+      paddingHorizontal: spacing.md,
+      paddingVertical: spacing.sm,
+      borderBottomWidth: 1,
+      borderBottomColor: colors.border,
+      ...(Platform.OS === 'web' ? ({ cursor: 'pointer' } as any) : {}),
+    },
+    dateDropdownOptionActive: {
+      backgroundColor: colors.background,
+    },
+    dateDropdownOptionText: {
+      fontSize: fontSizes.sm,
+      color: colors.text,
+    },
+    dateDropdownOptionTextActive: {
+      color: colors.primary,
+      fontWeight: '600',
+    },
+    filterRow: {
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      gap: spacing.sm,
+      marginTop: spacing.md,
+    },
+    customRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      flexWrap: 'wrap',
+      gap: spacing.sm,
+      marginTop: spacing.sm,
+    },
+    dateInput: {
+      width: 150,
+      borderWidth: 1,
+      borderColor: colors.border,
+      borderRadius: borderRadius.sm,
+      backgroundColor: colors.surface,
+      paddingHorizontal: spacing.sm,
+      paddingVertical: spacing.xs,
+      fontSize: fontSizes.sm,
+      color: colors.text,
+      ...(Platform.OS === 'web'
+        ? ({ outlineStyle: 'none', boxShadow: 'none' } as any)
+        : {}),
+    },
+    customSep: {
+      fontSize: fontSizes.sm,
+      color: colors.textSecondary,
+    },
+    dateError: {
+      fontSize: fontSizes.xs,
+      color: colors.danger,
+      fontWeight: '600',
+    },
+    downloadButton: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      alignSelf: 'flex-start',
+      gap: spacing.xs,
+      marginTop: spacing.md,
+      paddingHorizontal: spacing.md,
+      paddingVertical: spacing.sm,
+      borderRadius: borderRadius.sm,
+      borderWidth: 1,
+      borderColor: colors.primary,
+      backgroundColor: colors.surface,
+      ...(Platform.OS === 'web' ? ({ cursor: 'pointer' } as any) : {}),
+    },
+    downloadText: {
+      fontSize: fontSizes.sm,
+      fontWeight: '600',
+      color: colors.primary,
+    },
+    loadingWrap: {
+      alignItems: 'center',
+      justifyContent: 'center',
+      paddingVertical: spacing.xxl,
+      gap: spacing.md,
+    },
+    loadingText: {
+      fontSize: fontSizes.md,
+      color: colors.textSecondary,
+    },
+    cardList: {
+      marginTop: spacing.sm,
+      gap: spacing.sm,
+    },
+    card: {
+      backgroundColor: colors.surface,
+      borderRadius: borderRadius.md,
+      borderWidth: 1,
+      borderColor: colors.border,
+      padding: spacing.md,
+      gap: spacing.xs,
+      ...(Platform.OS === 'web' ? ({ cursor: 'pointer' } as any) : {}),
+    },
+    cardStatusRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: spacing.sm,
+    },
+    cardStatusLabel: {
+      width: 110,
+      fontSize: fontSizes.xs,
+      fontWeight: '700',
+      color: colors.textSecondary,
+    },
+    cardField: {
+      flexDirection: 'row',
+      gap: spacing.sm,
+    },
+    cardLabel: {
+      width: 110,
+      fontSize: fontSizes.xs,
+      fontWeight: '700',
+      color: colors.textSecondary,
+    },
+    cardValue: {
+      flex: 1,
+      fontSize: fontSizes.sm,
+      color: colors.text,
+    },
+    tableScroll: {
+      marginTop: spacing.md,
+    },
+    table: {
+      backgroundColor: colors.surface,
+      borderRadius: borderRadius.md,
+      borderWidth: 1,
+      borderColor: colors.border,
+      overflow: 'hidden',
+    },
+    trow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      borderTopWidth: 1,
+      borderColor: colors.border,
+      ...(Platform.OS === 'web' ? ({ cursor: 'pointer' } as any) : {}),
+    },
+    thead: {
+      borderTopWidth: 0,
+      backgroundColor: colors.background,
+    },
+    cell: {
+      paddingHorizontal: spacing.sm,
+      paddingVertical: spacing.sm,
+      fontSize: fontSizes.sm,
+      color: colors.text,
+    },
+    headerText: {
+      fontWeight: '700',
+      color: colors.textSecondary,
+      flexShrink: 1,
+    },
+    statusCell: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      flexWrap: 'wrap',
+      gap: spacing.xs,
+    },
+    loadMoreRow: {
+      alignItems: 'center',
+      marginTop: spacing.md,
+    },
+    loadMoreButton: {
+      minWidth: 200,
+    },
+    paginationRow: {
+      flexDirection: 'row',
+      flexWrap: 'wrap',
+      alignItems: 'center',
+      justifyContent: 'space-between',
+      gap: spacing.sm,
+      marginTop: spacing.md,
+    },
+    showingText: {
+      fontSize: fontSizes.sm,
+      color: colors.textSecondary,
+    },
+    pageSizeRow: {
+      flexDirection: 'row',
+      alignItems: 'center',
+      gap: spacing.sm,
+    },
+    pageSizeLabel: {
+      fontSize: fontSizes.sm,
+      color: colors.textSecondary,
+    },
+    wOrder: { width: 100 },
+    wDate: { width: 170 },
+    wLocation: { width: 170 },
+    wPhone: { width: 120 },
+    wName: { width: 150 },
+    wProduct: { width: 220 },
+    wQty: { width: 60 },
+    wMoney: { width: 110 },
+    wStatus: { width: 170 },
+    wQuestion: { width: 150 },
+  });

@@ -14,7 +14,7 @@ const REFETCH_DEBOUNCE_MS = 500;
  *  shopper is still looking at the screen. */
 const SHOPPER_POLL_MS = 15000;
 
-interface DbOrder {
+export interface DbOrder {
   id: string;
   items: unknown;
   total: number;
@@ -33,7 +33,7 @@ interface DbOrder {
   payment_warnings: Record<string, PaymentWarning> | null;
 }
 
-function toOrder(db: DbOrder): Order {
+export function toOrder(db: DbOrder): Order {
   return {
     id: db.id,
     items: db.items as Order['items'],
@@ -118,6 +118,20 @@ export async function fetchOrders(tenantId?: string, moneyBlind = false): Promis
     if (tenantId) query = query.contains('tenant_ids', [tenantId]);
     return query;
   });
+}
+
+/** Single order by id, direct table read — super admin / financial staff only
+ *  (the 064 SELECT policy rejects everyone else). OrderDetail uses this as a
+ *  fallback when the order isn't in context; money-blind staff go through
+ *  fetchScopedOrder (get_scoped_order RPC, migration 070) instead. */
+export async function fetchOrderById(orderId: string): Promise<Order | null> {
+  const { data, error } = await supabase
+    .from('orders')
+    .select('*')
+    .eq('id', orderId)
+    .maybeSingle();
+  if (error) throw error;
+  return data ? toOrder(data as unknown as DbOrder) : null;
 }
 
 /** Order list for staff WITHOUT the Financial capability (migration 064).

@@ -76,13 +76,6 @@ export function AdminHeader() {
             onPress={() => goTo('AdminOrders')}
           />
           <NavLink
-            name="AdminAnalysis"
-            label="Analysis"
-            current={current}
-            compact={compact}
-            onPress={() => goTo('AdminAnalysis')}
-          />
-          <NavLink
             name="AdminReports"
             label="Reports"
             current={current}
