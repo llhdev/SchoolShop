@@ -69,8 +69,10 @@ async function postTelegram(
  *  (057) and the new text is reconstructed from it.
  *  Entry missing (bot down at order time, order predates 057) → log and
  *  skip: the admin UI badge carries the state. All failures are logged,
- *  never thrown. */
-async function markOrderMessageVerified(
+ *  never thrown. Exported so telegram-order-notify can also call it right
+ *  after persisting the locator — closing the race where a fast verification
+ *  completes BEFORE the message locator is stored. */
+export async function markOrderMessageVerified(
   supabase: SupabaseClient,
   botToken: string,
   orderId: string,

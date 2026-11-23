@@ -44,6 +44,7 @@ import {
   proofMime,
   type ProofKind,
 } from './media.ts';
+import { markOrderMessageVerified } from '../_shared/verifyWorkflow.ts';
 
 const BOT_TOKEN = Deno.env.get('TELEGRAM_BOT_TOKEN') ?? '';
 const SUPABASE_URL = Deno.env.get('SUPABASE_URL') ?? '';
@@ -910,6 +911,25 @@ Deno.serve(async (req) => {
             .update({ telegram_notifications: { ...existing, [ownerId]: entry } })
             .eq('id', order.id);
           if (updateError) throw updateError;
+
+          // Race-closer: a fast order-time verification can complete BEFORE
+          // this locator exists — its inline edit is then skipped ("no
+          // telegram message locator …"). Now that the locator is persisted,
+          // check whether a verified attempt already landed and flip the
+          // message to ✅ ourselves. If verification hasn't finished yet, its
+          // own edit will find the locator we just wrote — either way the
+          // message ends up correct exactly once.
+          const { data: verifiedAttempt } = await supabase
+            .from('payment_verifications')
+            .select('id')
+            .eq('order_id', order.id)
+            .eq('tenant_id', ownerId)
+            .eq('is_current', true)
+            .eq('status', 'verified')
+            .maybeSingle();
+          if (verifiedAttempt) {
+            await markOrderMessageVerified(supabase, BOT_TOKEN, order.id, ownerId);
+          }
         } catch (error) {
           console.error(
             `failed to persist telegram notification for order ${order.id} tenant ${ownerId}:`,
