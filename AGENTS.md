@@ -249,9 +249,10 @@ No test framework is configured. Before adding tests, choose a stack consistent 
 npx tsc --noEmit
 ```
 
-Two targeted guards exist outside a framework:
+Targeted guards exist outside a framework:
 
 - `node scripts/test-telegram-media.mjs` — regression tests for the Telegram proof-routing logic (imports the real `supabase/functions/telegram-order-notify/media.ts`; run after touching that function).
+- `node scripts/test-verify-evaluation.mjs` — regression tests for the verify.et response parser (imports the real `supabase/functions/_shared/verifyEvaluation.ts`; asserts both captured envelope shapes — flat `data` array and nested `data.result` — plus `bankSpecific` field fallbacks and date handling; run after touching that shared module, which all four verification functions use). Fixtures are PII-redacted prod captures — keep real names/accounts out when adding new ones.
 - `node scripts/test-receipt-ocr.mjs` — regression tests for the receipt reference extractor (compiles the real `src/lib/ocr.ts` and runs QR + OCR over the redacted fixture corpus in `scripts/receipt-fixtures/`, asserting every fixture's provider + reference from its `manifest.json`; run after touching ocr.ts). Fixtures are PII-redacted screenshots — keep names/accounts/amounts blacked out when adding new ones.
 - `powershell -NoProfile -File scripts/prod-health-check.ps1 [-WindowHours N]` — read-only prod checks: realtime publication membership, Telegram failure lines, order→notify coverage, deployed function version. Run after every migration/deploy.
 

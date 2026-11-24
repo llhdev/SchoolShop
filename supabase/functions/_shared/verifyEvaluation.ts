@@ -61,7 +61,9 @@ function parseAmount(raw: unknown): number | null {
 
 /** Extract the most useful result item from a verify.et response/webhook
  *  payload (completed results arrive in a data array on API responses, as a
- *  data object on webhook events, or on verification). */
+ *  data object on webhook events, or on verification). Telebirr (and possibly
+ *  other providers) nest the receipt one level deeper inside the data object
+ *  ({ data: { bank, result: { ...receipt fields } } }) — unwrap that too. */
 export function extractResultItem(payload: unknown): Record<string, unknown> | null {
   if (!payload || typeof payload !== 'object') return null;
   const p = payload as Record<string, unknown>;
@@ -70,7 +72,11 @@ export function extractResultItem(payload: unknown): Record<string, unknown> | n
     return data[0] as Record<string, unknown>;
   }
   if (data && typeof data === 'object' && !Array.isArray(data)) {
-    return data as Record<string, unknown>;
+    const d = data as Record<string, unknown>;
+    if (d.result && typeof d.result === 'object' && !Array.isArray(d.result)) {
+      return d.result as Record<string, unknown>;
+    }
+    return d;
   }
   if (p.verification && typeof p.verification === 'object') {
     return p.verification as Record<string, unknown>;
@@ -78,42 +84,82 @@ export function extractResultItem(payload: unknown): Record<string, unknown> | n
   return null;
 }
 
+/** Telebirr bankSpecific dates arrive as 'DD-MM-YYYY HH:mm:ss' local wall
+ *  time (Addis Ababa), which Date.parse cannot read. Convert to an ISO-less
+ *  'YYYY-MM-DDTHH:mm:ss' string (parsed as local time); anything else returns
+ *  null. Last-resort fallback — the ISO fields (timestamp,
+ *  paymentDateIsoUtc) are always preferred. */
+function parseLocalReceiptDate(raw: string | null): string | null {
+  if (!raw) return null;
+  const m = raw.match(/^(\d{1,2})-(\d{1,2})-(\d{4})[ T](\d{1,2}):(\d{2})(?::(\d{2}))?/);
+  if (!m) return null;
+  const pad = (v: string) => v.padStart(2, '0');
+  return `${m[3]}-${pad(m[2])}-${pad(m[1])}T${pad(m[4])}:${m[5]}:${m[6] ?? '00'}`;
+}
+
 export function parseReceipt(item: Record<string, unknown>): ParsedReceipt {
-  const status = firstString(item.status, item.processingStatus)?.toLowerCase() ?? '';
+  // extractResultItem unwraps { data: { result } } envelopes, but accept a
+  // nested result here too so a caller passing the outer object still parses.
+  // The nested object wins on key conflicts: it carries the real receipt.
+  const nested =
+    item.result && typeof item.result === 'object' && !Array.isArray(item.result)
+      ? (item.result as Record<string, unknown>)
+      : null;
+  const src: Record<string, unknown> = nested ? { ...item, ...nested } : item;
+  // Several providers (Telebirr) keep the settlement fields only inside
+  // bankSpecific — reference, receiver, payer, amount, date all live there.
+  const bs =
+    src.bankSpecific && typeof src.bankSpecific === 'object' && !Array.isArray(src.bankSpecific)
+      ? (src.bankSpecific as Record<string, unknown>)
+      : null;
+  const status = firstString(src.status, src.processingStatus)?.toLowerCase() ?? '';
   const sam =
-    item.settlementAccountMatch && typeof item.settlementAccountMatch === 'object'
-      ? (item.settlementAccountMatch as SettlementMatch)
+    src.settlementAccountMatch && typeof src.settlementAccountMatch === 'object'
+      ? (src.settlementAccountMatch as SettlementMatch)
       : null;
   return {
-    provider: firstString(item.bank, item.provider),
+    provider: firstString(src.bank, src.provider),
     reference: firstString(
-      item.reference,
-      item.transactionNumber,
-      item.transaction_reference,
-      item.receiptNumber,
-      item.referenceNumber
+      src.reference,
+      src.transactionNumber,
+      src.transaction_reference,
+      src.receiptNumber,
+      src.referenceNumber,
+      bs?.reference,
+      bs?.receiptNo,
+      bs?.receiptNumber
     ),
     paidAmount: parseAmount(
-      item.amount ?? item.paidAmount ?? item.totalAmount ?? item.transactionAmount
+      src.amount ??
+        src.paidAmount ??
+        src.totalAmount ??
+        src.transactionAmount ??
+        bs?.amountValue ??
+        bs?.settledAmountValue
     ),
     receiverAccount:
-      firstString(item.receiverAccount, item.receiver_account, sam?.receiverAccount) ?? null,
+      firstString(src.receiverAccount, src.receiver_account, bs?.receiverAccount, sam?.receiverAccount) ??
+      null,
     payer: firstString(
-      item.payerName,
-      item.senderName,
-      item.payer_name,
-      (item.payer as Record<string, unknown> | undefined)?.name
+      src.payerName,
+      src.senderName,
+      src.payer_name,
+      (src.payer as Record<string, unknown> | undefined)?.name,
+      bs?.payerName
     ),
-    transactionDate: firstString(
-      item.transactionDate,
-      item.transaction_date,
-      item.paidAt,
-      item.paid_at,
-      item.date,
-      item.timestamp
-    ),
+    transactionDate:
+      firstString(
+        src.transactionDate,
+        src.transaction_date,
+        src.paidAt,
+        src.paid_at,
+        src.date,
+        src.timestamp,
+        bs?.paymentDateIsoUtc,
+        bs?.transactionDateIsoUtc
+      ) ?? parseLocalReceiptDate(firstString(bs?.paymentDate, bs?.transactionDateRaw)),
     verified:
-      item.verified === true ||
+      src.verified === true ||
       status === 'verified' ||
       status === 'success' ||
       status === 'completed',
