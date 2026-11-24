@@ -3,9 +3,12 @@
 // real-world payment screenshot; manifest.json (generated from the original
 // NOTES.txt ground truth, QR-decoded values treated as authoritative) says
 // which provider + reference each must yield. Entries may list
-// altReferences — equally valid references for the same transaction (e.g.
-// CBE's modern mbreciept Receipt ID from the QR vs the legacy FT reference
-// printed on the receipt; verify.et accepts both).
+// altReferences — alternative identifiers for the same transaction. For
+// telebirr those are OCR-ambiguity variants, equally valid. For CBE the
+// altReference is the modern mbreciept Receipt ID, which verify.et does NOT
+// resolve (prod: 4/4 not_found — only the legacy FT reference works), so a
+// Receipt ID is accepted only as a last resort and every acceptance is
+// flagged with a WARN line: the fixture's FT should have been extracted.
 //
 // Run: node scripts/test-receipt-ocr.mjs [--ocr-cache]
 //   --ocr-cache  reuse full-page OCR results from .tmp-audit/test-ocr-cache
@@ -61,6 +64,7 @@ const encodeImage = (px) => {
 let pass = 0;
 let fail = 0;
 const failures = [];
+const warnings = [];
 
 for (const entry of manifest) {
   const file = path.join(FIXTURES, entry.file);
@@ -92,12 +96,31 @@ for (const entry of manifest) {
   });
 
   const accepted = [entry.reference, ...(entry.altReferences ?? [])].map((r) => r.toUpperCase());
+  const primary = entry.reference.toUpperCase();
+  const alts = (entry.altReferences ?? []).map((r) => r.toUpperCase());
+  const got = (result.reference ?? '').toUpperCase();
   const okProvider = result.provider === entry.provider;
-  const okReference = accepted.includes((result.reference ?? '').toUpperCase());
+  let okReference = false;
+  let warn = null;
+  if (got === primary) {
+    okReference = true;
+  } else if (alts.includes(got) && entry.provider !== 'cbe') {
+    okReference = true; // telebirr alts are OCR-ambiguity variants, equally valid
+  } else if (alts.includes(got)) {
+    // CBE: a Receipt ID is the last-resort fallback (verify.et doesn't
+    // resolve it). Accept, but flag it — the fixture's FT should normally
+    // have won, so this pinpoints fixtures whose FT isn't readable.
+    okReference = true;
+    warn = `returned Receipt ID ${result.reference} — FT ${entry.reference} was not extracted`;
+  }
   const ok = okProvider && okReference && result.receiptLike;
   if (ok) {
     pass++;
     console.log(`ok   ${entry.file}  -> ${result.provider}:${result.reference}`);
+    if (warn) {
+      warnings.push(`${entry.file}: ${warn}`);
+      console.log(`WARN ${entry.file}  ${warn}`);
+    }
   } else {
     fail++;
     failures.push(entry.file);
@@ -110,6 +133,10 @@ for (const entry of manifest) {
 
 await worker.terminate();
 console.log(`\n${pass}/${manifest.length} passed`);
+if (warnings.length > 0) {
+  console.log(`\n${warnings.length} CBE fixture(s) fell back to the Receipt ID (FT not extracted):`);
+  for (const w of warnings) console.log(`  ${w}`);
+}
 if (fail > 0) {
   console.log('failures:', failures.join(', '));
   process.exit(1);

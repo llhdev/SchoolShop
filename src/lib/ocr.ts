@@ -9,8 +9,10 @@
  * Extraction strategy, in order:
  *   1. QR code on the receipt. Telebirr receipts embed a TLV payload that
  *      contains the exact transaction number; CBE receipts embed either the
- *      legacy FT reference or the modern mbreciept.cbe.com.et Receipt ID.
- *      QR decode is exact — it never misreads 8/B or 0/O like OCR does.
+ *      legacy FT reference or the modern mbreciept.cbe.com.et Receipt ID —
+ *      the latter does NOT resolve on verify.et (prod: 4/4 not_found), so it
+ *      is only a last-resort fallback and the OCR passes still run. QR decode
+ *      is exact — it never misreads 8/B or 0/O like OCR does.
  *   2. Tesseract OCR on the original pixels (preprocessing measured WORSE
  *      on the fixture corpus — Tesseract handles dark-mode screenshots
  *      natively), parsed layout-aware: labeled candidates beat unlabeled
@@ -227,7 +229,12 @@ export function parseReceiptDocument(
     else candidates.set(key, { reference, provider, score });
   };
 
-  // Receipt-URL references are anchored by the URL itself.
+  // Receipt-URL references are anchored by the URL itself. Telebirr's URL
+  // reference resolves on verify.et; CBE's modern v2- Receipt ID does NOT
+  // (prod: every Receipt-ID submission came back not_found, while FT
+  // references resolve fine), so it is anchored too but a strong FT
+  // candidate anywhere on the receipt always outranks it — see the `usable`
+  // filter below.
   const telebirrUrl = text.match(TELEBIRR_URL_REF);
   if (telebirrUrl) bump(telebirrUrl[1], 'telebirr', 60);
   const cbeUrl = text.match(CBE_URL_REF);
@@ -278,25 +285,38 @@ export function parseReceiptDocument(
   const digitCount = (c: Candidate) => (c.reference.match(/[0-9]/g) ?? []).length;
   const ranked = [...candidates.values()].sort((a, b) => b.score - a.score || digitCount(b) - digitCount(a));
   debugRanked?.(ranked);
-  const best = ranked[0];
+
+  // verify.et resolves CBE's legacy FT reference but NOT the modern Receipt
+  // ID (prod: every Receipt-ID submission came back not_found). A strong FT
+  // candidate anywhere on the receipt therefore ALWAYS outranks the Receipt
+  // ID (and any other non-FT CBE token) regardless of label/URL bonuses;
+  // the Receipt ID wins only when no FT-shaped candidate exists at all.
+  const hasStrongCbeFt = ranked.some(
+    (c) => c.provider === 'cbe' && STRONG_SHAPES.cbe.test(c.reference)
+  );
+  const usable = hasStrongCbeFt
+    ? ranked.filter((c) => c.provider !== 'cbe' || STRONG_SHAPES.cbe.test(c.reference))
+    : ranked;
+
+  const best = usable[0];
   if (!best) return {};
   // A bare loose shape (no label, no URL anchor) is only trusted when it is
   // the single candidate on the whole receipt — ambiguity means undefined.
   const strongEnough = best.score >= 50;
   if (!strongEnough) {
     const anyLabeledOrAnchored = best.score >= 70;
-    if (!anyLabeledOrAnchored && ranked.length > 1) return {};
-    if (!anyLabeledOrAnchored && ranked.length === 1) {
+    if (!anyLabeledOrAnchored && usable.length > 1) return {};
+    if (!anyLabeledOrAnchored && usable.length === 1) {
       // single loose candidate: accept (pre-corpus behavior)
-    } else if (anyLabeledOrAnchored && ranked[1] && ranked[1].score === best.score) {
+    } else if (anyLabeledOrAnchored && usable[1] && usable[1].score === best.score) {
       // tie between labeled candidates
-      const hinted = breakTie(ranked, best, providerHint);
+      const hinted = breakTie(usable, best, providerHint);
       if (hinted) return { provider: hinted.provider, reference: hinted.reference };
       return {};
     }
   }
-  if (ranked[1] && ranked[1].score === best.score) {
-    const hinted = breakTie(ranked, best, providerHint);
+  if (usable[1] && usable[1].score === best.score) {
+    const hinted = breakTie(usable, best, providerHint);
     if (hinted) return { provider: hinted.provider, reference: hinted.reference };
     return {};
   }
@@ -332,7 +352,10 @@ export function parseReceiptText(text: string, providerHint?: ReceiptProvider): 
  * Telebirr receipts carry a base64'd hex TLV; the transaction number is the
  * 10-char D… ASCII run inside it. CBE receipts carry either the legacy FT
  * reference bare, or the mbreciept.cbe.com.et/v2-<Receipt ID> URL — the
- * modern Receipt ID verify.et accepts without an account suffix.
+ * Receipt ID is exact but verify.et does NOT resolve it (prod evidence:
+ * every Receipt-ID submission came back not_found, FT references resolve
+ * fine), so callers must prefer an FT reference found anywhere else and use
+ * the Receipt ID only as a last resort.
  */
 export function parseQrPayload(payload: string): ReceiptParseResult | undefined {
   const data = payload.trim();
@@ -558,12 +581,23 @@ export async function extractReceiptReferenceFromPixels(
   providerHint: ReceiptProvider | undefined,
   deps: OcrDeps
 ): Promise<ReceiptOcrResult> {
-  // QR fast path: exact payload, no OCR uncertainty.
+  // QR fast path: exact payload, no OCR uncertainty. Telebirr QRs and CBE
+  // QRs carrying the legacy FT reference short-circuit immediately. A CBE QR
+  // carrying the modern mbreciept.cbe.com.et/v2- Receipt ID does NOT:
+  // verify.et does not resolve Receipt IDs (prod: every Receipt-ID
+  // submission came back not_found, FT references resolve fine), so the
+  // Receipt ID is held as a last-resort fallback while the OCR passes look
+  // for the legacy FT reference printed on the same receipt.
+  let qrCbeReceiptId: ReceiptParseResult | undefined;
   const qrPayload = decodeQrPixels(pixels.data, pixels.width, pixels.height, deps.jsQR);
   if (qrPayload) {
     const fromQr = parseQrPayload(qrPayload);
     if (fromQr?.provider && fromQr.reference) {
-      return { ...fromQr, receiptLike: true, rawText: '' };
+      if (fromQr.provider === 'cbe' && !STRONG_SHAPES.cbe.test(fromQr.reference)) {
+        qrCbeReceiptId = fromQr;
+      } else {
+        return { ...fromQr, receiptLike: true, rawText: '' };
+      }
     }
   }
 
@@ -648,6 +682,16 @@ export async function extractReceiptReferenceFromPixels(
     let ranked: Candidate[] = [];
     const result = parseReceiptDocument(doc, providerHint, refined, (r) => (ranked = r));
     deps.debug?.({ text: data.text, lines, refined, ranked });
+
+    // An FT reference found by OCR beats the QR's Receipt ID; the Receipt ID
+    // goes out only when no FT was found anywhere on the receipt (an order
+    // placed with it still beats nothing — finance can correct it manually).
+    if (
+      qrCbeReceiptId &&
+      !(result.provider === 'cbe' && result.reference && STRONG_SHAPES.cbe.test(result.reference))
+    ) {
+      return { ...qrCbeReceiptId, receiptLike: true, rawText: data.text };
+    }
 
     return {
       ...result,
