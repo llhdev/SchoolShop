@@ -14,10 +14,16 @@
 //   claim, the tenant's payment_warnings entry cleared, the tenant's
 //   pending/received items auto-paid, and the shop's Telegram order message
 //   flipped to ✅ Payment Verified.
-// On failure NOTHING is persisted — no audit rows for failed manual attempts
-// — and the not-passing checks come back as plain-language reasons for the
-// staff UI. An already-verified (order, tenant) short-circuits idempotently
-// before any verify.et call.
+// On failure the not-passing checks come back as plain-language reasons for
+// the staff UI, and — since the failed-persist change — a definitive
+// failed/needs_review verdict is ALSO recorded as the new current
+// payment_verifications attempt, so the OrderDetail verification card shows
+// THIS manual check's breakdown instead of a stale automatic one. Nothing
+// else changes on the fail path: no claim, no payment_references, no warning
+// change, no auto-pay, no Telegram flip. Transient outcomes (still pending,
+// verify.et errors, not_found) and an already-claimed reference keep the old
+// persist-nothing behavior. An already-verified (order, tenant)
+// short-circuits idempotently before any verify.et call.
 //
 // Staff-authenticated: verify_jwt = true in config.toml, and this function
 // additionally resolves the caller's JWT to their profile — super admin, or
@@ -78,7 +84,9 @@ function json(body: unknown, status = 200): Response {
 }
 
 /** Failure payload for the staff UI: the reasons of every check that did not
- *  pass, in plain language. Nothing is persisted for failed attempts. */
+ *  pass, in plain language. Definitive failed/needs_review verdicts are also
+ *  persisted as the current attempt (see the call site); transient failures
+ *  stay unpersisted. */
 function fail(
   verdict: 'failed' | 'needs_review' | 'not_found' | 'unavailable',
   reasons: string[]
@@ -440,6 +448,47 @@ Deno.serve(async (req) => {
     const reasons = Object.values(evaluation.checks)
       .filter((c) => c.result !== 'pass')
       .map((c) => c.reason);
+    // Persist a DEFINITIVE failed/needs_review verdict as the new current
+    // attempt (the previous one becomes history, same as the pass path), so
+    // the OrderDetail verification card renders THIS manual check's
+    // pass/fail breakdown instead of a stale automatic attempt. checks keeps
+    // evaluateChecks' own notPreviouslyClaimed line — for not_attempted that
+    // is the accurate "not claimed" pass, exactly what completeAttempt
+    // stores when no claim happens. HARD RULE: nothing else is written on
+    // this path — no payment_claims row, no orders.payment_references, no
+    // payment_warnings change, no auto-pay, no Telegram flip. 'pending'
+    // (still processing) never persists: a fresh request_id on a pending row
+    // would trip verify-order-payment's in-flight skip. Persist errors are
+    // best-effort only — the staff answer stays the verdict + reasons.
+    if (evaluation.overall === 'failed' || evaluation.overall === 'needs_review') {
+      if (current) {
+        await supabase.from('payment_verifications').update({ is_current: false }).eq('id', current.id);
+      }
+      const { error: persistError } = await supabase
+        .from('payment_verifications')
+        .insert({
+          order_id: orderId,
+          tenant_id: tenantId,
+          attempt_no: (current?.attempt_no ?? 0) + 1,
+          expected_amount: expectedAmount,
+          status: evaluation.overall,
+          checks: evaluation.checks,
+          paid_amount: receipt.paidAmount,
+          provider,
+          reference,
+          receiver_account: receipt.receiverAccount,
+          payer: receipt.payer,
+          transaction_date: receipt.transactionDate,
+          request_id: submission.requestId,
+          raw: payload,
+        });
+      if (persistError) {
+        console.error('failed-attempt persist failed:', persistError);
+        if (current) {
+          await supabase.from('payment_verifications').update({ is_current: true }).eq('id', current.id);
+        }
+      }
+    }
     return fail(
       evaluation.overall === 'pending' ? 'unavailable' : evaluation.overall,
       reasons.length > 0 ? reasons : ['the transaction could not be confirmed']
@@ -448,7 +497,7 @@ Deno.serve(async (req) => {
 
   // Fully clean pass — persist. New current attempt row first so the atomic
   // claim can reference it; the previous current row becomes history, same as
-  // the automatic path. (Rows are only written for passing verifications.)
+  // the automatic path.
   if (current) {
     await supabase.from('payment_verifications').update({ is_current: false }).eq('id', current.id);
   }
