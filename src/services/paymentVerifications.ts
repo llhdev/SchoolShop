@@ -115,13 +115,15 @@ export type ManualVerifyResult =
   | { ok: false; reasons: string[] };
 
 /** Verify a manually typed transaction reference via the
- *  manual-verify-reference Edge Function (financial staff / super admin only —
- *  the function authorizes the caller's profile and capability). On success
- *  the server records the reference (key 'manual'), marks the current attempt
- *  verified, claims the transaction, clears the shop's payment warning, and
- *  auto-pays its pending/received items. Failed checks come back as
- *  plain-language reasons (nothing is persisted); transport/server errors
- *  throw. */
+ *  manual-verify-reference Edge Function (super admin, or the shop's
+ *  financial or branch staff — the function authorizes the caller's profile
+ *  and capability; branch callers since 073 are auto-paid only on their
+ *  branch's scoped items). On success the server records the reference (key
+ *  'manual'), marks the current attempt verified, claims the transaction,
+ *  clears the shop's payment warning (branch: only when nothing stays
+ *  pending/received), and auto-pays the scoped pending/received items.
+ *  Definitive failed/needs_review verdicts persist as the current attempt;
+ *  transient failures persist nothing; transport/server errors throw. */
 export async function manualVerifyReference(
   orderId: string,
   tenantId: string,

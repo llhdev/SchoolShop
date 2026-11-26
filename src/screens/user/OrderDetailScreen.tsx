@@ -121,8 +121,18 @@ export function OrderDetailScreen() {
   const canSeeMoney = role === 'user' || isSuperAdmin || !!capabilities?.financial;
   // Proofs: super admin, financial, and branch staff — not shop-only staff.
   const canSeeProofs = isSuperAdmin || !!capabilities?.financial || !!capabilities?.branch;
-  // verify.et payment verification: super admin and financial staff only.
+  // verify.et payment verification reads (badges, retry/approve, recorded
+  // references): super admin and financial staff only — the 064 RLS policy
+  // gates the rows to them, so branch staff never fetch them.
   const canSeeVerification = isSuperAdmin || !!capabilities?.financial;
+  // 073: branch staff also get the manual "type the reference → verify" tool
+  // (the edge function scopes their auto-pay to their branch's items) and may
+  // mark their scoped items paid. Financial-only surfaces above stay as-is.
+  const canManualVerify = canSeeVerification || !!capabilities?.branch;
+  // Branch-only caller (no financial read): the verify card's wording and the
+  // success toast say "your branch's items" — the server auto-pays only
+  // those. Financial staff and the super admin get the whole-shop wording.
+  const manualVerifyScopeIsBranch = !canSeeVerification && !!capabilities?.branch;
 
   // Manual verify tool: which tenant slice it operates on. Staff act for
   // their own shop; the super admin only when the order has exactly one shop
@@ -139,7 +149,7 @@ export function OrderDetailScreen() {
     )
   );
   const manualVerifyTenantId =
-    order && canSeeVerification
+    order && canManualVerify
       ? isSuperAdmin
         ? orderTenantIds.length === 1
           ? orderTenantIds[0]
@@ -399,9 +409,11 @@ export function OrderDetailScreen() {
   };
 
   // Verify a manually typed reference against verify.et + the claims ledger
-  // (financial staff / super admin). On success the server has already
-  // recorded the reference, claimed it, cleared the warning and auto-paid the
-  // shop's items — here we only refresh what the screen shows.
+  // (financial staff / super admin; branch staff since 073, scoped to their
+  // branch's items). On success the server has already recorded the
+  // reference, claimed it, auto-paid the caller's scoped items and cleared
+  // the warning when nothing remains open — here we only refresh what the
+  // screen shows.
   const handleManualVerify = async () => {
     if (!order || !manualVerifyTenantId) return;
     const reference = manualVerifyRef.trim();
@@ -426,7 +438,9 @@ export function OrderDetailScreen() {
       notify(
         result.alreadyVerified
           ? 'This payment was already verified.'
-          : "Payment verified — the shop's items are marked paid.",
+          : manualVerifyScopeIsBranch
+            ? "Payment verified — your branch's items are marked paid."
+            : "Payment verified — the shop's items are marked paid.",
         'success'
       );
       // Refresh the verification chips immediately (the realtime subscription
@@ -503,19 +517,21 @@ export function OrderDetailScreen() {
   // capabilities (migration 045 — the server RPC enforces the same rules).
   // The super admin may perform every transition. 072: financial staff may
   // mark paid straight from pending, and a cancelled line can be restored to
-  // pending by the same callers who may cancel it.
+  // pending by the same callers who may cancel it. 073: branch staff may
+  // also mark THEIR scoped items paid (from pending or received).
   const statusActionsFor = (
     status: OrderStatus
   ): { target: OrderStatus; label: string; destructive?: boolean }[] => {
     const branch = isSuperAdmin || !!capabilities?.branch;
     const financial = isSuperAdmin || !!capabilities?.financial;
+    const payer = financial || branch;
     const actions: { target: OrderStatus; label: string; destructive?: boolean }[] = [];
     if (status === 'pending') {
       if (branch) actions.push({ target: 'received', label: 'Mark Received' });
-      if (financial) actions.push({ target: 'paid', label: 'Mark Paid' });
+      if (payer) actions.push({ target: 'paid', label: 'Mark Paid' });
       if (branch) actions.push({ target: 'cancelled', label: 'Cancel Order', destructive: true });
     } else if (status === 'received') {
-      if (financial) actions.push({ target: 'paid', label: 'Mark Paid' });
+      if (payer) actions.push({ target: 'paid', label: 'Mark Paid' });
       if (branch) actions.push({ target: 'cancelled', label: 'Cancel Order', destructive: true });
     } else if (status === 'paid') {
       if (branch) actions.push({ target: 'on_the_way', label: 'Mark Shipped' });
@@ -761,7 +777,8 @@ export function OrderDetailScreen() {
               <Text style={styles.sectionTitle}>Verify payment manually</Text>
               <Text style={styles.verificationHint}>
                 Type the transaction reference from the receipt — it is checked with the
-                bank, and the shop's items are marked paid when everything matches.
+                bank, and {manualVerifyScopeIsBranch ? "your branch's" : "the shop's"} items are
+                marked paid when everything matches.
               </Text>
               <View style={styles.manualRefProviderRow}>
                 {(['cbe', 'telebirr'] as const).map((p) => {

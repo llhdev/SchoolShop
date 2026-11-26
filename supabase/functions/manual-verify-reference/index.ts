@@ -1,19 +1,26 @@
 // Manual payment verification for staff: the financial admin (or super admin)
 // types the transaction reference off the receipt when the automatic proof
 // check could not confirm the payment (payment warning, 056 — OCR misread,
-// verify.et down, reference not found). The reference is looked up on
-// verify.et synchronously and run through the same evaluateChecks rules as
-// the automatic path (provider confirmation, recipient, exact amount,
-// recency, 069 verification-era cutoff) plus the payment_claims ledger for
-// prior use.
+// verify.et down, reference not found). Since 073, BRANCH staff may run the
+// same check, scoped to their branch's line items.
+// The reference is looked up on verify.et synchronously and run through the
+// same evaluateChecks rules as the automatic path (provider confirmation,
+// recipient, exact amount, recency, 069 verification-era cutoff) plus the
+// payment_claims ledger for prior use.
 //
 // On a fully clean pass the function does everything the staff would
 // otherwise do by hand, in one shot:
 //   orders.payment_references[tenant] = { provider, reference, key: 'manual' }
 //   (067 shape), a verified current payment_verifications row, the atomic
-//   claim, the tenant's payment_warnings entry cleared, the tenant's
+//   claim (tenant-wide — duplicate protection is per shop), the tenant's
 //   pending/received items auto-paid, and the shop's Telegram order message
-//   flipped to ✅ Payment Verified.
+//   flipped to ✅ Payment Verified. For a BRANCH caller (073) the auto-pay
+//   flips only their branch's scoped items — the same scoping
+//   update_order_item_status applies — and the payment_warnings entry is
+//   cleared only when that leaves the tenant with NO remaining
+//   pending/received items on the order (mirroring 072's clear-on-paid);
+//   everyone else pays the whole shop's slice and clears the warning as
+//   before.
 // On failure the not-passing checks come back as plain-language reasons for
 // the staff UI, and — since the failed-persist change — a definitive
 // failed/needs_review verdict is ALSO recorded as the new current
@@ -27,8 +34,8 @@
 //
 // Staff-authenticated: verify_jwt = true in config.toml, and this function
 // additionally resolves the caller's JWT to their profile — super admin, or
-// an active staff account with the Financial capability acting for the
-// requested tenant (mirrors set_order_payment_reference, 067).
+// an active staff account with the Financial OR Branch capability acting for
+// the requested tenant (their effective tenant).
 //
 // Required secrets: VERIFY_ET_API_KEY. Optional: TELEGRAM_BOT_TOKEN (the
 // Telegram flip is skipped without it), RECEIPT_MAX_AGE_HOURS (default 24).
@@ -45,6 +52,7 @@ import { syncRegistry, type RegistryAccount } from '../_shared/verifyRegistry.ts
 import {
   attemptClaim,
   autoPayVerifiedItems,
+  lineItemKey,
   markOrderMessageVerified,
   type TenantProfile,
 } from '../_shared/verifyWorkflow.ts';
@@ -101,6 +109,8 @@ interface AdminProfile {
   role: string;
   parent_tenant_id: string | null;
   staff_financial: boolean | null;
+  staff_branch: boolean | null;
+  branch_id: string | null;
   is_active: boolean | null;
 }
 
@@ -115,7 +125,7 @@ async function requireAdmin(
   if (error || !data.user) return { error: json({ error: 'invalid session' }, 401) };
   const { data: profile } = await supabase
     .from('profiles')
-    .select('id, role, parent_tenant_id, staff_financial, is_active')
+    .select('id, role, parent_tenant_id, staff_financial, staff_branch, branch_id, is_active')
     .eq('id', data.user.id)
     .maybeSingle();
   if (profile?.role !== 'admin' && profile?.role !== 'super_admin') {
@@ -266,6 +276,8 @@ interface OrderItem {
   unitPrice?: number;
   quantity?: number;
   selectedOptions?: SelectedOption[];
+  /** Branch stamp (045): matched against a branch caller's scope (073). */
+  branchId?: string | null;
 }
 
 /** Expected slice total, recomputed from the catalog: the order's stored
@@ -314,14 +326,17 @@ Deno.serve(async (req) => {
   if (typeof parsed === 'string') return json({ error: parsed }, 400);
   const { orderId, tenantId, provider, reference } = parsed;
 
-  // Capability gate (067): the super admin, or an ACTIVE staff account with
-  // the Financial capability acting for its own effective tenant.
+  // Capability gate (067/073): the super admin, or an ACTIVE staff account
+  // with the Financial OR Branch capability acting for its own effective
+  // tenant.
   const callerTenant = caller.parent_tenant_id ?? caller.id;
+  const callerIsStaff = caller.is_active !== false && callerTenant === tenantId;
+  const callerIsFinancial = callerIsStaff && caller.staff_financial === true;
+  const callerIsBranch = callerIsStaff && caller.staff_branch === true;
   const authorized =
-    caller.role === 'super_admin' ||
-    (caller.is_active !== false && caller.staff_financial === true && callerTenant === tenantId);
+    caller.role === 'super_admin' || callerIsFinancial || callerIsBranch;
   if (!authorized) {
-    return json({ error: "only the super admin or the shop's financial staff can verify payments manually" }, 403);
+    return json({ error: "only the super admin or the shop's financial or branch staff can verify payments manually" }, 403);
   }
 
   // Runtime kill-switches (042/043): a disabled pipeline stays off for manual
@@ -351,11 +366,31 @@ Deno.serve(async (req) => {
 
   const { data: profileRow } = await supabase
     .from('profiles')
-    .select('id, shop_name, telegram_chat_id, bank_accounts, shipping_fee, payment_verification_started_at')
+    .select('id, shop_name, telegram_chat_id, bank_accounts, shipping_fee, payment_verification_started_at, branch_selection_enabled')
     .eq('id', tenantId)
     .maybeSingle();
   if (!profileRow) return json({ error: 'shop not found' }, 400);
   const tenantProfile = profileRow as TenantProfile;
+
+  // 073 branch scoping, mirroring the item lookup in update_order_item_status
+  // (and getOrderItemsForScope client-side): a staff caller with a branch_id
+  // sees/pays only items stamped with THEIR branch while the shop's
+  // branch-selection toggle (046) is on; unstamped items (053) are shop-wide
+  // for them. The super admin and staff without a branch_id are unscoped.
+  const branchSelectionEnabled =
+    (tenantProfile.branch_selection_enabled as boolean | null | undefined) !== false;
+  const branchScope = {
+    branchId: caller.role === 'super_admin' ? null : (caller.branch_id ?? null),
+    branchSelectionEnabled,
+  };
+  const scopeActive = !!branchScope.branchId && branchSelectionEnabled;
+  const inScope = (i: OrderItem) =>
+    !scopeActive || i.branchId == null || i.branchId === branchScope.branchId;
+
+  const ownedItems = items.filter((i) => (i.product?.owner_id ?? i.product?.ownerId) === tenantId);
+  if (scopeActive && !ownedItems.some(inScope)) {
+    return json({ error: 'this order has no items from your branch' }, 400);
+  }
 
   // Idempotent short-circuit: a verified current attempt means this is a
   // retry — no verify.et credit is spent.
@@ -575,11 +610,13 @@ Deno.serve(async (req) => {
   // Record the reference on the order (067 shape) and clear the shop's
   // payment warning (056). Read-modify-write both jsonb columns in one
   // update; the claim above makes concurrent runs for the same reference
-  // impossible.
+  // impossible. 073: a branch-scoped caller does NOT clear the warning here —
+  // their auto-pay covers only their branch's items, so the warning clears
+  // below only when the tenant has no remaining pending/received items.
   const references = { ...((order.payment_references ?? {}) as Record<string, unknown>) };
   references[tenantId] = { provider, reference, key: 'manual' };
   const warnings = { ...((order.payment_warnings ?? {}) as Record<string, unknown>) };
-  delete warnings[tenantId];
+  if (!scopeActive) delete warnings[tenantId];
   const { error: orderUpdateError } = await supabase
     .from('orders')
     .update({ payment_references: references, payment_warnings: warnings })
@@ -587,11 +624,53 @@ Deno.serve(async (req) => {
   if (orderUpdateError) console.error('order update failed:', orderUpdateError);
 
   // Auto-pay + Telegram flip: same swallow-errors discipline as
-  // completeAttempt — they must never fail the verification.
+  // completeAttempt — they must never fail the verification. A branch-scoped
+  // caller pays only their branch's pending/received items (073).
   try {
-    await autoPayVerifiedItems(supabase, orderId, tenantId);
+    await autoPayVerifiedItems(supabase, orderId, tenantId, branchScope);
   } catch (error) {
     console.error(`auto-pay failed for order ${orderId}:`, error);
+  }
+  if (scopeActive) {
+    // 073: clear the tenant's payment warning only when the scoped auto-pay
+    // leaves the tenant with NO remaining pending/received items on the
+    // order — the same state in which 072's clear-on-paid fires for a
+    // whole-shop payment. Otherwise the warning stays for the rest.
+    try {
+      const { data: after } = await supabase
+        .from('orders')
+        .select('items, item_statuses, status')
+        .eq('id', orderId)
+        .single();
+      const afterItems = Array.isArray(after?.items) ? (after.items as OrderItem[]) : [];
+      const afterStatuses =
+        after?.item_statuses && typeof after.item_statuses === 'object' && !Array.isArray(after.item_statuses)
+          ? (after.item_statuses as Record<string, string>)
+          : {};
+      const orderStatus = typeof after?.status === 'string' ? after.status : 'pending';
+      const hasOpen = afterItems.some((i) => {
+        if ((i.product?.owner_id ?? i.product?.ownerId) !== tenantId) return false;
+        const key = lineItemKey(i);
+        const effective = (key && afterStatuses[key]) || orderStatus;
+        return effective === 'pending' || effective === 'received';
+      });
+      if (!hasOpen) {
+        const { data: latest } = await supabase
+          .from('orders')
+          .select('payment_warnings')
+          .eq('id', orderId)
+          .single();
+        const latestWarnings = { ...((latest?.payment_warnings ?? {}) as Record<string, unknown>) };
+        delete latestWarnings[tenantId];
+        const { error: warningError } = await supabase
+          .from('orders')
+          .update({ payment_warnings: latestWarnings })
+          .eq('id', orderId);
+        if (warningError) console.error('scoped warning clear failed:', warningError);
+      }
+    } catch (error) {
+      console.error(`scoped warning clear failed for order ${orderId}:`, error);
+    }
   }
   try {
     await markOrderMessageVerified(supabase, BOT_TOKEN, orderId, tenantId);

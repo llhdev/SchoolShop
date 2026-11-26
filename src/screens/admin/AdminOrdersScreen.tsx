@@ -11,7 +11,7 @@ import {
   View,
 } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
-import { useNavigation } from '@react-navigation/native';
+import { useNavigation, useFocusEffect } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { Screen } from '../../components/Screen';
 import { EmptyState } from '../../components/EmptyState';
@@ -30,6 +30,7 @@ import { notify } from '../../utils/notify';
 import { getOrderItemsForTenant } from '../../services/orders';
 import { fetchScopedOrderLines, OrderLineRow } from '../../services/orderLines';
 import { fetchTenants, Tenant } from '../../services/tenants';
+import { consumeLastViewedOrder, markOrderViewed } from '../../utils/orderHighlight';
 import { AdminStackParamList, RootStackParamList } from '../../types/navigation';
 import { OrderStatus } from '../../types';
 import { ORDER_STATUS_LABELS } from '../../constants/orderStatus';
@@ -50,6 +51,9 @@ const SEARCH_DEBOUNCE_MS = 300;
 const POLL_MS = 15000;
 /** Export safety valve: stops chunking far beyond any realistic shop history. */
 const EXPORT_MAX_ROWS = 50000;
+/** How long the just-viewed order's rows keep their highlight after
+ *  returning from OrderDetail. */
+const HIGHLIGHT_MS = 2500;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
@@ -181,6 +185,21 @@ export function AdminOrdersScreen() {
   const [loadingMore, setLoadingMore] = useState(false);
   const [error, setError] = useState('');
   const [exporting, setExporting] = useState(false);
+
+  // Returning from OrderDetail: flash every row of the order that was just
+  // open. native-stack keeps this screen mounted, so scroll position and
+  // loaded pages are preserved already (the poll replaces page 1 in place);
+  // the tapped row is therefore still where the user left it.
+  const [highlightOrderId, setHighlightOrderId] = useState<string | null>(null);
+  useFocusEffect(
+    useCallback(() => {
+      const id = consumeLastViewedOrder();
+      if (!id) return;
+      setHighlightOrderId(id);
+      const timer = setTimeout(() => setHighlightOrderId(null), HIGHLIGHT_MS);
+      return () => clearTimeout(timer);
+    }, [])
+  );
 
   const loadShops = useCallback(() => {
     setTenantsFailed(false);
@@ -429,8 +448,11 @@ export function AdminOrdersScreen() {
     return (
       <TouchableOpacity
         key={`${row.orderId}:${row.itemKey}`}
-        style={styles.card}
-        onPress={() => navigation.navigate('OrderDetail', { orderId: row.orderId })}
+        style={[styles.card, row.orderId === highlightOrderId && styles.rowHighlight]}
+        onPress={() => {
+          markOrderViewed(row.orderId);
+          navigation.navigate('OrderDetail', { orderId: row.orderId });
+        }}
       >
         <View style={styles.cardStatusRow}>
           <Text style={styles.cardStatusLabel}>Status</Text>
@@ -644,8 +666,11 @@ export function AdminOrdersScreen() {
                       return (
                         <TouchableOpacity
                           key={key}
-                          style={styles.trow}
-                          onPress={() => navigation.navigate('OrderDetail', { orderId: row.orderId })}
+                          style={[styles.trow, row.orderId === highlightOrderId && styles.rowHighlight]}
+                          onPress={() => {
+                            markOrderViewed(row.orderId);
+                            navigation.navigate('OrderDetail', { orderId: row.orderId });
+                          }}
                         >
                           {cell(row.orderId, styles.wOrder, `${key}-order`)}
                           {cell(new Date(row.createdAt).toLocaleString(), styles.wDate, `${key}-date`)}
@@ -979,6 +1004,11 @@ const makeStyles = (colors: ColorPalette) =>
       borderTopWidth: 1,
       borderColor: colors.border,
       ...(Platform.OS === 'web' ? ({ cursor: 'pointer' } as any) : {}),
+    },
+    // Soft theme-tinted flash on every row of the order just returned from
+    // (orderHighlight) — cards and table rows share it.
+    rowHighlight: {
+      backgroundColor: colors.primary + '14',
     },
     thead: {
       borderTopWidth: 0,

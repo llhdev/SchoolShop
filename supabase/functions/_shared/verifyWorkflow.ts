@@ -26,6 +26,8 @@ export interface TenantProfile {
   shipping_fee?: number | null;
   /** 069: receipts dated before this hard-fail (pre-verification era). */
   payment_verification_started_at?: string | null;
+  /** 046: off = no branch stamps, so branch scoping does not apply (073). */
+  branch_selection_enabled?: boolean | null;
 }
 
 /** Exact inline lines of the per-shop order message (also produced by
@@ -218,12 +220,15 @@ interface OrderLineItem {
   product?: { id?: unknown; owner_id?: unknown; ownerId?: unknown };
   selectedImageIndex?: unknown;
   selectedOptions?: unknown;
+  /** Branch stamp (045): matched against a branch caller's scope. */
+  branchId?: unknown;
 }
 
 /** Line-item key, exactly matching the client's getCartItemLineId and the
  *  update_order_item_status SQL: "productId:imageIndex" plus
- *  ":Group=Option|…" when the line carries variant selections. */
-function lineItemKey(item: OrderLineItem): string | null {
+ *  ":Group=Option|…" when the line carries variant selections. Exported for
+ *  manual-verify-reference's scoped warning check (073). */
+export function lineItemKey(item: OrderLineItem): string | null {
   const productId = item.product?.id;
   if (typeof productId !== 'string' || !productId) return null;
   let key = `${productId}:${typeof item.selectedImageIndex === 'number' ? item.selectedImageIndex : 0}`;
@@ -242,12 +247,21 @@ function lineItemKey(item: OrderLineItem): string | null {
  *  are left alone, and the order-level status is recomputed the same way
  *  update_order_item_status does. Warned/inconclusive verdicts never reach
  *  here — those orders follow the manual staff flow. Exported for
- *  manual-verify-reference: a staff-confirmed reference takes the same path. */
+ *  manual-verify-reference: a staff-confirmed reference takes the same path.
+ *
+ *  `branchScope` (073): when the confirming caller is a branch-scoped staff
+ *  account, only THEIR branch's pending/received items flip — the same rule
+ *  update_order_item_status applies (items stamped with another branch are
+ *  out of scope; unstamped items — 053 — are shop-wide for branch staff).
+ *  Callers without a branch scope (super admin, financial staff, the
+ *  automatic pipeline) keep the whole-shop auto-pay. */
 export async function autoPayVerifiedItems(
   supabase: SupabaseClient,
   orderId: string,
-  tenantId: string
+  tenantId: string,
+  branchScope?: { branchId: string | null; branchSelectionEnabled: boolean }
 ): Promise<void> {
+  const scopeActive = !!branchScope?.branchId && branchScope.branchSelectionEnabled;
   const { data, error } = await supabase
     .from('orders')
     .select('items, item_statuses, status')
@@ -265,6 +279,13 @@ export async function autoPayVerifiedItems(
   let changed = 0;
   for (const item of items) {
     if ((item.product?.owner_id ?? item.product?.ownerId) !== tenantId) continue;
+    if (
+      scopeActive &&
+      typeof item.branchId === 'string' &&
+      item.branchId !== branchScope?.branchId
+    ) {
+      continue;
+    }
     const key = lineItemKey(item);
     if (!key) continue;
     const effective = statuses[key] ?? orderStatus;

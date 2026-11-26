@@ -1,5 +1,6 @@
 import { Platform } from 'react-native';
-import { useNavigation } from '@react-navigation/native';
+import { useCallback, useRef, useState } from 'react';
+import { useFocusEffect, useNavigation } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
 import { ActivityIndicator, FlatList, StyleSheet, Text, TouchableOpacity, View } from 'react-native';
 import { Ionicons } from '@expo/vector-icons';
@@ -15,8 +16,13 @@ import { useDelayedLoading } from '../../hooks/useDelayedLoading';
 import { formatPrice } from '../../utils/format';
 import { formatVariantLabel, getUnitPrice } from '../../utils/variants';
 import { getProductCoverImage } from '../../utils/images';
+import { consumeLastViewedOrder, markOrderViewed } from '../../utils/orderHighlight';
 import { RootStackParamList } from '../../types/navigation';
+import { Order } from '../../types';
 import { useThemeColors, spacing, borderRadius, fontSizes, pageWidth, ColorPalette } from '../../constants/theme';
+
+/** How long the just-viewed order keeps its highlight after returning here. */
+const HIGHLIGHT_MS = 2500;
 
 export function OrdersScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<RootStackParamList>>();
@@ -24,6 +30,25 @@ export function OrdersScreen() {
   const { isPhone } = useResponsive();
   const colors = useThemeColors();
   const styles = makeStyles(colors);
+
+  const listRef = useRef<FlatList<Order>>(null);
+  // Returning from OrderDetail: flash the order that was just open (the stack
+  // kept this screen mounted, so scroll position is already preserved) and
+  // bring it into view when it isn't.
+  const [highlightOrderId, setHighlightOrderId] = useState<string | null>(null);
+  useFocusEffect(
+    useCallback(() => {
+      const id = consumeLastViewedOrder();
+      if (!id) return;
+      setHighlightOrderId(id);
+      const index = orders.findIndex((order) => order.id === id);
+      if (index >= 0) {
+        listRef.current?.scrollToIndex({ index, animated: true, viewPosition: 0.5 });
+      }
+      const timer = setTimeout(() => setHighlightOrderId(null), HIGHLIGHT_MS);
+      return () => clearTimeout(timer);
+    }, [orders])
+  );
 
   const accountBadge = shopper ? (
     <View style={styles.badgeWrap}>
@@ -95,12 +120,22 @@ export function OrdersScreen() {
         {/* One card per order: code + date + status on the header, the order's
             line items grouped below it. */}
         <FlatList
+          ref={listRef}
           data={orders}
           keyExtractor={(order) => order.id}
+          onScrollToIndexFailed={({ index, averageItemLength }) => {
+            listRef.current?.scrollToOffset({
+              offset: index * (averageItemLength || 120),
+              animated: true,
+            });
+          }}
           renderItem={({ item: order }) => (
             <TouchableOpacity
-              style={styles.card}
-              onPress={() => navigation.navigate('OrderDetail', { orderId: order.id })}
+              style={[styles.card, order.id === highlightOrderId && styles.cardHighlight]}
+              onPress={() => {
+                markOrderViewed(order.id);
+                navigation.navigate('OrderDetail', { orderId: order.id });
+              }}
             >
               <View style={styles.orderHeader}>
                 <View style={styles.orderHeaderText}>
@@ -208,6 +243,11 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
           cursor: 'pointer',
         } as any)
       : {}),
+  },
+  // Soft theme-tinted flash for the order just returned from (orderHighlight).
+  cardHighlight: {
+    backgroundColor: colors.primary + '14',
+    borderColor: colors.primary,
   },
   orderHeader: {
     flexDirection: 'row',
