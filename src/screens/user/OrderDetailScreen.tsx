@@ -16,6 +16,7 @@ import { fetchOrderById, getItemKey, getItemStatus, getOrderItemsForScope, hasPa
 import { fetchScopedOrder } from '../../services/orderLines';
 import {
   approvePaymentVerification,
+  fetchScopedVerifications,
   fetchVerificationsForOrders,
   manualVerifyReference,
   retryPaymentVerification,
@@ -221,6 +222,15 @@ export function OrderDetailScreen() {
     // shop's flat shipping fee (migration 031).
     (isStaffViewer && effectiveTenantId ? order?.shippingFees?.[effectiveTenantId] ?? 0 : 0);
 
+  // 074: branch staff SEE the Payment Verification section read-only when the
+  // order holds at least one of their scoped items — the table RLS stays
+  // financial-only, so they read through the scoped RPC (fetch below). The
+  // section's actions (retry/approve, record reference) stay gated on
+  // canSeeVerification at render time.
+  const branchVerificationViewer =
+    !canSeeVerification && isStaffViewer && !!capabilities?.branch && (visibleItems?.length ?? 0) > 0;
+  const canSeeVerificationScoped = canSeeVerification || branchVerificationViewer;
+
   // Payment proofs are staff-only (migration 040): the super admin sees every
   // shop's proof, staff see only their own shop's. Refs are private-bucket
   // paths for new orders and full public URLs for legacy ones.
@@ -324,26 +334,32 @@ export function OrderDetailScreen() {
     };
   }, [proofRefsKey]);
 
-  // verify.et payment verification (financial staff only, migrations 040/045).
-  // RLS scopes the read: a shop account receives only their shop's attempt,
-  // the super admin receives every merchant's attempt on the order.
+  // verify.et payment verification (migrations 040/045; branch read 074).
+  // RLS scopes the direct read: a shop's financial account receives only
+  // their shop's attempt, the super admin receives every merchant's attempt
+  // on the order. Branch staff read through the scoped RPC instead and get
+  // no realtime (it needs the same SELECT), so their view refreshes on
+  // revisit and after their own manual-verify run.
   useEffect(() => {
-    if (!order || !canSeeVerification) return;
+    if (!order || !canSeeVerificationScoped) return;
     let cancelled = false;
     const load = () =>
-      fetchVerificationsForOrders([order.id])
+      (canSeeVerification
+        ? fetchVerificationsForOrders([order.id])
+        : fetchScopedVerifications(order.id)
+      )
         .then((rows) => {
           if (!cancelled) setVerifications(rows);
         })
         .catch(() => {});
     load();
-    const unsubscribe = subscribeToVerifications(load);
+    const unsubscribe = canSeeVerification ? subscribeToVerifications(load) : () => {};
     return () => {
       cancelled = true;
       unsubscribe();
     };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [order?.id, canSeeVerification]);
+  }, [order?.id, canSeeVerificationScoped, canSeeVerification]);
 
   const shopNameFor = (tenantId: string): string => {
     const item = order?.items.find((i) => {
@@ -444,9 +460,12 @@ export function OrderDetailScreen() {
         'success'
       );
       // Refresh the verification chips immediately (the realtime subscription
-      // also catches it); a fallback-loaded order refetches so the paid
-      // status renders, context orders refresh via the orders subscription.
-      fetchVerificationsForOrders([order.id]).then(setVerifications).catch(() => {});
+      // also catches it for financial viewers); a fallback-loaded order
+      // refetches so the paid status renders, context orders refresh via the
+      // orders subscription.
+      (canSeeVerification ? fetchVerificationsForOrders([order.id]) : fetchScopedVerifications(order.id))
+        .then(setVerifications)
+        .catch(() => {});
       if (!contextOrder) {
         try {
           setFetchedOrder(await loadFallbackOrder());
@@ -821,7 +840,7 @@ export function OrderDetailScreen() {
             </View>
           )}
 
-          {canSeeVerification && verifications.length > 0 && (
+          {canSeeVerificationScoped && verifications.length > 0 && (
             <View style={styles.section}>
               <Text style={styles.sectionTitle}>Payment Verification</Text>
               {verifications.map((verification) => (
@@ -878,9 +897,12 @@ export function OrderDetailScreen() {
                         .join(' · ')}
                     </Text>
                   )}
-                  {(verification.status === 'error' ||
-                    verification.status === 'failed' ||
-                    verification.status === 'needs_review') && (
+                  {/* Retry/approve stay financial-only (074 shows branch
+                      staff this card read-only; the server RPCs re-check). */}
+                  {canSeeVerification &&
+                    (verification.status === 'error' ||
+                      verification.status === 'failed' ||
+                      verification.status === 'needs_review') && (
                     <View style={styles.verificationActions}>
                       {(verification.status === 'error' || verification.status === 'failed') && (
                         <Button
@@ -909,10 +931,13 @@ export function OrderDetailScreen() {
                   )}
                   {/* Manual reference entry (migration 067): only while this
                       shop's payment is still unconfirmed (warning showing) and
-                      not already verified. Saved references are claimed
-                      server-side — a receipt already used by another order is
-                      rejected here and again when marking paid. */}
-                  {hasPaymentWarning(order, verification.tenantId) &&
+                      not already verified — financial staff / super admin
+                      only (074 keeps branch staff read-only; the 067 RPC
+                      re-checks). Saved references are claimed server-side —
+                      a receipt already used by another order is rejected
+                      here and again when marking paid. */}
+                  {canSeeVerification &&
+                    hasPaymentWarning(order, verification.tenantId) &&
                     verification.status !== 'verified' && (
                       <View style={styles.manualRefBlock}>
                         <Text style={styles.manualRefTitle}>

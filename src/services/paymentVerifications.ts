@@ -54,6 +54,20 @@ export async function fetchVerificationsForOrders(orderIds: string[]): Promise<P
   return ((data ?? []) as VerificationRow[]).map(mapVerification);
 }
 
+/** Branch staff read (074): the payment_verifications RLS is financial-only
+ *  (064), so branch callers read the current attempt(s) through the
+ *  get_scoped_payment_verifications SECURITY DEFINER RPC — it returns rows
+ *  only when the order contains at least one of the caller's scoped line
+ *  items (same scoping as update_order_item_status). Read-only: retry,
+ *  approve and record-reference stay financial-only server-side. */
+export async function fetchScopedVerifications(orderId: string): Promise<PaymentVerification[]> {
+  const { data, error } = await supabase.rpc('get_scoped_payment_verifications', {
+    p_order_id: orderId,
+  });
+  if (error) throw new Error(error.message);
+  return ((data ?? []) as VerificationRow[]).map(mapVerification);
+}
+
 /** Refetch trigger so a verification completing while an admin screen is open
  *  refreshes without a reload. Volume is low, so any change refetches. */
 export function subscribeToVerifications(onChange: () => void) {
