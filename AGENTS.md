@@ -58,42 +58,20 @@ Key facts:
 ├── supabase/
 │   ├── functions/
 │   │   ├── telegram-auth/           # validates Telegram initData, upserts shoppers (1h replay window)
-│   │   ├── telegram-order-notify/   # one message per order to each shop's group; verification state rides inline;
-│   │   │                            # rate-limited (10/order/hr + 300/IP/hr) since its key ships in the bundle
+│   │   ├── telegram-order-notify/   # one message per order to each shop's group; verification state rides
+│   │   │                            # inline; rate-limited (10/order/hr + 300/IP/hr) — key ships in the bundle
 │   │   ├── verify-order-payment/    # DB-triggered verify.et check of payment proofs
 │   │   ├── verify-payment-reference/ # pre-order read-only reference check (checkout calls it)
-│   │   ├── r2-upload-sign/          # presigned R2 access: tenant-namespaced, capability-gated
-│   │   │                            # PUT/delete (061 — keys are <prefix>/<tenantId>/<name>, legacy
-│   │   │                            # deletes need ownership proof) + proof GET (052; scoped to proofs
-│   │   │                            # the caller's own shop's orders reference, 068); anon proof PUT
-│   │   │                            # (20/hr/IP, 061; no overwrites, 068) + book GET (order id + phone,
-│   │   │                            # 062; 30/hr/IP, 068)
+│   │   ├── r2-upload-sign/          # presigned R2 access: tenant-namespaced, capability-gated PUT/delete
+│   │   │                            # (061) + scoped proof GET (052/068) + rate-limited anon proof PUT
+│   │   │                            # (061/068) + book GET (order id + phone, 062)
 │   │   ├── verify-et-webhook/       # completes queued verifications (signed, idempotent)
-│   │   └── manual-verify-reference/ # staff-authd (verify_jwt on; financial OR branch
-│   │                                # capability checked, 073): live verify.et + claims-
-│   │                                # ledger check of a typed reference; on pass records
-│   │                                # it (key 'manual'), verifies, claims (tenant-wide),
-│   │                                # auto-pays (branch callers: only their branch's
-│   │                                # scoped items, 073), clears the warning (branch:
-│   │                                # only when nothing stays pending/received), flips
-│   │                                # the Telegram message; definitive failed/needs_review
-│   │                                # verdicts persist as the current attempt, transient
-│   │                                # failures persist nothing
+│   │   └── manual-verify-reference/ # staff-authd (financial OR branch, 073) live verify.et + claims-ledger
+│   │                                # check of a typed reference; on pass records it (key 'manual'),
+│   │                                # verifies, claims tenant-wide, auto-pays (branch: scoped items only),
+│   │                                # clears the warning, flips the Telegram message; definitive
+│   │                                # failed/needs_review verdicts persist as the current attempt
 │   └── migrations/                  # 001–074, in order; header comments document each
-│                                    # (074: get_scoped_payment_verifications — branch
-│                                    # staff read the current verification attempt
-│                                    # read-only when the order has a scoped item;
-│                                    # table RLS untouched; 073: branch staff may
-│                                    # mark their scoped items
-│                                    # paid in update_order_item_status — same scoping
-│                                    # as their other statuses, same 067 claim + 072
-│                                    # warning cleanup; 072: cancel_remarks + un-cancel
-│                                    # + pending→paid + warnings cleared on paid)
-│                                    # (070: get_scoped_order_lines — set-based, keyset-
-│                                    # paginated per-line order reads for the merged admin
-│                                    # Orders page — plus get_scoped_order for OrderDetail;
-│                                    # 071: get_scoped_order_stats — server-aggregated
-│                                    # stats for the admin Reports page)
 ├── docs/
 │   ├── architecture.md              # images + checkout/payment-verification deep-dive
 │   ├── staging-setup.md             # staging env runbook (dev branch → preview → staging Supabase)
@@ -101,16 +79,12 @@ Key facts:
 │   ├── security.md                  # auth model, RLS posture, trust boundaries
 │   └── telegram-mini-app.md         # TMA runbook
 ├── .github/workflows/deploy-web.yml # CI: web export -> gh-pages on push to main
-├── scripts/                         # prep-dist.js, setup-admin.js, reset-data.js,
-│                                    # clean-database.js, test-reference-verification.js,
-│                                    # prod-health-check.ps1, test-telegram-media.mjs,
-│                                    # query-logs.ps1 / rest-query.ps1 (read-only prod
-│                                    # diagnostics), staging-sql.ps1 (ad-hoc SQL against
-│                                    # the STAGING project via the Management API — the
-│                                    # fallback when the Postgres pooler is unreachable),
-│                                    # resend-order-notifications.js,
-│                                    # test-receipt-ocr.mjs + receipt-fixtures/
-│                                    # (PII-redacted receipt corpus + OCR regression test)
+├── scripts/                         # prep-dist.js, setup-admin.js, reset-data.js, clean-database.js,
+│                                    # prod-health-check.ps1, query-logs.ps1 / rest-query.ps1 /
+│                                    # staging-sql.ps1 (read-only diagnostics via the Management API),
+│                                    # resend-order-notifications.js, test-reference-verification.js,
+│                                    # test-telegram-media.mjs, test-receipt-ocr.mjs +
+│                                    # receipt-fixtures/ (PII-redacted corpora + regression tests)
 └── src/
     ├── components/                  # shared UI (Screen, Button, EmptyState, ProductCard,
     │                                # ProductImage, SearchBar, WebHeader, AdminHeader,
