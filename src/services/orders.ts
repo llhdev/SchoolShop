@@ -1,6 +1,6 @@
 import { supabase } from '../lib/supabase';
 import { debounce } from '../lib/debounce';
-import { CartItem, Order, OrderStatus, PaymentWarning } from '../types';
+import { CancelRemark, CartItem, Order, OrderStatus, PaymentWarning } from '../types';
 import { generateOrderCode } from '../utils/orderCode';
 import { getCartItemLineId } from '../utils/variants';
 import { CACHE_KEYS, getCached, setCached } from './cache';
@@ -31,6 +31,7 @@ export interface DbOrder {
   shipping_fees: Record<string, number> | null;
   item_statuses: Record<string, string> | null;
   payment_warnings: Record<string, PaymentWarning> | null;
+  cancel_remarks: Record<string, CancelRemark> | null;
 }
 
 export function toOrder(db: DbOrder): Order {
@@ -51,6 +52,7 @@ export function toOrder(db: DbOrder): Order {
     shippingFees: db.shipping_fees ?? undefined,
     itemStatuses: db.item_statuses ?? undefined,
     paymentWarnings: db.payment_warnings ?? undefined,
+    cancelRemarks: db.cancel_remarks ?? undefined,
   };
 }
 
@@ -72,6 +74,7 @@ function toDbOrder(order: Order): DbOrder {
     shipping_fees: order.shippingFees ?? {},
     item_statuses: order.itemStatuses ?? {},
     payment_warnings: order.paymentWarnings ?? {},
+    cancel_remarks: order.cancelRemarks ?? {},
   };
 }
 
@@ -257,16 +260,23 @@ export function hasPaymentWarning(order: Order, tenantId: string | null): boolea
 }
 
 /** Set the status of a single line item. Enforced server-side: super admin or
- *  the tenant that owns the item (migration 022 RPC). */
+ *  the tenant that owns the item (migration 022 RPC). Cancelling REQUIRES a
+ *  reason (072) — pass the preset label in cancelReason plus the free-text
+ *  detail when the preset is 'Other'. */
 export async function updateOrderItemStatus(
   orderId: string,
   itemKey: string,
-  status: OrderStatus
+  status: OrderStatus,
+  cancelReason?: string,
+  cancelDetail?: string
 ): Promise<void> {
   const { error } = await supabase.rpc('update_order_item_status', {
     p_order_id: orderId,
     p_item_key: itemKey,
     p_status: status,
+    ...(status === 'cancelled'
+      ? { p_cancel_reason: cancelReason ?? null, p_cancel_detail: cancelDetail ?? null }
+      : {}),
   });
   if (error) throw error;
 }

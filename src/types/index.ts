@@ -184,6 +184,17 @@ export interface Order {
    *  (migration 056): the payment could not be confirmed at checkout, so staff
    *  should eyeball the proof before marking paid. */
   paymentWarnings?: Record<string, PaymentWarning>;
+  /** Why a line was cancelled, keyed by the same line key as itemStatuses
+   *  (migration 072 — the reason is required at cancel time; 'Other' carries
+   *  the staff's free-text detail). Restoring a cancelled line removes its
+   *  entry. */
+  cancelRemarks?: Record<string, CancelRemark>;
+}
+
+export interface CancelRemark {
+  reason: string;
+  detail?: string | null;
+  at?: string;
 }
 
 export interface PaymentWarning {

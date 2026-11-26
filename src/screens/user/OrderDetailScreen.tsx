@@ -1,4 +1,4 @@
-import { ActivityIndicator, Platform, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View, Image, Modal, Linking } from 'react-native';
+import { ActivityIndicator, Platform, ScrollView, StyleSheet, Text, TextInput, TouchableOpacity, View, Image, Modal, Linking, useWindowDimensions } from 'react-native';
 import { useCallback, useEffect, useState } from 'react';
 import { useNavigation, useRoute } from '@react-navigation/native';
 import { NativeStackNavigationProp } from '@react-navigation/native-stack';
@@ -29,7 +29,7 @@ import { formatFileSize, formatPrice } from '../../utils/format';
 import { formatVariantLabel, getUnitPrice } from '../../utils/variants';
 import { confirmAction } from '../../utils/confirm';
 import { notify } from '../../utils/notify';
-import { ORDER_STATUS_LABELS } from '../../constants/orderStatus';
+import { CANCEL_REASONS, ORDER_STATUS_LABELS, cancelRemarkText } from '../../constants/orderStatus';
 import { Order, OrderStatus, PaymentVerification, PaymentWarning } from '../../types';
 import { RootStackParamList } from '../../types/navigation';
 import { OrderStatusBadge } from '../../components/OrderStatusBadge';
@@ -48,6 +48,10 @@ const VERIFICATION_CHECK_TITLES: Record<string, string> = {
   manualApproval: 'Manual approval',
   error: 'Error',
 };
+
+// Payment proof zoom viewer (072): step buttons between these bounds.
+const ZOOM_MIN = 1;
+const ZOOM_MAX = 4;
 
 export function OrderDetailScreen() {
   const route = useRoute();
@@ -220,6 +224,37 @@ export function OrderDetailScreen() {
       : [];
 
   const [zoomedImage, setZoomedImage] = useState<string | null>(null);
+  const [zoom, setZoom] = useState(1);
+  const { width: windowWidth, height: windowHeight } = useWindowDimensions();
+  const openZoom = (url: string) => {
+    setZoom(1);
+    setZoomedImage(url);
+  };
+  const closeZoom = () => {
+    setZoomedImage(null);
+    setZoom(1);
+  };
+  // Web: mouse-wheel zoom on the viewer (react-native-web forwards a View's
+  // ref to its DOM node).
+  const zoomWheelRef = useCallback((node: unknown) => {
+    if (Platform.OS !== 'web' || !node) return;
+    const el = node as {
+      addEventListener?: (
+        type: string,
+        listener: (e: { deltaY: number; preventDefault: () => void }) => void,
+        options?: object
+      ) => void;
+    };
+    if (typeof el.addEventListener !== 'function') return;
+    el.addEventListener(
+      'wheel',
+      (e) => {
+        e.preventDefault();
+        setZoom((z) => Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, z + (e.deltaY < 0 ? 0.25 : -0.25))));
+      },
+      { passive: false }
+    );
+  }, []);
   const [proofUrls, setProofUrls] = useState<string[]>([]);
   const proofRefsKey = visibleProofRefs.join('|');
 
@@ -416,12 +451,17 @@ export function OrderDetailScreen() {
 
   // Admins drive the status of each line item individually (per-item action
   // buttons under every item below); shoppers only see the read-only status.
-  const changeItemStatus = async (itemKey: string, status: OrderStatus) => {
+  const changeItemStatus = async (
+    itemKey: string,
+    status: OrderStatus,
+    cancelReason?: string,
+    cancelDetail?: string
+  ) => {
     if (!order) return;
     setStatusBusy(true);
     setStatusError('');
     try {
-      await updateOrderItemStatus(order.id, itemKey, status);
+      await updateOrderItemStatus(order.id, itemKey, status, cancelReason, cancelDetail);
       // Fallback-loaded order (not in context): refetch so the new status
       // renders immediately — the context update can't see this copy.
       if (!contextOrder) {
@@ -438,9 +478,32 @@ export function OrderDetailScreen() {
     }
   };
 
+  // Cancel-with-remark modal (072): cancelling a line requires a preset
+  // reason; 'Other' requires the free-text detail. The server re-validates.
+  const [cancelTarget, setCancelTarget] = useState<string | null>(null);
+  const [cancelReason, setCancelReason] = useState<string | null>(null);
+  const [cancelDetail, setCancelDetail] = useState('');
+  const cancelValid =
+    !!cancelReason && (cancelReason !== 'Other' || cancelDetail.trim().length > 0);
+  const openCancelModal = (itemKey: string) => {
+    setCancelTarget(itemKey);
+    setCancelReason(null);
+    setCancelDetail('');
+  };
+  const confirmCancel = async () => {
+    if (!cancelTarget || !cancelValid || !cancelReason) return;
+    const target = cancelTarget;
+    const reason = cancelReason;
+    const detail = cancelReason === 'Other' ? cancelDetail.trim() : undefined;
+    setCancelTarget(null);
+    await changeItemStatus(target, 'cancelled', reason, detail);
+  };
+
   // Forward transitions offered for one item, gated by the viewer's
   // capabilities (migration 045 — the server RPC enforces the same rules).
-  // The super admin may perform every transition.
+  // The super admin may perform every transition. 072: financial staff may
+  // mark paid straight from pending, and a cancelled line can be restored to
+  // pending by the same callers who may cancel it.
   const statusActionsFor = (
     status: OrderStatus
   ): { target: OrderStatus; label: string; destructive?: boolean }[] => {
@@ -449,6 +512,7 @@ export function OrderDetailScreen() {
     const actions: { target: OrderStatus; label: string; destructive?: boolean }[] = [];
     if (status === 'pending') {
       if (branch) actions.push({ target: 'received', label: 'Mark Received' });
+      if (financial) actions.push({ target: 'paid', label: 'Mark Paid' });
       if (branch) actions.push({ target: 'cancelled', label: 'Cancel Order', destructive: true });
     } else if (status === 'received') {
       if (financial) actions.push({ target: 'paid', label: 'Mark Paid' });
@@ -457,8 +521,25 @@ export function OrderDetailScreen() {
       if (branch) actions.push({ target: 'on_the_way', label: 'Mark Shipped' });
     } else if (status === 'on_the_way') {
       if (branch) actions.push({ target: 'completed', label: 'Mark Completed' });
+    } else if (status === 'cancelled') {
+      if (branch) actions.push({ target: 'pending', label: 'Restore Order' });
     }
     return actions;
+  };
+
+  // Back always lands on the orders list: pop when this screen was reached
+  // from it, otherwise (deep link / web refresh with no history — linking
+  // config order/:orderId) navigate to the role's orders screen. The native
+  // header back arrow and Telegram's BackButton already do exactly the
+  // canGoBack branch — they only render when a screen below exists.
+  const goBackToOrders = () => {
+    if (navigation.canGoBack()) {
+      navigation.goBack();
+    } else if (isAdminViewer) {
+      navigation.navigate('AdminStack', { screen: 'AdminOrders' });
+    } else {
+      navigation.navigate('UserTabs', { screen: 'Orders' });
+    }
   };
 
   if (!order) {
@@ -486,29 +567,11 @@ export function OrderDetailScreen() {
         <View style={styles.container}>
           <View style={styles.titleRow}>
             <Text style={[styles.title, isPhone && styles.titleCompact]}>Order Details</Text>
-            {isWeb && isAdminViewer && (
-              <TouchableOpacity
-                style={styles.homeLink}
-                onPress={() =>
-                  navigation.canGoBack()
-                    ? navigation.goBack()
-                    : navigation.navigate('AdminStack' as never)
-                }
-              >
+            {isWeb && (
+              <TouchableOpacity style={styles.homeLink} onPress={goBackToOrders}>
                 <Ionicons name="arrow-back" size={16} color={colors.primary} />
                 <Text style={[styles.homeLinkText, isPhone && styles.homeLinkTextCompact]}>
-                  Back
-                </Text>
-              </TouchableOpacity>
-            )}
-            {isWeb && !isAdminViewer && (
-              <TouchableOpacity
-                style={styles.homeLink}
-                onPress={() => navigation.navigate('UserTabs', { screen: 'Home' })}
-              >
-                <Ionicons name="arrow-back" size={16} color={colors.primary} />
-                <Text style={[styles.homeLinkText, isPhone && styles.homeLinkTextCompact]}>
-                  Continue Shopping
+                  {isAdminViewer ? 'Back' : 'Back to Orders'}
                 </Text>
               </TouchableOpacity>
             )}
@@ -542,6 +605,12 @@ export function OrderDetailScreen() {
             {(visibleItems ?? []).map((item) => {
               const itemKey = getItemKey(item);
               const itemStatus = getItemStatus(order, item);
+              // 072: cancelled lines show why (staff and shoppers alike).
+              const cancelRemark =
+                itemStatus === 'cancelled' ? order.cancelRemarks?.[itemKey] : undefined;
+              const statusLabel = cancelRemark
+                ? `${ORDER_STATUS_LABELS.cancelled} — ${cancelRemarkText(cancelRemark)}`
+                : ORDER_STATUS_LABELS[itemStatus];
               return (
                 <View key={itemKey} style={styles.itemBlock}>
                   <View style={styles.itemRow}>
@@ -582,9 +651,7 @@ export function OrderDetailScreen() {
                   ))}
                   {canManageStatus ? (
                     <View style={styles.statusActions}>
-                      <Text style={styles.itemStatusLabel}>
-                        Status: {ORDER_STATUS_LABELS[itemStatus]}
-                      </Text>
+                      <Text style={styles.itemStatusLabel}>Status: {statusLabel}</Text>
                       {statusActionsFor(itemStatus).length > 0 && (
                         <View style={styles.statusChips}>
                           {statusActionsFor(itemStatus).map((action) => (
@@ -596,7 +663,9 @@ export function OrderDetailScreen() {
                               ]}
                               disabled={statusBusy}
                               onPress={() =>
-                                changeItemStatus(itemKey, action.target).catch(() => {})
+                                action.target === 'cancelled'
+                                  ? openCancelModal(itemKey)
+                                  : changeItemStatus(itemKey, action.target).catch(() => {})
                               }
                             >
                               <Text
@@ -613,9 +682,7 @@ export function OrderDetailScreen() {
                       )}
                     </View>
                   ) : (
-                    <Text style={styles.itemStatusLabel}>
-                      Status: {ORDER_STATUS_LABELS[itemStatus]}
-                    </Text>
+                    <Text style={styles.itemStatusLabel}>Status: {statusLabel}</Text>
                   )}
                   {/* Paid digital downloads (migration 044) — shopper view;
                       only populated for items past "Paid". */}
@@ -681,7 +748,7 @@ export function OrderDetailScreen() {
             {proofUrls.length > 0 && (
               <View style={styles.proofGrid}>
                 {proofUrls.map((url) => (
-                  <TouchableOpacity key={url} onPress={() => setZoomedImage(url)}>
+                  <TouchableOpacity key={url} onPress={() => openZoom(url)}>
                     <Image source={{ uri: url }} style={styles.proofThumb} resizeMode="cover" />
                   </TouchableOpacity>
                 ))}
@@ -900,23 +967,126 @@ export function OrderDetailScreen() {
         </View>
       </ScrollView>
 
-      {/* Fullscreen payment proof zoom. */}
+      {/* Cancel with remark (072): a preset reason is required; picking
+          'Other' requires the free-text detail. The server re-validates. */}
       <Modal
-        visible={!!zoomedImage}
-        transparent={false}
+        visible={!!cancelTarget}
+        transparent
         animationType="fade"
-        onRequestClose={() => setZoomedImage(null)}
+        onRequestClose={() => setCancelTarget(null)}
       >
         <TouchableOpacity
-          style={styles.zoomOverlay}
+          style={styles.cancelOverlay}
           activeOpacity={1}
-          onPress={() => setZoomedImage(null)}
+          onPress={() => setCancelTarget(null)}
         >
-          <Ionicons name="close" size={28} color="#fff" style={styles.zoomClose} />
-          {zoomedImage ? (
-            <Image source={{ uri: zoomedImage }} style={styles.zoomImage} resizeMode="contain" />
-          ) : null}
+          <TouchableOpacity activeOpacity={1} style={styles.cancelCard} onPress={() => {}}>
+            <Text style={styles.cancelTitle}>Cancel this item</Text>
+            <Text style={styles.cancelHint}>Why is it being cancelled?</Text>
+            <ScrollView style={styles.cancelReasonList}>
+              {CANCEL_REASONS.map((reason) => {
+                const active = cancelReason === reason;
+                return (
+                  <TouchableOpacity
+                    key={reason}
+                    style={styles.cancelReasonRow}
+                    onPress={() => setCancelReason(reason)}
+                  >
+                    <Ionicons
+                      name={active ? 'radio-button-on' : 'radio-button-off'}
+                      size={20}
+                      color={active ? colors.primary : colors.textSecondary}
+                    />
+                    <Text style={styles.cancelReasonText}>{reason}</Text>
+                  </TouchableOpacity>
+                );
+              })}
+            </ScrollView>
+            {cancelReason === 'Other' && (
+              <TextInput
+                style={styles.manualRefInput}
+                placeholder="Describe the reason"
+                placeholderTextColor={colors.textSecondary}
+                value={cancelDetail}
+                onChangeText={setCancelDetail}
+                multiline
+                autoFocus
+              />
+            )}
+            <View style={styles.cancelActions}>
+              <Button title="Keep item" variant="outline" onPress={() => setCancelTarget(null)} />
+              <Button
+                title="Cancel item"
+                variant="danger"
+                loading={statusBusy}
+                disabled={!cancelValid}
+                onPress={() => confirmCancel().catch(() => {})}
+              />
+            </View>
+          </TouchableOpacity>
         </TouchableOpacity>
+      </Modal>
+
+      {/* Fullscreen payment proof zoom (072): step buttons 100%→400%, the
+          ScrollView pans when zoomed, and the mouse wheel zooms on web.
+          Tapping the image closes at 100% (a tap while inspecting a zoomed
+          image must not dismiss it); the X always closes. */}
+      <Modal
+        visible={!!zoomedImage}
+        transparent
+        animationType="fade"
+        onRequestClose={closeZoom}
+      >
+        <View style={styles.zoomOverlay} ref={zoomWheelRef}>
+          <ScrollView
+            style={styles.zoomScroll}
+            contentContainerStyle={{
+              width: windowWidth * zoom,
+              height: windowHeight * zoom,
+              alignItems: 'center',
+              justifyContent: 'center',
+            }}
+            directionalLockEnabled={false}
+            bounces={false}
+            showsHorizontalScrollIndicator={false}
+            showsVerticalScrollIndicator={false}
+          >
+            <TouchableOpacity activeOpacity={1} disabled={zoom > 1} onPress={closeZoom}>
+              {zoomedImage ? (
+                <Image
+                  source={{ uri: zoomedImage }}
+                  style={{
+                    width: windowWidth * 0.92 * zoom,
+                    height: windowHeight * 0.8 * zoom,
+                  }}
+                  resizeMode="contain"
+                />
+              ) : null}
+            </TouchableOpacity>
+          </ScrollView>
+
+          <TouchableOpacity style={styles.zoomCloseButton} onPress={closeZoom} hitSlop={12}>
+            <Ionicons name="close" size={28} color="#fff" />
+          </TouchableOpacity>
+
+          <View style={styles.zoomControls}>
+            <TouchableOpacity
+              style={[styles.zoomButton, zoom <= ZOOM_MIN && styles.zoomButtonDisabled]}
+              disabled={zoom <= ZOOM_MIN}
+              onPress={() => setZoom((z) => Math.max(ZOOM_MIN, z - 0.5))}
+            >
+              <Ionicons name="remove" size={22} color="#fff" />
+            </TouchableOpacity>
+            <Text style={styles.zoomLevel}>{Math.round(zoom * 100)}%</Text>
+            <TouchableOpacity
+              style={[styles.zoomButton, zoom >= ZOOM_MAX && styles.zoomButtonDisabled]}
+              disabled={zoom >= ZOOM_MAX}
+              onPress={() => setZoom((z) => Math.min(ZOOM_MAX, z + 0.5))}
+            >
+              <Ionicons name="add" size={22} color="#fff" />
+            </TouchableOpacity>
+          </View>
+        </View>
       </Modal>
     </Screen>
     </>
@@ -1051,18 +1221,85 @@ const makeStyles = (colors: ColorPalette) => StyleSheet.create({
   zoomOverlay: {
     flex: 1,
     backgroundColor: 'rgba(0,0,0,0.95)',
-    justifyContent: 'center',
-    alignItems: 'center',
   },
-  zoomClose: {
+  zoomScroll: {
+    flex: 1,
+  },
+  zoomCloseButton: {
     position: 'absolute',
     top: 48,
     left: 24,
-    zIndex: 1,
+    zIndex: 2,
   },
-  zoomImage: {
-    width: '90%',
-    height: '80%',
+  zoomControls: {
+    position: 'absolute',
+    bottom: 40,
+    alignSelf: 'center',
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.md,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    borderRadius: borderRadius.xl,
+    paddingHorizontal: spacing.md,
+    paddingVertical: spacing.xs,
+    zIndex: 2,
+  },
+  zoomButton: {
+    padding: spacing.sm,
+  },
+  zoomButtonDisabled: {
+    opacity: 0.35,
+  },
+  zoomLevel: {
+    color: '#fff',
+    fontSize: fontSizes.sm,
+    fontWeight: '600',
+    minWidth: 44,
+    textAlign: 'center',
+  },
+  cancelOverlay: {
+    flex: 1,
+    backgroundColor: 'rgba(0,0,0,0.6)',
+    justifyContent: 'center',
+    alignItems: 'center',
+    padding: spacing.lg,
+  },
+  cancelCard: {
+    backgroundColor: colors.surface,
+    borderRadius: borderRadius.md,
+    padding: spacing.lg,
+    width: '100%',
+    maxWidth: 420,
+    maxHeight: '85%',
+    gap: spacing.sm,
+  },
+  cancelTitle: {
+    fontSize: fontSizes.lg,
+    fontWeight: '700',
+    color: colors.text,
+  },
+  cancelHint: {
+    fontSize: fontSizes.sm,
+    color: colors.textSecondary,
+  },
+  cancelReasonList: {
+    flexGrow: 0,
+  },
+  cancelReasonRow: {
+    flexDirection: 'row',
+    alignItems: 'center',
+    gap: spacing.sm,
+    paddingVertical: spacing.sm,
+  },
+  cancelReasonText: {
+    fontSize: fontSizes.md,
+    color: colors.text,
+  },
+  cancelActions: {
+    flexDirection: 'row',
+    justifyContent: 'flex-end',
+    gap: spacing.sm,
+    marginTop: spacing.sm,
   },
   statusError: {
     marginTop: spacing.md,

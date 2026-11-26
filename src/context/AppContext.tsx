@@ -260,7 +260,13 @@ interface AppContextValue extends AppState {
   ) => void;
   clearCart: () => void;
   addOrder: (order: Order) => Promise<void>;
-  updateOrderItemStatus: (orderId: string, itemKey: string, status: Order['status']) => Promise<void>;
+  updateOrderItemStatus: (
+    orderId: string,
+    itemKey: string,
+    status: Order['status'],
+    cancelReason?: string,
+    cancelDetail?: string
+  ) => Promise<void>;
   setCategories: (categories: string[]) => void;
   addCategory: (category: string) => Promise<void>;
   removeCategory: (category: string) => Promise<void>;
@@ -917,7 +923,7 @@ export function AppProvider({ children }: { children: ReactNode }) {
       // or roll back a successfully placed order.
       notifyTelegramOrder(placed, shopper ?? undefined).catch(() => {});
     },
-    updateOrderItemStatus: async (orderId, itemKey, status) => {
+    updateOrderItemStatus: async (orderId, itemKey, status, cancelReason, cancelDetail) => {
       const previous = state.orders;
       const target = previous.find((o) => o.id === orderId);
       if (!target) {
@@ -926,13 +932,33 @@ export function AppProvider({ children }: { children: ReactNode }) {
         // server RPC enforces every permission and transition rule; returning
         // here used to make the status button a silent no-op.
         try {
-          await updateOrderItemStatus(orderId, itemKey, status);
+          await updateOrderItemStatus(orderId, itemKey, status, cancelReason, cancelDetail);
         } catch {
           throw new Error('Failed to update item status');
         }
         return;
       }
       const itemStatuses = { ...(target.itemStatuses ?? {}), [itemKey]: status };
+      // 072 side columns, mirroring the RPC: a cancel stores its remark,
+      // restoring a cancelled line drops it, and marking paid clears the
+      // owning shop's payment warning.
+      const cancelRemarks = { ...(target.cancelRemarks ?? {}) };
+      if (status === 'cancelled') {
+        cancelRemarks[itemKey] = {
+          reason: cancelReason ?? '',
+          detail: cancelDetail ?? null,
+          at: new Date().toISOString(),
+        };
+      } else if (status === 'pending') {
+        delete cancelRemarks[itemKey];
+      }
+      const paymentWarnings = { ...(target.paymentWarnings ?? {}) };
+      if (status === 'paid') {
+        const item = target.items.find((i) => getItemKey(i) === itemKey);
+        const product = item?.product as { owner_id?: string; ownerId?: string } | undefined;
+        const owner = product?.owner_id ?? product?.ownerId;
+        if (owner) delete paymentWarnings[owner];
+      }
       // Mirror the server-side rule (053): the order-level status is the
       // least-advanced non-cancelled item status, cancelled when every item
       // is. The realtime refetch confirms it; doing it here keeps the header
@@ -954,12 +980,12 @@ export function AppProvider({ children }: { children: ReactNode }) {
           orderStatus = ORDER_STATUSES[minIndex];
         }
       }
-      const updated: Order = { ...target, status: orderStatus, itemStatuses };
+      const updated: Order = { ...target, status: orderStatus, itemStatuses, cancelRemarks, paymentWarnings };
       const optimistic = previous.map((o) => (o.id === orderId ? updated : o));
       dispatch({ type: 'UPDATE_ORDER', payload: updated });
       await saveOrdersToCache(optimistic);
       try {
-        await updateOrderItemStatus(orderId, itemKey, status);
+        await updateOrderItemStatus(orderId, itemKey, status, cancelReason, cancelDetail);
       } catch {
         dispatch({ type: 'SET_ORDERS', payload: previous });
         await saveOrdersToCache(previous);

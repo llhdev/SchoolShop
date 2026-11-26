@@ -20,3 +20,22 @@ export const ORDER_STATUS_LABELS: Record<OrderStatus, string> = {
   completed: 'Completed',
   cancelled: 'Cancelled',
 };
+
+/** Preset cancel remarks (migration 072): one is required when staff cancel
+ *  a line; picking 'Other' requires a free-text detail. */
+export const CANCEL_REASONS = [
+  'Reused receipt',
+  'Old receipt',
+  'Receipt not found',
+  'Payment not received',
+  'Out of stock',
+  'Customer requested',
+  'Duplicate order',
+  'Other',
+] as const;
+
+/** Display text for a stored cancel remark: the preset label, or the staff's
+ *  own words when they picked 'Other'. */
+export function cancelRemarkText(remark: { reason: string; detail?: string | null }): string {
+  return remark.reason === 'Other' && remark.detail ? remark.detail : remark.reason;
+}
