@@ -92,6 +92,9 @@ export interface Product {
   detailImages?: string[];
   /** "Price on request": no price tag, no add-to-cart — shoppers order via chat (migration 029). */
   priceHidden?: boolean;
+  /** Hidden from the shopper catalog (migration 075) without deleting the
+   *  product; staff still see it (dimmed) in Manage Items. */
+  isHidden?: boolean;
   /** Units ordered so far; server-maintained by trigger, powers the Popular sort (migration 030). */
   orderCount?: number;
   coverImageIndex: number;

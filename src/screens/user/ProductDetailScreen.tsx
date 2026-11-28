@@ -121,6 +121,9 @@ export function ProductDetailScreen() {
   // same pattern as OrderDetail. The RN header is hidden on web (it would
   // double the in-app header), so the page carries its own way back.
   const isAdminViewer = role === 'admin' || role === 'super_admin';
+  // Hidden products (075): shoppers get the same "not found" state as a bad
+  // id — staff deep links (Manage Items) still open the page normally.
+  const hiddenFromShopper = !!product?.isHidden && !isAdminViewer;
   const webHeader = isAdminViewer ? <AdminHeader /> : <WebHeader showSearch={false} />;
   const webBackLink = isWeb ? (
     <View style={styles.webBackRow}>
@@ -147,7 +150,7 @@ export function ProductDetailScreen() {
   // hydrated, a missing product is the honest "not found" state.
   const showLoading = useDelayedLoading(!isHydrated);
 
-  if (!product) {
+  if (!product || hiddenFromShopper) {
     return (
       <>
         {isWeb && webHeader}

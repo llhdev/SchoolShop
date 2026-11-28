@@ -540,6 +540,9 @@ export function AddEditItemScreen() {
       coverImageIndex: images.length > 0 ? coverImageIndex : 0,
       variantGroups: priceOnRequest ? undefined : variants.groups,
       checkoutFields: questions.fields,
+      // Preserve the visibility toggle (075) across edits — it is managed
+      // from the Manage Items list, not this form.
+      isHidden: existing?.isHidden ?? false,
       createdAt: existing?.createdAt ?? new Date().toISOString(),
       ownerId: existing?.ownerId ?? effectiveTenantId ?? undefined,
     };

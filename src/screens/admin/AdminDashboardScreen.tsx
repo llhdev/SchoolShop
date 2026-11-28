@@ -72,7 +72,7 @@ const headerRightStyles = StyleSheet.create({
 
 export function AdminDashboardScreen() {
   const navigation = useNavigation<NativeStackNavigationProp<AdminStackParamList>>();
-  const { products, categories, deleteProduct, addCategory, removeCategory, role, staffSession, effectiveTenantId, isHydrated } = useApp();
+  const { products, categories, deleteProduct, updateProduct, addCategory, removeCategory, role, staffSession, effectiveTenantId, isHydrated } = useApp();
   const isSuperAdmin = role === 'super_admin';
   // Staff roles (migration 045): only shop-capable accounts may add/edit/delete
   // items; the super admin and other staff see the catalog read-only.
@@ -103,6 +103,18 @@ export function AdminDashboardScreen() {
       setTimeout(() => setSuccessMessage(null), 2000);
     } catch {
       notify('Failed to delete item. Please try again.', 'error');
+    }
+  }
+
+  // Visibility toggle (075): hide from the shopper catalog without deleting;
+  // the row stays here, dimmed, and toggling again restores it.
+  async function handleToggleVisibility(item: (typeof visibleProducts)[number]) {
+    try {
+      await updateProduct({ ...item, isHidden: !item.isHidden });
+      setSuccessMessage(item.isHidden ? `${item.name} is visible again` : `${item.name} hidden from shoppers`);
+      setTimeout(() => setSuccessMessage(null), 2000);
+    } catch {
+      notify('Failed to update the item. Please try again.', 'error');
     }
   }
 
@@ -259,6 +271,7 @@ export function AdminDashboardScreen() {
                       styles.productRow,
                       isDesktop && styles.productRowDesktop,
                       isDesktop && index === visibleProducts.length - 1 && styles.productRowLast,
+                      item.isHidden && styles.productRowHidden,
                     ]}
                   >
                     <TouchableOpacity
@@ -320,6 +333,17 @@ export function AdminDashboardScreen() {
 
                     {canManageProducts && item.ownerId === effectiveTenantId && (
                       <View style={[styles.productActions, isDesktop && styles.colActions]}>
+                        <TouchableOpacity
+                          style={styles.iconButton}
+                          onPress={() => handleToggleVisibility(item)}
+                          accessibilityLabel={item.isHidden ? 'Show to shoppers' : 'Hide from shoppers'}
+                        >
+                          <Ionicons
+                            name={item.isHidden ? 'eye-off-outline' : 'eye-outline'}
+                            size={18}
+                            color={colors.textSecondary}
+                          />
+                        </TouchableOpacity>
                         <TouchableOpacity
                           style={[styles.iconButton, styles.deleteButton]}
                           onPress={() =>
@@ -525,6 +549,10 @@ const makeStyles = (colors: ColorPalette) =>
       paddingHorizontal: spacing.sm,
       borderBottomWidth: 1,
       borderColor: colors.border,
+    },
+    // Hidden-from-shoppers rows (075) stay listed but dimmed.
+    productRowHidden: {
+      opacity: 0.45,
     },
     productRowDesktop: {
       paddingVertical: spacing.xs,

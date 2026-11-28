@@ -31,6 +31,11 @@ export function HomeScreen() {
   const colors = useThemeColors();
   const styles = makeStyles(colors);
 
+  // Defense-in-depth (075): the catalog RPC already excludes hidden
+  // products for shoppers, but a stale cache can still hold one — keep them
+  // out of the grid, stores list, search and viewer regardless.
+  const catalogProducts = useMemo(() => products.filter((p) => !p.isHidden), [products]);
+
   const [query, setQuery] = useState('');
   const [selectedCategory, setSelectedCategory] = useState<Category | null>(null);
   const [selectedOwnerId, setSelectedOwnerId] = useState<string | null>(null);
@@ -92,7 +97,7 @@ export function HomeScreen() {
   // product catalog — a tenant only appears here once they have products.
   const stores = useMemo<StoreSummary[]>(() => {
     const map = new Map<string, StoreSummary>();
-    for (const product of products) {
+    for (const product of catalogProducts) {
       if (!product.ownerId || !product.shopName) continue;
       const existing = map.get(product.ownerId);
       if (!existing) {
@@ -112,7 +117,7 @@ export function HomeScreen() {
       }
     }
     return [...map.values()].sort((a, b) => a.shopName.localeCompare(b.shopName));
-  }, [products]);
+  }, [catalogProducts]);
 
   // If the selected store disappears from the catalog (tenant/products
   // removed), drop the filter instead of showing an empty grid.
@@ -123,7 +128,7 @@ export function HomeScreen() {
   const activeStore = stores.find((s) => s.ownerId === activeOwnerId) ?? null;
 
   const filtered = useMemo(() => {
-    return products.filter((product) => {
+    return catalogProducts.filter((product) => {
       const matchesCategory = selectedCategory
         ? product.category === selectedCategory
         : true;
@@ -135,7 +140,7 @@ export function HomeScreen() {
         product.name.toLowerCase().includes(query.toLowerCase());
       return matchesCategory && matchesStore && matchesSearch;
     });
-  }, [products, selectedCategory, activeOwnerId, query]);
+  }, [catalogProducts, selectedCategory, activeOwnerId, query]);
 
   const sorted = useMemo(() => {
     if (sortBy === 'featured') {
@@ -278,10 +283,10 @@ export function HomeScreen() {
 
         <ProductViewerModal
           visible={viewerProductId !== null}
-          product={products.find((p) => p.id === viewerProductId) ?? null}
+          product={catalogProducts.find((p) => p.id === viewerProductId) ?? null}
           onClose={() => setViewerProductId(null)}
           onAddToCart={(selectedImageIndex) => {
-            const product = products.find((p) => p.id === viewerProductId);
+            const product = catalogProducts.find((p) => p.id === viewerProductId);
             // Free download posts (price 0) are never added to the cart.
             if (product && product.price > 0) addToCart(product, selectedImageIndex);
           }}

@@ -39,6 +39,7 @@ interface DbProduct {
   detail_images?: string[] | null;
   cover_image_index: number;
   price_hidden?: boolean | null;
+  is_hidden?: boolean | null;
   order_count?: number | null;
   created_at: string;
   owner_id?: string;
@@ -66,6 +67,7 @@ function toProduct(db: DbProduct): Product {
     detailImages: db.detail_images ?? undefined,
     coverImageIndex: db.cover_image_index,
     priceHidden: db.price_hidden ?? undefined,
+    isHidden: db.is_hidden ?? undefined,
     orderCount: db.order_count ?? 0,
     createdAt: db.created_at,
     ownerId: db.owner_id,
@@ -94,6 +96,7 @@ function toDbProduct(product: Product): DbProduct {
     detail_images: product.detailImages ?? [],
     cover_image_index: product.coverImageIndex,
     price_hidden: product.priceHidden ?? false,
+    is_hidden: product.isHidden ?? false,
     order_count: product.orderCount ?? 0,
     created_at: product.createdAt,
     owner_id: product.ownerId,
