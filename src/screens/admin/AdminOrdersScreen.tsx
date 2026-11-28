@@ -57,15 +57,15 @@ const HIGHLIGHT_MS = 2500;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 
-const STATUS_FILTERS: { key: StatusFilter; label: string; financialOnly?: boolean }[] = [
+const STATUS_FILTERS: { key: StatusFilter; label: string; financialOrBranchOnly?: boolean }[] = [
   { key: 'all', label: 'All' },
   { key: 'pending', label: ORDER_STATUS_LABELS.pending },
   { key: 'received', label: ORDER_STATUS_LABELS.received },
-  { key: 'paid', label: ORDER_STATUS_LABELS.paid, financialOnly: true },
+  { key: 'paid', label: ORDER_STATUS_LABELS.paid, financialOrBranchOnly: true },
   { key: 'on_the_way', label: ORDER_STATUS_LABELS.on_the_way },
   { key: 'completed', label: ORDER_STATUS_LABELS.completed },
   { key: 'cancelled', label: ORDER_STATUS_LABELS.cancelled },
-  { key: 'needs_review', label: 'Needs review', financialOnly: true },
+  { key: 'needs_review', label: 'Needs review', financialOrBranchOnly: true },
 ];
 
 const DATE_FILTERS: { key: DateFilter; label: string }[] = [
@@ -161,6 +161,12 @@ export function AdminOrdersScreen() {
   const isSuperAdmin = role === 'super_admin';
   // Money is visible to the super admin and financial staff only (045/064).
   const canSeeMoney = isSuperAdmin || !!staffSession?.capabilities.financial;
+  // The Paid / Needs review filters and the per-row warning badge are for
+  // payment operations: financial staff, plus branch staff since 073/077
+  // (they mark scoped items paid and verify payments). Money stays hidden
+  // from branch staff — the RPC strips it server-side.
+  const canUsePaymentFilters =
+    canSeeMoney || !!staffSession?.capabilities.branch;
 
   // Super admin: pick a shop first, then browse that shop's line items.
   const [tenants, setTenants] = useState<Tenant[]>([]);
@@ -417,7 +423,7 @@ export function AdminOrdersScreen() {
     return (
       <View style={styles.statusCell}>
         <OrderStatusBadge status={row.lineStatus} small />
-        {canSeeMoney && row.paymentWarning && (
+        {canUsePaymentFilters && row.paymentWarning && (
           <PaymentWarningBadge reason={row.paymentWarning.reason} />
         )}
       </View>
@@ -566,7 +572,7 @@ export function AdminOrdersScreen() {
           )}
 
           <View style={styles.filterRow}>
-            {STATUS_FILTERS.filter((f) => !f.financialOnly || canSeeMoney).map((filter) => (
+            {STATUS_FILTERS.filter((f) => !f.financialOrBranchOnly || canUsePaymentFilters).map((filter) => (
               <Chip
                 key={filter.key}
                 label={filter.label}

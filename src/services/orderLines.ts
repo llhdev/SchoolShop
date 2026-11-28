@@ -29,7 +29,8 @@ export interface OrderLineRow {
   branchId: string | null;
   branchName: string | null;
   paymentMethod: string;
-  /** The tenant's own payment_warnings entry (056) — financial viewers only. */
+  /** The tenant's own payment_warnings entry (056) — financial viewers, and
+   *  branch staff since 077. */
   paymentWarning: PaymentWarning | null;
 }
 
@@ -46,7 +47,8 @@ export interface OrderLinesQuery {
   /** Super admin only: the picked shop. Ignored (forced to the caller's own
    *  shop) for staff. */
   tenantId?: string | null;
-  /** Effective line status; 'needs_review' is financial-only. NULL = all. */
+  /** Effective line status; 'needs_review' and 'paid' are financial/branch-only
+   *  (077). NULL = all. */
   status?: OrderStatus | 'needs_review' | null;
   /** ISO bounds on the order's created_at (inclusive). */
   from?: string | null;
